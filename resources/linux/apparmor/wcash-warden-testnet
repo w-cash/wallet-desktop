@@ -1,0 +1,13 @@
+# AppArmor profile for Wcash Warden Testnet.
+#
+# Ubuntu 24.04+ and Debian 13+ restrict unprivileged user namespaces by
+# default. This profile opts the Electron process into the userns permission
+# needed by Chromium's sandbox without granting access to another wallet.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile wcash-warden-testnet "/opt/Wcash Warden Testnet/wcash-warden-testnet" flags=(unconfined) {
+  userns,
+  include if exists <local/wcash-warden-testnet>
+}

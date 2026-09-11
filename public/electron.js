@@ -434,24 +434,11 @@ async function saveWallets(wallets) {
 let waitingForClose = false;
 let proceedToClose = false;
 
-// zcash: URI received before the renderer is ready (cold start or wallet not yet loaded)
-let pendingZcashUri = null;
-
 // Last sourceDir confirmed by the user through the system "Open" dialog in
 // import:scan. import:apply rejects any sourceDir that doesn't exactly match —
 // the renderer must not be able to fabricate this path. Resolved to canonical
 // form so the comparison is path-separator and "."/".." agnostic.
 let _lastScanSourceDir = null;
-
-function handleZcashUri(uri) {
-  if (!uri || !uri.startsWith("zcash:")) return;
-  const win = BrowserWindow.getAllWindows()[0];
-  if (win) {
-    win.webContents.send("payuri", uri);
-  } else {
-    pendingZcashUri = uri;
-  }
-}
 
 // Electron 37+ (Chromium 137+) initialises CoreLocation in every process when running
 // under MAS sandbox. The sandbox denies com.apple.locationd.desktop.registration,
@@ -495,22 +482,11 @@ if (process.platform === "linux") {
   }
 }
 
-// Mac/MAS only: the OS routes zcash: links here whether the app is open or closed.
-// Must be registered before app.whenReady() to catch cold-start links.
-// On Windows/Linux, URIs arrive via second-instance argv — open-url is not fired there.
-if (LEGACY_ZCASH_RUNTIME_ENABLED && process.platform === "darwin") {
-  app.on("open-url", (event, url) => {
-    event.preventDefault();
-    handleZcashUri(url);
-  });
-}
-
 // Enforce single instance across all platforms.
 // On macOS, the OS usually focuses the existing instance via Launch Services,
 // but two copies of the app at different paths (e.g. DMG + MAS) can both run
 // and end up sharing native/GPU resources — which has caused shutdown crashes
 // in the InProc GPU thread (rust_png / fontations).
-// Windows/Linux also use this to receive zcash: URIs from second-instance argv.
 {
   const gotLock = app.requestSingleInstanceLock();
   if (!gotLock) {
@@ -518,9 +494,7 @@ if (LEGACY_ZCASH_RUNTIME_ENABLED && process.platform === "darwin") {
     // window before the process terminates, which is visible to the user.
     app.exit(0);
   } else {
-    app.on("second-instance", (_event, argv) => {
-      const uri = LEGACY_ZCASH_RUNTIME_ENABLED ? argv.find((a) => a.startsWith("zcash:")) : null;
-      if (uri) handleZcashUri(uri);
+    app.on("second-instance", () => {
       const win = BrowserWindow.getAllWindows()[0];
       if (win) {
         if (win.isMinimized()) win.restore();
@@ -1805,13 +1779,6 @@ ipcMain.handle("import:apply", async (_e, { sourceDir, choices }) => {
   return { ok: true, results };
 });
 
-// Renderer calls this once the wallet is loaded to claim any pending zcash: URI.
-ipcMain.handle("get-pending-uri", () => {
-  const uri = pendingZcashUri;
-  pendingZcashUri = null;
-  return uri;
-});
-
 ipcMain.on("apprestart", () => {
   app.relaunch({ args: process.argv.slice(1).concat(["--relaunch"]) });
   app.exit(0);
@@ -1979,17 +1946,6 @@ function createWindow() {
 //   - macOS:   shutdown crash in Chrome_InProcGpuThread (rust_png/fontations)
 // Removing it puts Chromium back on its default out-of-process GPU.
 // app.commandLine.appendSwitch("in-process-gpu");
-
-// Windows/Linux cold start: the zcash: URI arrives via env var (set by the
-// zingo-pc-uri.sh wrapper on Linux, which avoids passing it as a positional
-// argv that Electron's runtime misinterprets as the app-module path) or as a
-// direct argv entry on Windows.
-if (LEGACY_ZCASH_RUNTIME_ENABLED && process.platform !== "darwin") {
-  const envUri = process.env.ZINGO_PC_URI;
-  const coldStartUri =
-    envUri && envUri.startsWith("zcash:") ? envUri : process.argv.find((a) => a.startsWith("zcash:"));
-  if (coldStartUri) pendingZcashUri = coldStartUri;
-}
 
 // Resolves the on-disk path for a known data file.
 // wallets.json lives in electron-json-storage's "storage" subdirectory; the rest
@@ -2263,39 +2219,6 @@ app.whenReady().then(async () => {
       dialog.showErrorBox("Wcash wallet unavailable", error instanceof Error ? error.message : String(error));
       app.quit();
       return;
-    }
-  }
-
-  // Register zcash: protocol handler at runtime.
-  // - MAS: handled declaratively via protocols in package.json (sandbox forbids this call).
-  // - Flatpak: handled declaratively via the manifest .desktop file (sandbox forbids this call).
-  // - Windows/Linux packaged: the installer registers it, but calling this too doesn't hurt.
-  // - Dev mode on any platform: needed because electron-builder hasn't run.
-  const isInSandbox = process.mas || !!process.env.FLATPAK_ID;
-  if (LEGACY_ZCASH_RUNTIME_ENABLED && !isInSandbox) {
-    if (process.defaultApp) {
-      // Dev mode on Windows/Linux: register so URIs reach this instance via second-instance.
-      // Skipped on macOS: cold-start doesn't work in dev anyway, and registering here would
-      // overwrite the installed app's (DMG/TF) handler in the Launch Services database.
-      if (process.platform !== "darwin") {
-        app.setAsDefaultProtocolClient("zcash", process.execPath, [app.getAppPath()]);
-      }
-    } else {
-      // On Linux, the packaged Electron binary treats any positional argument
-      // as the app-module path (defaultApp mode), so passing the zcash: URI
-      // directly as argv causes a crash.  Register the wrapper script instead;
-      // it forwards the URI via the ZINGO_PC_URI env var and starts the binary
-      // with no positional arguments.
-      if (process.platform === "linux") {
-        const wrapperPath = path.join(path.dirname(process.execPath), "resources", "zingo-pc-uri.sh");
-        if (fs.existsSync(wrapperPath)) {
-          app.setAsDefaultProtocolClient("zcash", wrapperPath);
-        } else {
-          app.setAsDefaultProtocolClient("zcash");
-        }
-      } else {
-        app.setAsDefaultProtocolClient("zcash");
-      }
     }
   }
 

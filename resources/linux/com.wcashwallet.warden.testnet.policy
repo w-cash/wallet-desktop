@@ -3,10 +3,10 @@
   "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
   "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <policyconfig>
-  <vendor>Zingo Labs</vendor>
-  <action id="co.zingo.pc.authenticate">
-    <description>Authenticate to access Zingo PC</description>
-    <message>Authentication is required to access your Zingo PC wallet</message>
+  <vendor>Wcash</vendor>
+  <action id="com.wcashwallet.warden.testnet.authenticate">
+    <description>Authenticate to access Wcash Warden Testnet</description>
+    <message>Authentication is required to access your Wcash Testnet wallet</message>
     <defaults>
       <allow_any>auth_self</allow_any>
       <allow_inactive>auth_self</allow_inactive>

@@ -1,0 +1,65 @@
+{
+  "appId": "com.wcashwallet.warden.testnet",
+  "productName": "Wcash Warden Testnet",
+  "buildVersion": "1",
+  "artifactName": "${productName}-UNSIGNED-LOCAL-${version}-${buildVersion}-${arch}.${ext}",
+  "forceCodeSigning": false,
+  "npmRebuild": false,
+  "afterPack": "./scripts/verify-wcash-unsigned-local-after-pack.js",
+  "files": ["build/**/*", "config/wcash-runtime.json", "node_modules/**/*"],
+  "asarUnpack": ["build/native.node", "node_modules/keytar/**/*.node"],
+  "directories": {
+    "buildResources": "public",
+    "output": "dist/unsigned-local"
+  },
+  "mac": {
+    "category": "public.app-category.finance",
+    "identity": null,
+    "target": ["zip"],
+    "icon": "./resources/icon.icns"
+  },
+  "win": {
+    "icon": "./resources/icon.ico",
+    "signAndEditExecutable": false,
+    "target": ["zip"],
+    "extraFiles": [
+      {
+        "from": "resources/vcruntime",
+        "to": "."
+      }
+    ]
+  },
+  "deb": {
+    "afterInstall": "scripts/postinstall.sh",
+    "afterRemove": "scripts/postremove.sh",
+    "artifactName": "${name}_UNSIGNED-LOCAL_${version}-${buildVersion}_${arch}.${ext}"
+  },
+  "linux": {
+    "category": "Development",
+    "icon": "./resources/icons",
+    "executableName": "wcash-warden-testnet",
+    "target": ["AppImage", "deb"],
+    "extraResources": [
+      {
+        "from": "resources/linux/com.wcashwallet.warden.testnet.policy",
+        "to": "com.wcashwallet.warden.testnet.policy"
+      },
+      {
+        "from": "resources/linux/apparmor/wcash-warden-testnet",
+        "to": "apparmor-wcash-warden-testnet"
+      }
+    ],
+    "desktop": {
+      "entry": {
+        "Name": "Wcash Warden Testnet",
+        "Comment": "Wcash Testnet wallet",
+        "GenericName": "Wallet",
+        "Type": "Application",
+        "StartupNotify": true,
+        "StartupWMClass": "wcash-warden-testnet",
+        "Categories": "Utility;",
+        "Keywords": "wcash;wallet;testnet;"
+      }
+    }
+  }
+}

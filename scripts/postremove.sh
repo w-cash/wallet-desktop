@@ -1,14 +1,18 @@
 #!/bin/bash
-rm -f '/usr/share/polkit-1/actions/co.zingo.pc.policy'
 
-# Remove the terminal PATH symlink created in postinstall.sh. Guarded so we only
-# delete it when it still points into our /opt install (never a user's own).
-if [ -L /usr/bin/zingo-pc ] && [ "$(readlink /usr/bin/zingo-pc)" = '/opt/Zingo PC/zingo-pc' ]; then
-    rm -f /usr/bin/zingo-pc
+POLICY_DST='/usr/share/polkit-1/actions/com.wcashwallet.warden.testnet.policy'
+APPARMOR_DST='/etc/apparmor.d/wcash-warden-testnet'
+EXECUTABLE_LINK='/usr/bin/wcash-warden-testnet'
+INSTALLED_EXECUTABLE='/opt/Wcash Warden Testnet/wcash-warden-testnet'
+
+rm -f "$POLICY_DST"
+
+# Remove only the symlink created by this package.
+if [ -L "$EXECUTABLE_LINK" ] && [ "$(readlink "$EXECUTABLE_LINK")" = "$INSTALLED_EXECUTABLE" ]; then
+    rm -f "$EXECUTABLE_LINK"
 fi
 
-# Unload and remove the AppArmor profile if present.
-APPARMOR_DST='/etc/apparmor.d/zingo-pc'
+# Unload and remove only the Wcash-specific AppArmor profile.
 if [ -f "$APPARMOR_DST" ]; then
     if command -v apparmor_parser >/dev/null 2>&1; then
         apparmor_parser -R "$APPARMOR_DST" 2>/dev/null || true
