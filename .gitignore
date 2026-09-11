@@ -41,3 +41,7 @@ yarn-error.log*
 
 # throwaway self-signed cert for sideloading local MSIX builds (docs/windows-msix.md)
 zingo-dev.pfx
+
+# Wcash does not ship swap support. Keep inherited/generated SwapKit secrets out
+# of every branch and worktree.
+src/swap/swapKitSecrets.ts
