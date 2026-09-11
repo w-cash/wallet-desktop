@@ -16,6 +16,23 @@ const receivers = {
   transparent_coinbase_address: "WTmining",
 };
 
+const ironwoodRecipient = `wutest1${"q".repeat(80)}`;
+const txid = "a".repeat(64);
+
+const broadcastResult = (operation: "send" | "shield_coinbase" | "rebroadcast_pending" = "send") => ({
+  schema_version: 1,
+  operation,
+  outcome: "broadcast",
+  txid,
+  branch_id: "b3cfd27e",
+  expiry_height: 140,
+  target_height: 100,
+  fee_zat: "15000",
+  internal_change_receiver_verified: true,
+  broadcast: { txid, disposition: "submitted", status: { state: "mempool" } },
+  recovery: null,
+});
+
 const balanceAccount = {
   account_id: "account-1",
   ironwood_total_zat: 625_000_000,
@@ -65,6 +82,20 @@ const installBridge = (overrides: Partial<Bridge> = {}): Bridge => {
     stopSync: jest.fn().mockResolvedValue(true),
     balance: jest.fn(),
     receivers: jest.fn().mockResolvedValue(receivers),
+    validateRecipient: jest.fn().mockImplementation((address: string) =>
+      Promise.resolve({
+        schema_version: 1,
+        valid: true,
+        network: "Wcash Testnet",
+        recipient_kind: "ironwood",
+        canonical_address: address,
+        error: null,
+      }),
+    ),
+    send: jest.fn().mockResolvedValue(broadcastResult()),
+    shieldCoinbase: jest.fn().mockResolvedValue(broadcastResult("shield_coinbase")),
+    pendingTransactions: jest.fn().mockResolvedValue({ schema_version: 1, transactions: [], next_cursor: null }),
+    rebroadcastPending: jest.fn().mockResolvedValue(broadcastResult("rebroadcast_pending")),
     ...overrides,
   };
   Object.defineProperty(window, "wcash", { configurable: true, value: bridge });
@@ -330,5 +361,139 @@ describe("Wcash Testnet desktop wallet", () => {
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument();
     expect(bridge.revealBackup).toHaveBeenCalledWith();
     expect(bridge.open).toHaveBeenCalledWith();
+  });
+
+  it("reviews a validated private payment before invoking transaction authority", async () => {
+    const user = userEvent.setup();
+    const bridge = installBridge({
+      status: jest.fn().mockResolvedValue({
+        network: "Wcash Testnet",
+        ticker: "TWC",
+        storage_namespace: "wcashtestnet-v5",
+        state: "database-and-secret-ready",
+        wallet,
+      }),
+      balance: jest.fn().mockResolvedValue(balance(100)),
+    });
+    render(<WcashWallet />);
+
+    await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    await screen.findByText("Verified at block 100.");
+    await user.type(screen.getByLabelText("Wcash Testnet recipient"), ironwoodRecipient);
+    await user.type(screen.getByLabelText("Amount (TWC)"), "1.25");
+    await user.type(screen.getByLabelText(/^Private memo \(optional\)/), "hello 💚");
+    await user.click(screen.getByRole("button", { name: "Review payment" }));
+
+    expect(await screen.findByRole("heading", { name: "Check every payment detail" })).toBeInTheDocument();
+    expect(screen.getByText(ironwoodRecipient)).toBeInTheDocument();
+    expect(screen.getByText(/1\.25 TWC · 125000000 zatoshis/)).toBeInTheDocument();
+    expect(bridge.validateRecipient).toHaveBeenCalledWith(ironwoodRecipient);
+    expect(bridge.send).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Go back" }));
+    expect(bridge.send).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Review payment" }));
+    await user.click(await screen.findByRole("button", { name: "Continue to system confirmation" }));
+
+    await waitFor(() => expect(bridge.send).toHaveBeenCalledTimes(1));
+    expect(bridge.send).toHaveBeenCalledWith({
+      payments: [{ address: ironwoodRecipient, amount: "1.25", memo: "hello 💚" }],
+    });
+    expect(await screen.findByText(/was accepted for broadcast/i)).toBeInTheDocument();
+  });
+
+  it("keeps transaction controls disabled when the wallet is not at the exact tip", async () => {
+    const user = userEvent.setup();
+    const bridge = installBridge({
+      status: jest.fn().mockResolvedValue({
+        network: "Wcash Testnet",
+        ticker: "TWC",
+        storage_namespace: "wcashtestnet-v5",
+        state: "database-and-secret-ready",
+        wallet,
+      }),
+      balance: jest.fn().mockResolvedValue(balance(101, 100)),
+    });
+    render(<WcashWallet />);
+
+    await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    expect(await screen.findByRole("button", { name: "Review payment" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Review shielding" })).toBeDisabled();
+    expect(bridge.validateRecipient).not.toHaveBeenCalled();
+    expect(bridge.send).not.toHaveBeenCalled();
+  });
+
+  it("requires mature coinbase before reviewing shielding and allows a local cancellation", async () => {
+    const user = userEvent.setup();
+    const matureAccount = {
+      ...balanceAccount,
+      transparent_coinbase_spendable_zat: 625_000_000,
+      transparent_coinbase_pending_zat: 0,
+    };
+    const bridge = installBridge({
+      status: jest.fn().mockResolvedValue({
+        network: "Wcash Testnet",
+        ticker: "TWC",
+        storage_namespace: "wcashtestnet-v5",
+        state: "database-and-secret-ready",
+        wallet,
+      }),
+      balance: jest.fn().mockResolvedValue({ ...balance(100), accounts: [matureAccount] }),
+    });
+    render(<WcashWallet />);
+
+    await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    await user.click(await screen.findByRole("button", { name: "Review shielding" }));
+    expect(await screen.findByRole("heading", { name: /Shield up to 6\.25000000 TWC/ })).toBeInTheDocument();
+    expect(screen.getByText(/own private Ironwood receiver/i)).toBeInTheDocument();
+    expect(bridge.shieldCoinbase).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Go back" }));
+    expect(bridge.shieldCoinbase).not.toHaveBeenCalled();
+  });
+
+  it("shows durable pending transactions and blocks retry at or after expiry", async () => {
+    const user = userEvent.setup();
+    const activeTxid = "b".repeat(64);
+    const expiredTxid = "c".repeat(64);
+    const bridge = installBridge({
+      status: jest.fn().mockResolvedValue({
+        network: "Wcash Testnet",
+        ticker: "TWC",
+        storage_namespace: "wcashtestnet-v5",
+        state: "database-and-secret-ready",
+        wallet,
+      }),
+      balance: jest.fn().mockResolvedValue(balance(100)),
+      pendingTransactions: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        transactions: [
+          { txid: activeTxid, branch_id: "b3cfd27e", expiry_height: 120 },
+          { txid: expiredTxid, branch_id: "b3cfd27e", expiry_height: 100 },
+        ],
+        next_cursor: null,
+      }),
+      rebroadcastPending: jest.fn().mockResolvedValue({
+        ...broadcastResult("rebroadcast_pending"),
+        txid: activeTxid,
+        broadcast: {
+          txid: activeTxid,
+          disposition: "already_known",
+          status: { state: "mempool" },
+        },
+      }),
+    });
+    render(<WcashWallet />);
+
+    await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    expect(await screen.findByText(activeTxid)).toBeInTheDocument();
+    expect(screen.getByText(expiredTxid)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review payment" })).toBeDisabled();
+    expect(screen.getByText(/Resolve the signed pending transaction/i)).toBeInTheDocument();
+    const retryButtons = screen.getAllByRole("button", { name: "Retry exact transaction" });
+    expect(retryButtons[0]).toBeEnabled();
+    expect(retryButtons[1]).toBeDisabled();
+    await user.click(retryButtons[0]);
+    await waitFor(() => expect(bridge.rebroadcastPending).toHaveBeenCalledWith(activeTxid));
+    expect(screen.getByText(/never creates a replacement automatically/i)).toBeInTheDocument();
   });
 });

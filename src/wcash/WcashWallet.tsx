@@ -1,16 +1,25 @@
 import React, { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   WcashBalance,
+  WcashOperationResult,
+  WcashPendingTransaction,
   WcashReceivers,
+  WcashSendRequest,
   WcashWalletMetadata,
+  createSendRequest,
   formatTwc,
   isExactTipBalance,
+  memoUtf8Bytes,
   parseBalance,
   parseCreatedWallet,
   parseOpenedWallet,
+  parseOperationResult,
+  parsePendingTransactions,
+  parseRecipientValidation,
   parseRecoveryPhrase,
   parseReceivers,
   parseStatus,
+  parseCanonicalTwcAmount,
   publicErrorMessage,
   require24WordRecoveryPhrase,
 } from "./api";
@@ -34,6 +43,12 @@ const sum = (values: readonly bigint[]): bigint => values.reduce((total, value) 
 
 const isSameWallet = (left: WcashWalletMetadata, right: WcashWalletMetadata): boolean =>
   left.accountId === right.accountId && left.birthdayHeight === right.birthdayHeight;
+
+interface SendReview {
+  readonly request: WcashSendRequest;
+  readonly amountZat: bigint;
+  readonly memoBytes: number;
+}
 
 const WcashHeader = () => (
   <header className="warden-header">
@@ -85,6 +100,32 @@ const WcashWallet = () => {
   const [confirmation, setConfirmation] = useState<Record<number, string>>({});
   const [pendingIntent, setPendingIntent] = useState<"create" | "restore" | null>(null);
   const [pendingBirthday, setPendingBirthday] = useState<number | null>(null);
+  const [sendAddress, setSendAddress] = useState("");
+  const [sendAmount, setSendAmount] = useState("");
+  const [sendMemo, setSendMemo] = useState("");
+  const [sendReview, setSendReview] = useState<SendReview | null>(null);
+  const [shieldReview, setShieldReview] = useState(false);
+  const [pendingTransactions, setPendingTransactions] = useState<readonly WcashPendingTransaction[]>([]);
+  const [transactionNote, setTransactionNote] = useState<string | null>(null);
+
+  const refreshPendingTransactions = useCallback(async () => {
+    const transactions: WcashPendingTransaction[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+
+    for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+      const page = parsePendingTransactions(await window.wcash.pendingTransactions(cursor));
+      transactions.push(...page.transactions);
+      if (page.nextCursor === null) {
+        setPendingTransactions(transactions);
+        return;
+      }
+      if (seenCursors.has(page.nextCursor)) throw new Error("Pending transaction pagination did not advance");
+      seenCursors.add(page.nextCursor);
+      cursor = page.nextCursor;
+    }
+    throw new Error("Pending transaction list exceeded its safety limit");
+  }, []);
 
   const bootstrap = useCallback(async () => {
     setScreen("boot");
@@ -172,6 +213,13 @@ const WcashWallet = () => {
       }
     } catch {
       setSyncNote("Balance withheld until a complete exact-tip synchronization succeeds.");
+    }
+
+    try {
+      await refreshPendingTransactions();
+    } catch (cause) {
+      setPendingTransactions([]);
+      setError(publicErrorMessage(cause));
     }
   };
 
@@ -335,6 +383,7 @@ const WcashWallet = () => {
       }
       setBalance(current);
       setSyncNote(`Verified at block ${current.chainTipHeight.toLocaleString()}.`);
+      await refreshPendingTransactions();
     } catch (cause) {
       setBalance(null);
       setSyncNote("Balance remains hidden because synchronization did not complete.");
@@ -353,6 +402,138 @@ const WcashWallet = () => {
     }
   };
 
+  const refreshAfterTransaction = async () => {
+    try {
+      await refreshPendingTransactions();
+    } catch (cause) {
+      setError(publicErrorMessage(cause));
+    }
+    try {
+      const current = parseBalance(await window.wcash.balance());
+      if (isExactTipBalance(current)) {
+        setBalance(current);
+        setSyncNote(`Verified at block ${current.chainTipHeight.toLocaleString()}.`);
+      } else {
+        setBalance(null);
+        setSyncNote("The chain tip moved. Synchronize again before authorizing another transaction.");
+      }
+    } catch {
+      setBalance(null);
+      setSyncNote("Balance withheld until a complete exact-tip synchronization succeeds.");
+    }
+  };
+
+  const describeOperation = (result: Exclude<WcashOperationResult, { outcome: "cancelled" }>): string => {
+    if (result.outcome === "recovery_required") {
+      return `Transaction ${result.txid} is signed and stored, but broadcast could not be confirmed. Retry this exact transaction below; do not create a replacement.`;
+    }
+    const state = result.broadcast?.status.state === "mined" ? "already mined" : "accepted for broadcast";
+    const fee = result.feeZat === null ? "" : ` Fee: ${formatTwc(result.feeZat)} TWC.`;
+    return `Transaction ${result.txid} was ${state}.${fee}`;
+  };
+
+  const reviewSend = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!balance || !isExactTipBalance(balance) || syncing || busy) {
+      setError("Synchronize to the exact Wcash Testnet tip before reviewing a payment.");
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+    setTransactionNote(null);
+    try {
+      const request = createSendRequest(sendAddress, sendAmount, sendMemo);
+      const validation = parseRecipientValidation(await window.wcash.validateRecipient(request.payments[0].address));
+      if (!validation.valid) throw new Error(validation.error.message);
+      const canonicalRequest = createSendRequest(
+        validation.canonicalAddress,
+        request.payments[0].amount,
+        request.payments[0].memo ?? "",
+      );
+      const { amountZat } = parseCanonicalTwcAmount(canonicalRequest.payments[0].amount);
+      const spendable = sum(balance.accounts.map((account) => account.ironwoodSpendableZat));
+      if (amountZat > spendable) throw new Error("Payment amount exceeds the exact-tip private spendable balance.");
+      setSendReview(
+        Object.freeze({
+          request: canonicalRequest,
+          amountZat,
+          memoBytes: memoUtf8Bytes(canonicalRequest.payments[0].memo ?? ""),
+        }),
+      );
+    } catch (cause) {
+      setError(publicErrorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmReviewedSend = async () => {
+    const reviewed = sendReview;
+    if (!reviewed || busy || syncing) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = parseOperationResult(await window.wcash.send(reviewed.request), "send");
+      if (result.outcome === "cancelled") {
+        setTransactionNote("Payment cancelled before signing. No transaction was created.");
+        return;
+      }
+      setTransactionNote(describeOperation(result));
+      setSendReview(null);
+      setSendAddress("");
+      setSendAmount("");
+      setSendMemo("");
+      await refreshAfterTransaction();
+    } catch (cause) {
+      setError(publicErrorMessage(cause));
+      await refreshAfterTransaction();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmShieldCoinbase = async () => {
+    if (!shieldReview || busy || syncing) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = parseOperationResult(await window.wcash.shieldCoinbase(), "shield_coinbase");
+      if (result.outcome === "cancelled") {
+        setTransactionNote("Shielding cancelled before signing. No transaction was created.");
+        return;
+      }
+      setTransactionNote(describeOperation(result));
+      setShieldReview(false);
+      await refreshAfterTransaction();
+    } catch (cause) {
+      setError(publicErrorMessage(cause));
+      await refreshAfterTransaction();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const retryPendingTransaction = async (transaction: WcashPendingTransaction) => {
+    if (!balance || !isExactTipBalance(balance) || balance.chainTipHeight >= transaction.expiryHeight) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = parseOperationResult(
+        await window.wcash.rebroadcastPending(transaction.txid),
+        "rebroadcast_pending",
+      );
+      if (result.outcome === "cancelled") throw new Error("Pending transaction retry was unexpectedly cancelled.");
+      setTransactionNote(describeOperation(result));
+      await refreshAfterTransaction();
+    } catch (cause) {
+      setError(publicErrorMessage(cause));
+      await refreshAfterTransaction();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const totals = useMemo(() => {
     if (!balance) return null;
     return {
@@ -364,6 +545,14 @@ const WcashWallet = () => {
       coinbasePending: sum(balance.accounts.map((account) => account.transparentCoinbasePendingZat)),
     };
   }, [balance]);
+
+  const exactTipReady = balance !== null && isExactTipBalance(balance);
+  const transactionsBusy = busy || syncing;
+  const hasPendingTransaction = pendingTransactions.length > 0;
+  const canReviewSend =
+    exactTipReady && !transactionsBusy && !hasPendingTransaction && (totals?.privateSpendable ?? 0n) > 0n;
+  const canReviewShield =
+    exactTipReady && !transactionsBusy && !hasPendingTransaction && (totals?.coinbaseSpendable ?? 0n) > 0n;
 
   const phraseWords = pendingPhrase?.split(" ") ?? [];
 
@@ -633,6 +822,220 @@ const WcashWallet = () => {
                 Amounts are not displayed from stale or partially scanned wallet state.
               </div>
             )}
+
+            {transactionNote ? (
+              <div className="warden-transaction-note" role="status">
+                <strong>Transaction status</strong>
+                <p>{transactionNote}</p>
+              </div>
+            ) : null}
+
+            <section className="warden-transactions" aria-labelledby="send-title">
+              <div className="warden-section-heading">
+                <div>
+                  <p className="warden-kicker">Private transfer</p>
+                  <h2 id="send-title">Send TWC</h2>
+                </div>
+                <span>Ironwood only</span>
+              </div>
+              <form className="warden-send-form" onSubmit={(event) => void reviewSend(event)}>
+                <label htmlFor="send-address">Wcash Testnet recipient</label>
+                <input
+                  id="send-address"
+                  type="text"
+                  value={sendAddress}
+                  onChange={(event) => setSendAddress(event.target.value)}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  disabled={transactionsBusy}
+                  placeholder="wutest1…"
+                />
+                <div className="warden-send-row">
+                  <label>
+                    Amount (TWC)
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={sendAmount}
+                      onChange={(event) => setSendAmount(event.target.value)}
+                      autoComplete="off"
+                      disabled={transactionsBusy}
+                      placeholder="0.00000001"
+                    />
+                  </label>
+                  <label>
+                    Private memo (optional)
+                    <textarea
+                      value={sendMemo}
+                      onChange={(event) => setSendMemo(event.target.value)}
+                      autoComplete="off"
+                      rows={3}
+                      disabled={transactionsBusy}
+                    />
+                    <small data-over-limit={memoUtf8Bytes(sendMemo) > 512 ? "true" : "false"}>
+                      {memoUtf8Bytes(sendMemo)} / 512 UTF-8 bytes
+                    </small>
+                  </label>
+                </div>
+                <p className="warden-help">
+                  The exact ZIP-317 fee is calculated during signing. Review does not sign or reserve funds.
+                </p>
+                {hasPendingTransaction ? (
+                  <p className="warden-help">
+                    Resolve the signed pending transaction below before creating another transaction.
+                  </p>
+                ) : null}
+                <button className="warden-button" type="submit" disabled={!canReviewSend}>
+                  {busy ? "Checking…" : "Review payment"}
+                </button>
+              </form>
+
+              {sendReview ? (
+                <div className="warden-review" role="dialog" aria-modal="true" aria-labelledby="payment-review-title">
+                  <p className="warden-kicker">Wcash Testnet · final app review</p>
+                  <h3 id="payment-review-title">Check every payment detail</h3>
+                  <dl>
+                    <div>
+                      <dt>Recipient</dt>
+                      <dd>
+                        <code>{sendReview.request.payments[0].address}</code>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Amount</dt>
+                      <dd>
+                        {sendReview.request.payments[0].amount} TWC · {sendReview.amountZat.toString()} zatoshis
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Memo · {sendReview.memoBytes} UTF-8 bytes</dt>
+                      <dd className="warden-review-memo">{sendReview.request.payments[0].memo || "No memo"}</dd>
+                    </div>
+                  </dl>
+                  <p>
+                    Continue only if the full address and amount are correct. The operating system will show a second,
+                    independent confirmation before device authentication and signing.
+                  </p>
+                  <div className="warden-review-actions">
+                    <button
+                      className="warden-button warden-button--secondary"
+                      type="button"
+                      disabled={transactionsBusy}
+                      onClick={() => setSendReview(null)}
+                    >
+                      Go back
+                    </button>
+                    <button
+                      className="warden-button"
+                      type="button"
+                      disabled={transactionsBusy}
+                      onClick={() => void confirmReviewedSend()}
+                    >
+                      {busy ? "Authorizing…" : "Continue to system confirmation"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </section>
+
+            <section className="warden-transactions" aria-labelledby="shield-title">
+              <div className="warden-section-heading">
+                <div>
+                  <p className="warden-kicker">Mining rewards</p>
+                  <h2 id="shield-title">Shield coinbase</h2>
+                </div>
+                <span>{totals ? `${formatTwc(totals.coinbaseSpendable)} TWC mature` : "Exact tip required"}</span>
+              </div>
+              <p>
+                Move mature transparent mining rewards into this wallet&apos;s private Ironwood receiver before normal
+                spending. Up to 100 mature inputs are selected; the network fee is deducted from the shielded value.
+              </p>
+              {(totals?.coinbasePending ?? 0n) > 0n ? (
+                <p className="warden-help">
+                  {formatTwc(totals?.coinbasePending ?? 0n)} TWC is immature or pending and cannot be shielded yet.
+                </p>
+              ) : null}
+              <button
+                className="warden-button warden-button--secondary"
+                type="button"
+                disabled={!canReviewShield}
+                onClick={() => setShieldReview(true)}
+              >
+                Review shielding
+              </button>
+              {shieldReview ? (
+                <div className="warden-review" role="dialog" aria-modal="true" aria-labelledby="shield-review-title">
+                  <p className="warden-kicker">Wcash Testnet · mining privacy</p>
+                  <h3 id="shield-review-title">Shield up to {formatTwc(totals?.coinbaseSpendable ?? 0n)} TWC</h3>
+                  <p>
+                    Destination: this wallet&apos;s own private Ironwood receiver. The exact selected amount and ZIP-317
+                    fee are calculated during signing. This creates and broadcasts a real Testnet transaction.
+                  </p>
+                  <div className="warden-review-actions">
+                    <button
+                      className="warden-button warden-button--secondary"
+                      type="button"
+                      disabled={transactionsBusy}
+                      onClick={() => setShieldReview(false)}
+                    >
+                      Go back
+                    </button>
+                    <button
+                      className="warden-button"
+                      type="button"
+                      disabled={transactionsBusy}
+                      onClick={() => void confirmShieldCoinbase()}
+                    >
+                      {busy ? "Authorizing…" : "Continue to system confirmation"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </section>
+
+            <section className="warden-transactions" aria-labelledby="pending-title">
+              <div className="warden-section-heading">
+                <div>
+                  <p className="warden-kicker">Recovery</p>
+                  <h2 id="pending-title">Signed, not yet mined</h2>
+                </div>
+                <span>{pendingTransactions.length}</span>
+              </div>
+              {pendingTransactions.length === 0 ? (
+                <p>No durable pending transactions.</p>
+              ) : (
+                <ul className="warden-pending-list">
+                  {pendingTransactions.map((transaction) => {
+                    const expired = balance !== null && balance.chainTipHeight >= transaction.expiryHeight;
+                    return (
+                      <li key={transaction.txid}>
+                        <div>
+                          <code>{transaction.txid}</code>
+                          <span>
+                            Expires at block {transaction.expiryHeight.toLocaleString()}
+                            {expired ? " · expired for rebroadcast" : ""}
+                          </span>
+                        </div>
+                        <button
+                          className="warden-button warden-button--secondary"
+                          type="button"
+                          disabled={transactionsBusy || !exactTipReady || expired}
+                          onClick={() => void retryPendingTransaction(transaction)}
+                        >
+                          Retry exact transaction
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              <p className="warden-help">
+                Retry reuses the exact stored signed bytes. Wcash Warden never creates a replacement automatically and
+                does not promise cancellation.
+              </p>
+            </section>
 
             <section className="warden-addresses" aria-labelledby="receive-title">
               <h2 id="receive-title">Receive</h2>
