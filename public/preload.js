@@ -3,6 +3,13 @@
 // proxied to the main process via IPC (see ALLOWED_INVOKE below).
 const { contextBridge, ipcRenderer } = require("electron");
 
+const WCASH_RUNTIME = require("../config/wcash-runtime.json");
+const WCASH_RUNTIME_READY = WCASH_RUNTIME.runtimeReady;
+const runtimeUnavailable = () =>
+  Promise.reject(new Error("Wallet runtime disabled until a reviewed Wcash wallet-core commit is pinned"));
+const invokeWhenReady = (channel, ...args) =>
+  WCASH_RUNTIME_READY ? ipcRenderer.invoke(channel, ...args) : runtimeUnavailable();
+
 // All native methods run in the main process — every call is an IPC round-trip.
 // This allows sandbox:true on BrowserWindow and correct security-scoped bookmark handling.
 const _ALL_NATIVE_METHODS = [
@@ -83,7 +90,7 @@ const _ALL_NATIVE_METHODS = [
 
 const nativeForRenderer = {};
 for (const method of _ALL_NATIVE_METHODS) {
-  nativeForRenderer[method] = (...args) => ipcRenderer.invoke(`native:${method}`, ...args);
+  nativeForRenderer[method] = (...args) => invokeWhenReady(`native:${method}`, ...args);
 }
 
 // Allowed IPC channels that main → renderer can push.
@@ -139,12 +146,28 @@ const ALLOWED_INVOKE = new Set([
   "mixnet:attach-current",
 ]);
 
+if (!WCASH_RUNTIME_READY) {
+  ALLOWED_RECEIVE.clear();
+  ALLOWED_INVOKE.clear();
+}
+
+contextBridge.exposeInMainWorld(
+  "wcashShell",
+  Object.freeze({
+    productName: WCASH_RUNTIME.productName,
+    network: WCASH_RUNTIME.network,
+    ticker: WCASH_RUNTIME.ticker,
+    runtimeReady: WCASH_RUNTIME_READY,
+    coreRevision: WCASH_RUNTIME.coreRevision,
+  }),
+);
+
 contextBridge.exposeInMainWorld("electronAPI", {
   native: nativeForRenderer,
   isSandboxed: process.platform === "darwin" && process.mas === true,
 
   clipboard: {
-    writeText: (text) => ipcRenderer.invoke("clipboard:writeText", text),
+    writeText: (text) => invokeWhenReady("clipboard:writeText", text),
   },
 
   shell: {
@@ -152,7 +175,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
       // Only allow https:// URLs to prevent protocol injection.
       // Main process re-validates as defense in depth.
       if (typeof url === "string" && url.startsWith("https://")) {
-        return ipcRenderer.invoke("shell:openExternal", url);
+        return invokeWhenReady("shell:openExternal", url);
       }
     },
   },
@@ -187,11 +210,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
 
   fs: {
-    existsSync: (p) => ipcRenderer.invoke("fs:existsSync", p),
+    existsSync: (p) => invokeWhenReady("fs:existsSync", p),
     promises: {
-      mkdir: (p, opts) => ipcRenderer.invoke("fs:mkdir", p, opts),
-      writeFile: (p, data) => ipcRenderer.invoke("fs:writeFile", p, data),
-      readFile: (p) => ipcRenderer.invoke("fs:readFile", p),
+      mkdir: (p, opts) => invokeWhenReady("fs:mkdir", p, opts),
+      writeFile: (p, data) => invokeWhenReady("fs:writeFile", p, data),
+      readFile: (p) => invokeWhenReady("fs:readFile", p),
     },
   },
 });

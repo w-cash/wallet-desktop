@@ -14,6 +14,7 @@ const chalk = require("chalk");
 const webpack = require("webpack");
 const configFactory = require("../config/webpack.config");
 const paths = require("../config/paths");
+const wcashRuntime = require("../config/wcash-runtime.json");
 
 // Check that entry files exist
 [paths.appHtml, paths.appIndexJs].forEach((filePath) => {
@@ -36,7 +37,11 @@ build()
     } else {
       console.log(chalk.green("Compiled successfully.\n"));
     }
-    copyNativeNode();
+    if (wcashRuntime.runtimeReady) {
+      copyNativeNode();
+    } else {
+      console.log(chalk.yellow("Skipped native.node: Wcash wallet runtime is intentionally disabled."));
+    }
     printFileSizes(paths.appBuild);
 
     if (writeStatsJson) {

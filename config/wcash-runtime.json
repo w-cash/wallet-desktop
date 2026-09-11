@@ -1,0 +1,8 @@
+{
+  "appId": "com.wcashwallet.warden.testnet",
+  "productName": "Wcash Warden Testnet",
+  "runtimeReady": false,
+  "coreRevision": null,
+  "network": "Wcash Testnet",
+  "ticker": "TWC"
+}

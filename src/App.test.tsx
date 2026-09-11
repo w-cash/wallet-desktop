@@ -6,7 +6,8 @@ test("renders without crashing", () => {
   render(<App />);
 });
 
-test("displays app version string", () => {
+test("displays the Wcash safety shell", () => {
   render(<App />);
-  expect(screen.getByText(/Zingo PC v/i)).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Wcash Warden" })).toBeInTheDocument();
+  expect(screen.getByText("Wallet runtime not installed")).toBeInTheDocument();
 });

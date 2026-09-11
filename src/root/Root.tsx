@@ -1,11 +1,6 @@
 import React from "react";
-import { MemoryRouter as Router } from "react-router-dom";
-import Routes from "./Routes";
+import WcashRuntimeGate from "./WcashRuntimeGate";
 
-const Root = () => (
-  <Router initialEntries={["/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-    <Routes />
-  </Router>
-);
+const Root = () => <WcashRuntimeGate />;
 
 export default Root;

@@ -2,6 +2,19 @@ const { app, BrowserWindow, Menu, shell, ipcMain, dialog, session, clipboard } =
 const os = require("os");
 const path = require("path");
 const fs = require("fs");
+
+const WCASH_RUNTIME = require("../config/wcash-runtime.json");
+const WCASH_RUNTIME_READY = WCASH_RUNTIME.runtimeReady;
+const WCASH_APP_ID = WCASH_RUNTIME.appId;
+const WCASH_PRODUCT_NAME = WCASH_RUNTIME.productName;
+const WCASH_USER_DATA_NAMESPACE = WCASH_PRODUCT_NAME;
+
+// Keep this pre-core product completely separate from Zingo/Zcash data. This
+// must run before settings or electron-json-storage are initialized.
+app.setName(WCASH_PRODUCT_NAME);
+app.setPath("userData", path.join(app.getPath("appData"), WCASH_USER_DATA_NAMESPACE));
+if (process.platform === "win32") app.setAppUserModelId(WCASH_APP_ID);
+
 const settings = require("electron-settings");
 const storage = require("electron-json-storage");
 const { createServerRegistry } = require("./serverRegistry");
@@ -62,10 +75,10 @@ class MenuBuilder {
     const { mainWindow } = this;
 
     const subMenuAbout = {
-      label: "Zingo PC",
+      label: WCASH_PRODUCT_NAME,
       submenu: [
         {
-          label: "About Zingo PC",
+          label: `About ${WCASH_PRODUCT_NAME}`,
           selector: "orderFrontStandardAboutPanel:",
           click: () => {
             mainWindow.webContents.send("about");
@@ -75,7 +88,7 @@ class MenuBuilder {
         { label: "Services", submenu: [] },
         { type: "separator" },
         {
-          label: "Hide Zingo PC",
+          label: `Hide ${WCASH_PRODUCT_NAME}`,
           accelerator: "Command+H",
           selector: "hide:",
         },
@@ -219,13 +232,13 @@ class MenuBuilder {
         {
           label: "Check github.com for updates",
           click() {
-            shell.openExternal("https://github.com/zingolabs/zingo-pc");
+            shell.openExternal("https://github.com/w-cash/wallet-desktop");
           },
         },
         {
           label: "File a bug...",
           click() {
-            shell.openExternal("https://github.com/zingolabs/zingo-pc/issues");
+            shell.openExternal("https://github.com/w-cash/wallet-desktop/issues");
           },
         },
       ],
@@ -336,7 +349,7 @@ class MenuBuilder {
         label: "Help",
         submenu: [
           {
-            label: "About Zingo PC",
+            label: `About ${WCASH_PRODUCT_NAME}`,
             click: () => {
               mainWindow.webContents.send("about");
             },
@@ -344,13 +357,13 @@ class MenuBuilder {
           {
             label: "Check github.com for updates",
             click() {
-              shell.openExternal("https://github.com/zingolabs/zingo-pc/releases");
+              shell.openExternal("https://github.com/w-cash/wallet-desktop/releases");
             },
           },
           {
             label: "File a bug...",
             click() {
-              shell.openExternal("https://github.com/zingolabs/zingo-pc/issues");
+              shell.openExternal("https://github.com/w-cash/wallet-desktop/issues");
             },
           },
         ],
@@ -474,7 +487,7 @@ if (process.platform === "linux") {
 // Mac/MAS only: the OS routes zcash: links here whether the app is open or closed.
 // Must be registered before app.whenReady() to catch cold-start links.
 // On Windows/Linux, URIs arrive via second-instance argv — open-url is not fired there.
-if (process.platform === "darwin") {
+if (WCASH_RUNTIME_READY && process.platform === "darwin") {
   app.on("open-url", (event, url) => {
     event.preventDefault();
     handleZcashUri(url);
@@ -495,7 +508,7 @@ if (process.platform === "darwin") {
     app.exit(0);
   } else {
     app.on("second-instance", (_event, argv) => {
-      const uri = argv.find((a) => a.startsWith("zcash:"));
+      const uri = WCASH_RUNTIME_READY ? argv.find((a) => a.startsWith("zcash:")) : null;
       if (uri) handleZcashUri(uri);
       const win = BrowserWindow.getAllWindows()[0];
       if (win) {
@@ -524,6 +537,7 @@ const AUTH_PROBE_TIMEOUT_MS = 3000;
 const AUTH_VERIFY_TIMEOUT_MS = 60000;
 
 ipcMain.handle("auth:check", async () => {
+  if (!WCASH_RUNTIME_READY) return "not_supported";
   const withTimeout = withAuthTimeout;
 
   if (process.platform === "win32") {
@@ -537,8 +551,8 @@ ipcMain.handle("auth:check", async () => {
           const { execFile } = require("child_process");
           // polkit 0.105 (Linux Mint / Ubuntu) exits with code 1 even when the
           // action exists, so check stdout instead of the exit code.
-          execFile("pkaction", ["--action-id", "co.zingo.pc.authenticate"], (_err, stdout) => {
-            resolve(stdout && stdout.includes("co.zingo.pc.authenticate") ? "available" : "not_installed_linux");
+          execFile("pkaction", ["--action-id", `${WCASH_APP_ID}.authenticate`], (_err, stdout) => {
+            resolve(stdout && stdout.includes(`${WCASH_APP_ID}.authenticate`) ? "available" : "not_installed_linux");
           });
         }),
       "not_installed_linux",
@@ -548,6 +562,7 @@ ipcMain.handle("auth:check", async () => {
 });
 
 ipcMain.handle("auth:verify", async (_e, reason) => {
+  if (!WCASH_RUNTIME_READY) return { success: false, reason: "wcash-runtime-not-ready" };
   // Universal rule: when device authentication is NOT available on the current
   // platform / install (no Touch ID enrolled, Windows Hello not set up, polkit
   // action not registered for AppImage / dev runs, etc.) we silently succeed.
@@ -600,15 +615,15 @@ ipcMain.handle("auth:verify", async (_e, reason) => {
       // Probe the polkit action first; if it's not registered (dev mode,
       // AppImage, missing .deb post-install) skip verification rather than
       // failing the entire send flow.
-      execFile("pkaction", ["--action-id", "co.zingo.pc.authenticate"], (_err, stdout) => {
-        const available = stdout && stdout.includes("co.zingo.pc.authenticate");
+      execFile("pkaction", ["--action-id", `${WCASH_APP_ID}.authenticate`], (_err, stdout) => {
+        const available = stdout && stdout.includes(`${WCASH_APP_ID}.authenticate`);
         if (!available) {
           resolve({ success: true });
           return;
         }
         execFile(
           "pkcheck",
-          ["--action-id", "co.zingo.pc.authenticate", "--process", String(process.pid), "--allow-user-interaction"],
+          ["--action-id", `${WCASH_APP_ID}.authenticate`, "--process", String(process.pid), "--allow-user-interaction"],
           (err) => resolve({ success: !err }),
         );
       });
@@ -620,7 +635,7 @@ ipcMain.handle("auth:verify", async (_e, reason) => {
 // ── Keychain-backed requireDeviceAuth ─────────────────────────────────────
 // Missing or deleted entry is treated as true (auth required by default).
 // Only an explicit "false" stored by the user disables the feature.
-const KEYTAR_SERVICE = "Zingo PC";
+const KEYTAR_SERVICE = WCASH_PRODUCT_NAME;
 const KEYTAR_ACCOUNT = "requireDeviceAuth";
 
 // In-process cache of the value so we only hit Keychain ONCE per session.
@@ -678,6 +693,7 @@ const serverRegistry = createServerRegistry({
 });
 
 ipcMain.handle("servers:fetchList", async (_e, chain) => {
+  if (!WCASH_RUNTIME_READY) return { ok: false, reason: "wcash-runtime-not-ready" };
   const servers = await serverRegistry.load(chain);
   return servers ? { ok: true, servers } : { ok: false };
 });
@@ -703,6 +719,7 @@ function getZnsClient(chain) {
 }
 
 ipcMain.handle("zns:resolve", async (_e, name, chain) => {
+  if (!WCASH_RUNTIME_READY) return { ok: false, reason: "wcash-runtime-not-ready" };
   if (typeof name !== "string" || !/^[a-z0-9]{1,62}$/.test(name)) {
     return { ok: false, reason: "invalid-name" };
   }
@@ -824,6 +841,7 @@ let _mainNative = null;
 // arch mismatch); this keeps that sentence and puts it in front of the user.
 let _mainNativeError = null;
 function getNative() {
+  if (!WCASH_RUNTIME_READY) return null;
   if (!_mainNative && !_mainNativeError) {
     try {
       _mainNative = require(_nativePath);
@@ -837,6 +855,9 @@ function getNative() {
 
 // Throws the load failure rather than letting callers trip over a null.
 function requireNative(method) {
+  if (!WCASH_RUNTIME_READY) {
+    throw new Error(`native.${method} disabled until a reviewed Wcash wallet-core commit is pinned`);
+  }
   const native = getNative();
   if (native && typeof native[method] === "function") {
     return native;
@@ -1693,6 +1714,7 @@ function createWindow() {
     minHeight: 600,
     maxWidth: 1500,
     maxHeight: 800,
+    title: WCASH_PRODUCT_NAME,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -1752,8 +1774,12 @@ function createWindow() {
     });
   }
 
-  const menuBuilder = new MenuBuilder(mainWindow);
-  menuBuilder.buildMenu();
+  if (WCASH_RUNTIME_READY) {
+    const menuBuilder = new MenuBuilder(mainWindow);
+    menuBuilder.buildMenu();
+  } else {
+    Menu.setApplicationMenu(null);
+  }
 
   if (sandboxDisabled) {
     // Log to startup.log if available (log() is only defined in the !isDev block above).
@@ -1775,6 +1801,10 @@ function createWindow() {
   }
 
   mainWindow.on("close", (event) => {
+    // The pre-core renderer has no wallet state to flush and intentionally has
+    // no wallet IPC bridge, so close normally without the legacy save handshake.
+    if (!WCASH_RUNTIME_READY) return;
+
     // If we are clear to close, then return and allow everything to close
     if (proceedToClose) {
       return;
@@ -1823,7 +1853,7 @@ function createWindow() {
 // zingo-pc-uri.sh wrapper on Linux, which avoids passing it as a positional
 // argv that Electron's runtime misinterprets as the app-module path) or as a
 // direct argv entry on Windows.
-if (process.platform !== "darwin") {
+if (WCASH_RUNTIME_READY && process.platform !== "darwin") {
   const envUri = process.env.ZINGO_PC_URI;
   const coldStartUri =
     envUri && envUri.startsWith("zcash:") ? envUri : process.argv.find((a) => a.startsWith("zcash:"));
@@ -2100,7 +2130,7 @@ app.whenReady().then(async () => {
   // - Windows/Linux packaged: the installer registers it, but calling this too doesn't hurt.
   // - Dev mode on any platform: needed because electron-builder hasn't run.
   const isInSandbox = process.mas || !!process.env.FLATPAK_ID;
-  if (!isInSandbox) {
+  if (WCASH_RUNTIME_READY && !isInSandbox) {
     if (process.defaultApp) {
       // Dev mode on Windows/Linux: register so URIs reach this instance via second-instance.
       // Skipped on macOS: cold-start doesn't work in dev anyway, and registering here would
@@ -2131,7 +2161,7 @@ app.whenReady().then(async () => {
   // LoadingScreen asks, the request has usually already landed, so `auto` costs
   // the launch nothing. Testnet is fetched on demand — far rarer, and no reason
   // to spend a second clearnet request on every launch.
-  serverRegistry.load("main");
+  if (WCASH_RUNTIME_READY) serverRegistry.load("main");
 
   if (isDev) {
     try {
@@ -2196,8 +2226,10 @@ app.whenReady().then(async () => {
   });
   session.defaultSession.setPermissionCheckHandler(() => false);
 
-  await maybeRunDmgToMasMigration();
-  await maybeRunDebAppImageToFlatpakMigration();
+  if (WCASH_RUNTIME_READY) {
+    await maybeRunDmgToMasMigration();
+    await maybeRunDebAppImageToFlatpakMigration();
+  }
 
   createWindow();
 });

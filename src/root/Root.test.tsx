@@ -1,17 +1,30 @@
 import React from "react";
 import { render, screen } from "@testing-library/react";
+import Root from "./Root";
 
-// Stub out Routes — Root is only responsible for wrapping it in the router.
-// Mounting the real Routes would require setting up window.electronAPI, RPC,
-// AddressbookImpl etc. and is covered by its own test (when present).
-jest.mock("./Routes", () => () => <div data-testid="routes-stub">routes</div>);
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const Root = require("./Root").default;
-
-describe("Root", () => {
-  it("renders the router with Routes inside", () => {
+describe("Wcash pre-core root", () => {
+  it("renders an explicit Testnet-only runtime gate", () => {
     render(<Root />);
-    expect(screen.getByTestId("routes-stub")).toBeInTheDocument();
+
+    expect(screen.getByRole("heading", { name: "Wcash Warden" })).toBeInTheDocument();
+    expect(screen.getByText("Wallet runtime not installed")).toBeInTheDocument();
+    expect(screen.getByText("Wcash Testnet only")).toBeInTheDocument();
+    expect(screen.getByText("Awaiting reviewed wallet-core commit")).toBeInTheDocument();
+  });
+
+  it("keeps every planned wallet action disabled", () => {
+    render(<Root />);
+
+    expect(screen.getAllByRole("button")).toHaveLength(3);
+    screen.getAllByRole("button").forEach((button) => expect(button).toBeDisabled());
+  });
+
+  it("does not present legacy online features", () => {
+    render(<Root />);
+
+    expect(screen.queryByText(/swap/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/donat/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/price/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/zns/i)).not.toBeInTheDocument();
   });
 });

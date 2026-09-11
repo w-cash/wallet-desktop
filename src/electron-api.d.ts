@@ -12,6 +12,13 @@ type RendererNativeAPI = {
 
 declare global {
   interface Window {
+    wcashShell: {
+      readonly productName: "Wcash Warden Testnet";
+      readonly network: "Wcash Testnet";
+      readonly ticker: "TWC";
+      readonly runtimeReady: false;
+      readonly coreRevision: null;
+    };
     electronAPI: {
       native: RendererNativeAPI;
       isSandboxed: boolean;
