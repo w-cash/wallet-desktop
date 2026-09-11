@@ -105,6 +105,13 @@ export function migrate_to_ironwood(): Promise<string>;
 export function cancel_ironwood_migration(): Promise<string>;
 export function execute_due_parts(spacing_ms: number): Promise<string>;
 export function execute_due_parts_status(): Promise<string>;
+// Wcash Testnet transaction boundary. Results are versioned JSON strings and
+// never contain seed material or raw signed transaction bytes.
+export function wcash_validate_recipient(address: string): string;
+export function wcash_send_and_broadcast(seed_phrase: string, request_json: string): Promise<string>;
+export function wcash_shield_coinbase_and_broadcast(seed_phrase: string): Promise<string>;
+export function wcash_pending_transactions(after_cursor?: string | null): Promise<string>;
+export function wcash_rebroadcast_pending(txid: string): Promise<string>;
 export function delete_wallet(
   server_uri: string,
   chain_hint: ServerChainNameEnum,
