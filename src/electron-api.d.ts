@@ -12,6 +12,24 @@ type RendererNativeAPI = {
 
 declare global {
   interface Window {
+    wcash: {
+      readonly config: {
+        readonly productName: string;
+        readonly network: string;
+        readonly ticker: string;
+        readonly runtimeReady: boolean;
+        readonly coreRevision: string | null;
+      };
+      status: () => Promise<unknown>;
+      create: () => Promise<unknown>;
+      restore: (seedPhrase: string, birthdayHeight: number) => Promise<unknown>;
+      resumePending: () => Promise<unknown>;
+      open: () => Promise<unknown>;
+      sync: () => Promise<unknown>;
+      stopSync: () => Promise<boolean>;
+      balance: () => Promise<unknown>;
+      receivers: () => Promise<unknown>;
+    };
     wcashShell: {
       readonly productName: "Wcash Warden Testnet";
       readonly network: "Wcash Testnet";

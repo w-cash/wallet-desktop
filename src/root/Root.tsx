@@ -1,6 +1,6 @@
 import React from "react";
-import WcashRuntimeGate from "./WcashRuntimeGate";
+import WcashWallet from "../wcash/WcashWallet";
 
-const Root = () => <WcashRuntimeGate />;
+const Root = () => <WcashWallet />;
 
 export default Root;
