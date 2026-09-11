@@ -54,6 +54,7 @@
     "cargo:test": "cd native && cargo test --locked --lib && cd ..",
     "cargo:clippy": "cd native && cargo clippy --locked --all-targets -- -D warnings && cd ..",
     "cargo:update": "cd native && cargo update && cd ..",
+    "test:wcash-live-native": "node scripts/test-wcash-live-native.js",
     "build": "cross-env node scripts/build.js",
     "build:runtime": "node scripts/assert-wcash-runtime-ready.js && yarn cargo:clean && yarn neon && cross-env node scripts/build.js",
     "build-mac-x64": "node scripts/assert-wcash-runtime-ready.js && yarn cargo:clean && yarn neon-mac-x64 && cross-env node scripts/build.js",
