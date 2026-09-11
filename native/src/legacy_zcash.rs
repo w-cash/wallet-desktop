@@ -4,7 +4,10 @@ extern crate lazy_static;
 #[cfg(target_os = "macos")]
 extern "C" {
     fn check_mac_auth_available() -> std::ffi::c_int;
-    fn verify_mac_auth_sync(reason: *const std::ffi::c_char) -> std::ffi::c_int;
+    fn verify_mac_auth_sync(
+        reason: *const std::ffi::c_char,
+        timeout_millis: u64,
+    ) -> std::ffi::c_int;
     fn start_security_scoped_access(bookmark_b64: *const std::ffi::c_char) -> std::ffi::c_int;
 }
 
@@ -257,7 +260,7 @@ fn verify_mac_user(mut cx: FunctionContext) -> JsResult<JsPromise> {
     std::thread::spawn(move || {
         let c_reason = CString::new(reason.as_str())
             .unwrap_or_else(|_| CString::new("Authenticate").unwrap());
-        let success = unsafe { verify_mac_auth_sync(c_reason.as_ptr()) != 0 };
+        let success = unsafe { verify_mac_auth_sync(c_reason.as_ptr(), 55_000) != 0 };
 
         deferred.settle_with(&channel, move |mut cx| {
             let obj = cx.empty_object();

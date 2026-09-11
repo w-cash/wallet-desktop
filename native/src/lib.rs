@@ -17,7 +17,10 @@ use tokio::runtime::Runtime;
 #[cfg(target_os = "macos")]
 extern "C" {
     fn check_mac_auth_available() -> std::ffi::c_int;
-    fn verify_mac_auth_sync(reason: *const std::ffi::c_char) -> std::ffi::c_int;
+    fn verify_mac_auth_sync(
+        reason: *const std::ffi::c_char,
+        timeout_millis: u64,
+    ) -> std::ffi::c_int;
 }
 
 pub(crate) static WALLET_BASE_DIR: OnceCell<PathBuf> = OnceCell::new();
@@ -146,7 +149,10 @@ fn verify_mac_user(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     std::thread::spawn(move || {
         let reason = CString::new(reason).unwrap_or_else(|_| CString::new("Authenticate").unwrap());
-        let success = unsafe { verify_mac_auth_sync(reason.as_ptr()) != 0 };
+        // End the native LocalAuthentication request before the outer JS
+        // watchdog, so a timeout cannot leave a hidden prompt or permit an
+        // overlapping retry.
+        let success = unsafe { verify_mac_auth_sync(reason.as_ptr(), 55_000) != 0 };
 
         deferred.settle_with(&channel, move |mut cx| {
             let result = cx.empty_object();
