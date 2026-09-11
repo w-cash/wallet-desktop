@@ -2,12 +2,32 @@ import React from "react";
 import { render, screen } from "@testing-library/react";
 import App from "./App";
 
-test("renders without crashing", () => {
-  render(<App />);
+beforeEach(() => {
+  Object.defineProperty(window, "wcash", {
+    configurable: true,
+    value: {
+      config: {
+        productName: "Wcash Warden Testnet",
+        network: "Wcash Testnet",
+        ticker: "TWC",
+        runtimeReady: false,
+        coreRevision: null,
+      },
+      status: jest.fn(),
+    },
+  });
 });
 
-test("displays the Wcash safety shell", () => {
+afterEach(() => {
+  delete (window as Partial<Window>).wcash;
+});
+
+test("renders the fail-closed Wcash shell", async () => {
   render(<App />);
-  expect(screen.getByRole("heading", { name: "Wcash Warden" })).toBeInTheDocument();
-  expect(screen.getByText("Wallet runtime not installed")).toBeInTheDocument();
+  expect(screen.getByLabelText("Wcash Warden")).toBeInTheDocument();
+  expect(
+    await screen.findByRole("heading", { name: "Wcash wallet core did not pass startup checks." }),
+  ).toBeInTheDocument();
+  expect(window.wcash.status).not.toHaveBeenCalled();
+  expect(screen.queryByText(/swap/i)).not.toBeInTheDocument();
 });
