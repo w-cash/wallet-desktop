@@ -45,6 +45,17 @@ async function main() {
   }
 
   const native = require(nativePath);
+  for (const method of [
+    "wcash_validate_recipient",
+    "wcash_send_and_broadcast",
+    "wcash_shield_coinbase_and_broadcast",
+    "wcash_pending_transactions",
+    "wcash_rebroadcast_pending",
+  ]) {
+    if (typeof native[method] !== "function") {
+      throw new Error(`native transaction boundary is missing ${method}`);
+    }
+  }
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "wcash-native-live-"));
 
   try {
@@ -76,15 +87,54 @@ async function main() {
       throw new Error("the generated recovery phrase did not control the created wallet");
     }
 
-    // Do not retain or print the recovery phrase after the ownership check.
-    recoveryPhrase = undefined;
-
     const sync = parseObject("wcash_sync", await native.wcash_sync());
     requireExactTip(sync, "wcash_sync");
 
     const receivers = parseObject("wcash_receivers", await native.wcash_receivers());
     requireStringPrefix(receivers.ironwood_address, "wutest1", "Ironwood receiver");
     requireStringPrefix(receivers.transparent_coinbase_address, "WT", "transparent receiver");
+
+    const recipient = parseObject(
+      "wcash_validate_recipient",
+      native.wcash_validate_recipient(receivers.ironwood_address),
+    );
+    if (
+      recipient.valid !== true ||
+      recipient.recipient_kind !== "ironwood" ||
+      recipient.canonical_address !== receivers.ironwood_address
+    ) {
+      throw new Error("the native recipient validator rejected its Wcash Testnet receiver");
+    }
+
+    let invalidSendRejected = false;
+    try {
+      await native.wcash_send_and_broadcast(
+        recoveryPhrase,
+        JSON.stringify({
+          payments: [{ address: receivers.ironwood_address, amount: "1.0" }],
+        }),
+      );
+    } catch (_error) {
+      invalidSendRejected = true;
+    }
+    if (!invalidSendRejected) {
+      throw new Error("the native transaction boundary accepted a noncanonical amount");
+    }
+
+    const pending = parseObject("wcash_pending_transactions", await native.wcash_pending_transactions());
+    if (
+      pending.schema_version !== 1 ||
+      !Array.isArray(pending.transactions) ||
+      pending.transactions.length !== 0 ||
+      pending.next_cursor !== null ||
+      JSON.stringify(pending).includes("raw_transaction")
+    ) {
+      throw new Error("the native pending-transaction DTO violated its empty-wallet contract");
+    }
+
+    // Do not retain or print the recovery phrase after the native spending
+    // boundary has rejected the validation-only fixture.
+    recoveryPhrase = undefined;
 
     const balance = parseObject("wcash_balance", await native.wcash_balance());
     requireExactTip(balance, "wcash_balance");
@@ -112,6 +162,7 @@ async function main() {
         ironwoodPrefix: receivers.ironwood_address.slice(0, 7),
         transparentPrefix: receivers.transparent_coinbase_address.slice(0, 2),
         persistedWalletReopened: true,
+        transactionBoundaryValidated: true,
       }),
     );
   } finally {
