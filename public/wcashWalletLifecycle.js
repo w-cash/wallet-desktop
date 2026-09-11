@@ -181,16 +181,13 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
     return parseStatus(await native.wcash_status());
   }
 
-  async function classifyUnsafe({ inspectPendingWithoutDeviceAuth = false } = {}) {
+  async function classifyUnsafe({ authenticateCredential = false } = {}) {
     const status = await inspectNativeStatus();
     const databaseExists = status.wallet !== null;
-    // A fresh install has no wallet database and therefore no spend authority
-    // to protect. During public startup inspection only, read the keychain
-    // record without an extra biometric prompt so we can distinguish EMPTY
-    // from a crash-safe PENDING setup. The phrase remains main-process-only,
-    // and every operation that uses it still calls this function in the
-    // authenticated mode.
-    const credential = await readCredential(databaseExists || !inspectPendingWithoutDeviceAuth);
+    // Status/open/sync remain usable when the platform has no supported
+    // user-presence challenge. The phrase never leaves main. Every operation
+    // that can reveal it, initialize from it, or sign opts into authentication.
+    const credential = await readCredential(authenticateCredential);
 
     if (!databaseExists && credential === null) {
       return { state: LIFECYCLE_STATES.EMPTY, status };
@@ -303,6 +300,12 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
       );
     }
     return classification.credential;
+  }
+
+  function requireWalletDatabase(status) {
+    if (status.wallet === null) {
+      throw new WcashWalletLifecycleError("WALLET_NOT_READY", "The Wcash wallet database is not initialized");
+    }
   }
 
   async function normalizeMnemonic(phrase) {
@@ -419,9 +422,20 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
     await keytar.setPassword(service, account, JSON.stringify(credential));
   }
 
+  async function invokeSanitizedTransaction(method, invocation, message) {
+    try {
+      return parseJsonObject(method, await invocation());
+    } catch {
+      // Native/RPC errors are untrusted boundary data. In particular, never
+      // forward a rejected promise's message because it could contain a seed,
+      // serialized transaction, endpoint, or other process-local detail.
+      throw new WcashWalletLifecycleError("NATIVE_TRANSACTION_STATUS_UNAVAILABLE", message);
+    }
+  }
+
   return Object.freeze({
     inspectState() {
-      return serialize(async () => publicState(await classifyUnsafe({ inspectPendingWithoutDeviceAuth: true })));
+      return serialize(async () => publicState(await classifyUnsafe()));
     },
 
     create() {
@@ -452,7 +466,7 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
 
     revealBackup() {
       return serialize(async () => {
-        const classification = await classifyUnsafe();
+        const classification = await classifyUnsafe({ authenticateCredential: true });
         requireBackupRequired(classification);
         return {
           recoveryPhrase: classification.credential.phrase,
@@ -463,7 +477,7 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
 
     acknowledgeBackup() {
       return serialize(async () => {
-        const classification = await classifyUnsafe();
+        const classification = await classifyUnsafe({ authenticateCredential: true });
         requireBackupRequired(classification);
         const acknowledged = createCredential(
           "create",
@@ -482,7 +496,7 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
 
     resumePending() {
       return serialize(async () => {
-        const classification = await classifyUnsafe();
+        const classification = await classifyUnsafe({ authenticateCredential: true });
         if (classification.state === LIFECYCLE_STATES.FAIL_CLOSED) {
           throw new WcashWalletLifecycleError(
             "WALLET_SECRET_MISSING",
@@ -504,44 +518,52 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
         if (typeof requestJson !== "string" || requestJson.length === 0 || requestJson.length > 128 * 1024) {
           throw new WcashWalletLifecycleError("TRANSACTION_REQUEST_INVALID", "Wcash transaction request is invalid");
         }
-        const credential = requireReadyCredential(await classifyUnsafe());
+        const credential = requireReadyCredential(await classifyUnsafe({ authenticateCredential: true }));
         assertFunction(native, "wcash_send_and_broadcast", "native");
-        return parseJsonObject(
+        return invokeSanitizedTransaction(
           "wcash_send_and_broadcast",
-          await native.wcash_send_and_broadcast(credential.phrase, requestJson),
+          () => native.wcash_send_and_broadcast(credential.phrase, requestJson),
+          "Wcash transaction status is unavailable. Inspect signed pending transactions before trying again.",
         );
       });
     },
 
     shieldCoinbaseAndBroadcast() {
       return serialize(async () => {
-        const credential = requireReadyCredential(await classifyUnsafe());
+        const credential = requireReadyCredential(await classifyUnsafe({ authenticateCredential: true }));
         assertFunction(native, "wcash_shield_coinbase_and_broadcast", "native");
-        return parseJsonObject(
+        return invokeSanitizedTransaction(
           "wcash_shield_coinbase_and_broadcast",
-          await native.wcash_shield_coinbase_and_broadcast(credential.phrase),
+          () => native.wcash_shield_coinbase_and_broadcast(credential.phrase),
+          "Wcash shielding status is unavailable. Inspect signed pending transactions before trying again.",
         );
       });
     },
 
     pendingTransactions(afterCursor) {
       return serialize(async () => {
-        requireReadyCredential(await classifyUnsafe());
+        requireWalletDatabase(await inspectNativeStatus());
         assertFunction(native, "wcash_pending_transactions", "native");
-        return parseJsonObject(
+        return invokeSanitizedTransaction(
           "wcash_pending_transactions",
-          afterCursor === undefined
-            ? await native.wcash_pending_transactions()
-            : await native.wcash_pending_transactions(afterCursor),
+          () =>
+            afterCursor === undefined
+              ? native.wcash_pending_transactions()
+              : native.wcash_pending_transactions(afterCursor),
+          "Signed pending transaction metadata is temporarily unavailable.",
         );
       });
     },
 
     rebroadcastPending(txid) {
       return serialize(async () => {
-        requireReadyCredential(await classifyUnsafe());
+        requireWalletDatabase(await inspectNativeStatus());
         assertFunction(native, "wcash_rebroadcast_pending", "native");
-        return parseJsonObject("wcash_rebroadcast_pending", await native.wcash_rebroadcast_pending(txid));
+        return invokeSanitizedTransaction(
+          "wcash_rebroadcast_pending",
+          () => native.wcash_rebroadcast_pending(txid),
+          "Rebroadcast status is unavailable. Do not create a replacement; refresh signed pending transactions.",
+        );
       });
     },
   });

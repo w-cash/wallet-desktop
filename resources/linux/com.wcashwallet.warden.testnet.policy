@@ -8,8 +8,8 @@
     <description>Authenticate to access Wcash Warden Testnet</description>
     <message>Authentication is required to access your Wcash Testnet wallet</message>
     <defaults>
-      <allow_any>auth_self</allow_any>
-      <allow_inactive>auth_self</allow_inactive>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
       <allow_active>auth_self</allow_active>
     </defaults>
   </action>

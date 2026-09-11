@@ -314,7 +314,7 @@ export const formatTwc = (value: bigint): string => {
 };
 
 export const parseCanonicalTwcAmount = (value: string): { readonly amount: string; readonly amountZat: bigint } => {
-  if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]{0,7}[1-9])?$/.test(value)) {
+  if (value.length > 17 || !/^(?:0|[1-9][0-9]*)(?:\.[0-9]{0,7}[1-9])?$/.test(value)) {
     throw new Error("Enter a TWC amount with no more than eight decimal places and no trailing zeroes.");
   }
   const [wholeText, fractionText = ""] = value.split(".");
@@ -331,7 +331,9 @@ export const createSendRequest = (addressInput: string, amountInput: string, mem
   const address = addressInput.trim();
   if (address.length < 16 || address.length > 512) throw new Error("Enter a Wcash Testnet Ironwood recipient.");
   const { amount } = parseCanonicalTwcAmount(amountInput.trim());
-  if (memoUtf8Bytes(memo) > 512) throw new Error("Memo is longer than the 512-byte Wcash limit.");
+  if (memo.length > 512 || memoUtf8Bytes(memo) > 512) {
+    throw new Error("Memo is longer than the 512-byte Wcash limit.");
+  }
   const payment = Object.freeze({
     address,
     amount,

@@ -6,6 +6,7 @@ const WCASH_BRANCH_ID = "b3cfd27e";
 const ZATOSHIS_PER_COIN = 100_000_000n;
 const MAX_MONEY_ZAT = 21_000_000n * ZATOSHIS_PER_COIN;
 const MAX_MEMO_BYTES = 512;
+const INVALID_RECIPIENT_MESSAGE = "This is not a valid Wcash Testnet Ironwood recipient.";
 const TXID_PATTERN = /^[0-9a-f]{64}$/;
 const RECOVERY_MESSAGE = "The signed transaction is stored. Retry this exact transaction; do not create a replacement.";
 
@@ -33,7 +34,7 @@ function utf8ByteLength(value) {
 }
 
 function parseCanonicalAmount(value) {
-  if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)(?:\.[0-9]{0,7}[1-9])?$/.test(value)) {
+  if (typeof value !== "string" || value.length > 17 || !/^(?:0|[1-9][0-9]*)(?:\.[0-9]{0,7}[1-9])?$/.test(value)) {
     throw new WcashTransactionBoundaryError(
       "INVALID_AMOUNT",
       "Enter a canonical TWC amount with no more than eight decimal places",
@@ -75,6 +76,9 @@ function parseRendererSendRequest(value) {
   const memo = payment.memo === undefined ? "" : payment.memo;
   if (typeof memo !== "string") {
     throw new WcashTransactionBoundaryError("INVALID_MEMO", "Memo must be UTF-8 text");
+  }
+  if (memo.length > MAX_MEMO_BYTES) {
+    throw new WcashTransactionBoundaryError("MEMO_TOO_LONG", "Memo exceeds the 512-byte Wcash limit");
   }
   const memoBytes = utf8ByteLength(memo);
   if (memoBytes > MAX_MEMO_BYTES) {
@@ -125,6 +129,8 @@ function parseNativeRecipientValidation(value) {
       record.recipient_kind !== "ironwood" ||
       typeof record.canonical_address !== "string" ||
       record.canonical_address.length < 16 ||
+      record.canonical_address.length > 512 ||
+      record.canonical_address !== record.canonical_address.trim() ||
       record.error !== null
     ) {
       throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
@@ -135,7 +141,8 @@ function parseNativeRecipientValidation(value) {
     !hasExactKeys(record.error, ["code", "message"]) ||
     record.error.code !== "invalid_recipient" ||
     typeof record.error.message !== "string" ||
-    record.error.message.length === 0
+    record.error.message.length === 0 ||
+    record.error.message.length > 256
   ) {
     throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
   }
@@ -146,7 +153,7 @@ function parseNativeRecipientValidation(value) {
     network: WCASH_NETWORK,
     recipient_kind: record.valid ? "ironwood" : null,
     canonical_address: record.valid ? record.canonical_address : null,
-    error: record.valid ? null : Object.freeze({ code: "invalid_recipient", message: record.error.message }),
+    error: record.valid ? null : Object.freeze({ code: "invalid_recipient", message: INVALID_RECIPIENT_MESSAGE }),
   });
 }
 
@@ -378,6 +385,7 @@ function buildShieldConfirmation() {
     detail: [
       "Destination: this wallet's own private Ironwood receiver.",
       "Up to 100 mature transparent coinbase inputs will be selected.",
+      "Maximum value authorized by this confirmation: 21,000,000 TWC.",
       "The exact ZIP-317 network fee will be calculated during signing and deducted from the shielded value.",
       "This action signs and broadcasts a real Wcash Testnet transaction.",
     ].join("\n\n"),
@@ -409,11 +417,25 @@ function createWcashTransactionController(dependencies) {
     "confirmShield",
   ].forEach((method) => requireFunction(dependencies, method));
 
+  async function invokeDependency(invocation, code, message) {
+    try {
+      return await invocation();
+    } catch {
+      throw new WcashTransactionBoundaryError(code, message);
+    }
+  }
+
   async function validateRecipient(address) {
     if (typeof address !== "string" || address.length < 16 || address.length > 512 || address !== address.trim()) {
       throw new WcashTransactionBoundaryError("INVALID_RECIPIENT", "Enter a canonical Wcash Testnet recipient");
     }
-    return parseNativeRecipientValidation(await dependencies.validateRecipientNative(address));
+    return parseNativeRecipientValidation(
+      await invokeDependency(
+        () => dependencies.validateRecipientNative(address),
+        "RECIPIENT_VALIDATION_UNAVAILABLE",
+        "Wcash recipient validation is temporarily unavailable.",
+      ),
+    );
   }
 
   async function send(value) {
@@ -431,24 +453,48 @@ function createWcashTransactionController(dependencies) {
     const confirmed = await dependencies.confirmSend(buildSendConfirmation(request, validation.canonical_address));
     if (confirmed !== true) return cancelledOperation("send");
 
-    return parseNativeOperationEnvelope(await dependencies.sendAndBroadcast(JSON.stringify(nativeRequest)), "send");
+    return parseNativeOperationEnvelope(
+      await invokeDependency(
+        () => dependencies.sendAndBroadcast(JSON.stringify(nativeRequest)),
+        "TRANSACTION_STATUS_UNKNOWN",
+        "Wcash transaction status is unknown. Refresh signed pending transactions before trying again; do not create a replacement.",
+      ),
+      "send",
+    );
   }
 
   async function shieldCoinbase() {
     const confirmed = await dependencies.confirmShield(buildShieldConfirmation());
     if (confirmed !== true) return cancelledOperation("shield_coinbase");
-    return parseNativeOperationEnvelope(await dependencies.shieldCoinbaseAndBroadcast(), "shield_coinbase");
+    return parseNativeOperationEnvelope(
+      await invokeDependency(
+        () => dependencies.shieldCoinbaseAndBroadcast(),
+        "TRANSACTION_STATUS_UNKNOWN",
+        "Wcash shielding status is unknown. Refresh signed pending transactions before trying again; do not create a replacement.",
+      ),
+      "shield_coinbase",
+    );
   }
 
   async function pendingTransactions(afterCursor) {
     const cursor = requirePendingCursor(afterCursor);
-    return parseNativePendingTransactions(await dependencies.pendingTransactionsNative(cursor));
+    return parseNativePendingTransactions(
+      await invokeDependency(
+        () => dependencies.pendingTransactionsNative(cursor),
+        "PENDING_STATUS_UNAVAILABLE",
+        "Signed pending transaction metadata is temporarily unavailable.",
+      ),
+    );
   }
 
   async function rebroadcastPending(txid) {
     const canonicalTxid = requireCanonicalTxid(txid);
     return parseNativeOperationEnvelope(
-      await dependencies.rebroadcastPendingNative(canonicalTxid),
+      await invokeDependency(
+        () => dependencies.rebroadcastPendingNative(canonicalTxid),
+        "REBROADCAST_STATUS_UNKNOWN",
+        "Rebroadcast status is unknown. Do not create a replacement; refresh signed pending transactions.",
+      ),
       "rebroadcast_pending",
     );
   }
@@ -457,6 +503,7 @@ function createWcashTransactionController(dependencies) {
 }
 
 module.exports = {
+  INVALID_RECIPIENT_MESSAGE,
   MAX_MEMO_BYTES,
   MAX_MONEY_ZAT,
   RECOVERY_MESSAGE,

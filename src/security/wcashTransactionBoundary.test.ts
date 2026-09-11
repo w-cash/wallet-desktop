@@ -12,11 +12,13 @@ const {
   parseRendererSendRequest,
   requireCanonicalTxid,
   RECOVERY_MESSAGE,
+  INVALID_RECIPIENT_MESSAGE,
   visibleText,
 } = require("../../public/wcashTransactionBoundary");
 
 const TXID = "a".repeat(64);
 const ADDRESS = `wutest1${"q".repeat(80)}`;
+const CANONICAL_ADDRESS = `wutest1${"p".repeat(80)}`;
 
 const broadcastEnvelope = (overrides = {}) => ({
   schema_version: 1,
@@ -63,6 +65,7 @@ describe("Wcash transaction main-process boundary", () => {
     " 1",
     "1,000",
     "21000000.00000001",
+    "9".repeat(18),
   ])("rejects non-canonical or out-of-range amount %p", (amount) => {
     expect(() => parseCanonicalAmount(amount)).toThrow();
   });
@@ -96,6 +99,9 @@ describe("Wcash transaction main-process boundary", () => {
     expect(() =>
       parseRendererSendRequest({ payments: [{ address: ADDRESS, amount: "1", memo: "é".repeat(257) }] }),
     ).toThrow("512-byte");
+    expect(() =>
+      parseRendererSendRequest({ payments: [{ address: ADDRESS, amount: "1", memo: "a".repeat(513) }] }),
+    ).toThrow("512-byte");
   });
 
   it("accepts only a Wcash Testnet Ironwood native validation envelope", () => {
@@ -122,7 +128,10 @@ describe("Wcash transaction main-process boundary", () => {
       canonical_address: null,
       error: { code: "invalid_recipient", message: "Not a Wcash Testnet Ironwood address" },
     };
-    expect(parseNativeRecipientValidation(invalid)).toEqual(invalid);
+    expect(parseNativeRecipientValidation(invalid)).toEqual({
+      ...invalid,
+      error: { code: "invalid_recipient", message: INVALID_RECIPIENT_MESSAGE },
+    });
     expect(() => parseNativeRecipientValidation({ ...invalid, error: { ...invalid.error, seed: "bad" } })).toThrow();
   });
 
@@ -213,6 +222,8 @@ describe("Wcash transaction main-process boundary", () => {
     const confirmation = buildShieldConfirmation();
     expect(confirmation.detail).toContain("own private Ironwood receiver");
     expect(confirmation.detail).toContain("Up to 100 mature");
+    expect(confirmation.detail).toContain("Maximum value authorized");
+    expect(confirmation.detail).toContain("21,000,000 TWC");
     expect(confirmation.detail).toContain("fee");
     expect(cancelledOperation("send")).toEqual({ schema_version: 1, operation: "send", outcome: "cancelled" });
   });
@@ -258,7 +269,7 @@ describe("Wcash transaction main-process boundary", () => {
           valid: true,
           network: "Wcash Testnet",
           recipient_kind: "ironwood",
-          canonical_address: ADDRESS,
+          canonical_address: CANONICAL_ADDRESS,
           error: null,
         };
       }),
@@ -268,7 +279,8 @@ describe("Wcash transaction main-process boundary", () => {
       rebroadcastPendingNative: jest.fn(),
       confirmSend: jest.fn(async (options: { detail: string }) => {
         events.push("confirm");
-        expect(options.detail).toContain(ADDRESS);
+        expect(options.detail).toContain(CANONICAL_ADDRESS);
+        expect(options.detail).not.toContain(ADDRESS);
         expect(options.detail).toContain("100000000");
         return true;
       }),
@@ -281,7 +293,58 @@ describe("Wcash transaction main-process boundary", () => {
     });
 
     expect(events).toEqual(["validate", "confirm", "sign-and-broadcast"]);
-    expect(sendAndBroadcast).toHaveBeenCalledWith(JSON.stringify({ payments: [{ address: ADDRESS, amount: "1" }] }));
+    expect(sendAndBroadcast).toHaveBeenCalledWith(
+      JSON.stringify({ payments: [{ address: CANONICAL_ADDRESS, amount: "1" }] }),
+    );
+  });
+
+  it("replaces rejected dependency diagnostics with stable public errors", async () => {
+    const secret = `${"abandon ".repeat(23)}art deadbeef https://private-node.invalid`;
+    const validRecipient = {
+      schema_version: 1,
+      valid: true,
+      network: "Wcash Testnet",
+      recipient_kind: "ironwood",
+      canonical_address: CANONICAL_ADDRESS,
+      error: null,
+    };
+    const dependencies = {
+      validateRecipientNative: jest.fn().mockResolvedValue(validRecipient),
+      sendAndBroadcast: jest.fn().mockRejectedValue(new Error(secret)),
+      shieldCoinbaseAndBroadcast: jest.fn().mockRejectedValue(new Error(secret)),
+      pendingTransactionsNative: jest.fn().mockRejectedValue(new Error(secret)),
+      rebroadcastPendingNative: jest.fn().mockRejectedValue(new Error(secret)),
+      confirmSend: jest.fn().mockResolvedValue(true),
+      confirmShield: jest.fn().mockResolvedValue(true),
+    };
+    const controller = createWcashTransactionController(dependencies);
+
+    for (const [operation, code] of [
+      [controller.send({ payments: [{ address: ADDRESS, amount: "1" }] }), "TRANSACTION_STATUS_UNKNOWN"],
+      [controller.shieldCoinbase(), "TRANSACTION_STATUS_UNKNOWN"],
+      [controller.pendingTransactions(), "PENDING_STATUS_UNAVAILABLE"],
+      [controller.rebroadcastPending(TXID), "REBROADCAST_STATUS_UNKNOWN"],
+    ] as const) {
+      let failure: unknown;
+      try {
+        await operation;
+      } catch (cause) {
+        failure = cause;
+      }
+      expect(failure).toMatchObject({ code });
+      expect(String(failure)).not.toContain(secret);
+      expect(String(failure)).not.toContain("private-node.invalid");
+    }
+
+    dependencies.validateRecipientNative.mockRejectedValueOnce(new Error(secret));
+    let validationFailure: unknown;
+    try {
+      await controller.validateRecipient(ADDRESS);
+    } catch (cause) {
+      validationFailure = cause;
+    }
+    expect(validationFailure).toMatchObject({ code: "RECIPIENT_VALIDATION_UNAVAILABLE" });
+    expect(String(validationFailure)).not.toContain(secret);
   });
 
   it("cancels shielding before signing and strictly sanitizes pending recovery", async () => {

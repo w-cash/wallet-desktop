@@ -76,7 +76,7 @@ describe("Wcash renderer boundary", () => {
     expect(parseCanonicalTwcAmount(value)).toEqual({ amount: value, amountZat });
   });
 
-  it.each(["0", "01", ".1", "1.", "1.0", "1.250", "1.000000000", "+1", "1e2", "1,000"])(
+  it.each(["0", "01", ".1", "1.", "1.0", "1.250", "1.000000000", "+1", "1e2", "1,000", "9".repeat(18)])(
     "rejects unsafe amount syntax %p",
     (value) => expect(() => parseCanonicalTwcAmount(value)).toThrow(),
   );
@@ -87,6 +87,7 @@ describe("Wcash renderer boundary", () => {
       payments: [{ address: `wutest1${"q".repeat(80)}`, amount: "1.25", memo: "💚" }],
     });
     expect(() => createSendRequest(`wutest1${"q".repeat(80)}`, "1", "é".repeat(257))).toThrow("512-byte");
+    expect(() => createSendRequest(`wutest1${"q".repeat(80)}`, "1", "a".repeat(513))).toThrow("512-byte");
   });
 
   it("strictly parses Wcash recipient validation and rejects native extras", () => {

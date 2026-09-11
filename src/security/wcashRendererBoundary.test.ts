@@ -43,4 +43,32 @@ describe("Wcash renderer privilege boundary", () => {
     expect(controller.indexOf("confirmSend")).toBeLessThan(controller.indexOf("sendAndBroadcast(JSON.stringify"));
     expect(controller.indexOf("confirmShield")).toBeLessThan(controller.indexOf("shieldCoinbaseAndBroadcast()"));
   });
+
+  it("registers every transaction channel through the serialized boundary", () => {
+    const main = read("public/electron.js");
+    const registrations = [...main.matchAll(/handleWcash\("([^"]+)"/g)].map((match) => match[1]);
+
+    expect(registrations).toEqual([
+      "wcash:status",
+      "wcash:create",
+      "wcash:restore",
+      "wcash:resume-pending",
+      "wcash:reveal-backup",
+      "wcash:acknowledge-backup",
+      "wcash:open",
+      "wcash:sync",
+      "wcash:stop-sync",
+      "wcash:balance",
+      "wcash:receivers",
+      "wcash:validate-recipient",
+      "wcash:send",
+      "wcash:shield-coinbase",
+      "wcash:pending-transactions",
+      "wcash:rebroadcast-pending",
+    ]);
+    expect(main.match(/\{ outOfBand: true \}/g)).toHaveLength(1);
+    expect(main).toContain(
+      'handleWcash("wcash:stop-sync", () => requireWcashNative("wcash_stop_sync").wcash_stop_sync(), {',
+    );
+  });
 });

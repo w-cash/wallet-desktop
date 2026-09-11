@@ -4,6 +4,7 @@ const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
 const { createWcashIpcBoundary } = require("./wcashIpcBoundary");
+const { verifyWcashDeviceOwner } = require("./wcashDeviceAuth");
 const { LIFECYCLE_STATES, createWcashWalletLifecycle } = require("./wcashWalletLifecycle");
 const { createWcashTransactionController } = require("./wcashTransactionBoundary");
 
@@ -521,100 +522,28 @@ const withAuthTimeout = (probe, fallback = "not_supported", ms = 3000) =>
 const AUTH_PROBE_TIMEOUT_MS = 3000;
 const AUTH_VERIFY_TIMEOUT_MS = 60000;
 
-async function checkWcashDeviceAuth() {
-  if (!WCASH_RUNTIME_READY) return "not_supported";
-  const withTimeout = withAuthTimeout;
-
-  if (process.platform === "win32") {
-    return withTimeout(() => getNative().checkWindowsHello());
-  } else if (process.platform === "darwin") {
-    return withTimeout(() => getNative().checkMacAuth());
-  } else if (process.platform === "linux") {
-    return withTimeout(
-      () =>
-        new Promise((resolve) => {
-          const { execFile } = require("child_process");
-          // polkit 0.105 (Linux Mint / Ubuntu) exits with code 1 even when the
-          // action exists, so check stdout instead of the exit code.
-          execFile("pkaction", ["--action-id", `${WCASH_APP_ID}.authenticate`], (_err, stdout) => {
-            resolve(stdout && stdout.includes(`${WCASH_APP_ID}.authenticate`) ? "available" : "not_installed_linux");
-          });
-        }),
-      "not_installed_linux",
-    );
-  }
-  return "not_supported";
-}
-
 async function verifyWcashDeviceAuth(reason) {
   if (!WCASH_RUNTIME_READY) return { success: false, reason: "wcash-runtime-disabled" };
-  // Universal rule: when device authentication is NOT available on the current
-  // platform / install (no Touch ID enrolled, Windows Hello not set up, polkit
-  // action not registered for AppImage / dev runs, etc.) we silently succeed.
-  // Otherwise the user gets a "Send" button that does nothing — surprising and
-  // hard to debug. Security-wise we already require an explicit opt-in for the
-  // feature: `requireDeviceAuth` defaults to true, but the renderer also gates
-  // the LOCK screen on auth:check === "available", so disabling here keeps the
-  // two callers consistent.
-  // Both calls are timed out for the same reason auth:check is: a native probe
-  // or prompt that never returns used to strand the caller. The lock screen sat
-  // on "Authenticating..." with the window already blurred, and no way forward.
-  if (process.platform === "win32") {
-    const win = BrowserWindow.getAllWindows()[0] ?? null;
-    try {
-      const native = getNative();
-      const availability = await withAuthTimeout(
-        () => native.checkWindowsHello(),
-        "not_supported",
-        AUTH_PROBE_TIMEOUT_MS,
-      );
-      if (availability !== "available") return { success: true };
-      if (win) win.blur();
-      const result = await withAuthTimeout(
-        () => native.verifyWindowsUser(String(reason)),
-        { success: false },
-        AUTH_VERIFY_TIMEOUT_MS,
-      );
-      if (win) win.focus();
-      return result;
-    } catch {
-      if (win) win.focus();
-      return { success: false };
-    }
-  } else if (process.platform === "darwin") {
-    try {
-      const native = getNative();
-      const availability = await withAuthTimeout(() => native.checkMacAuth(), "not_supported", AUTH_PROBE_TIMEOUT_MS);
-      if (availability !== "available") return { success: true };
-      return await withAuthTimeout(
-        () => native.verifyMacUser(String(reason)),
-        { success: false },
-        AUTH_VERIFY_TIMEOUT_MS,
-      );
-    } catch {
-      return { success: false };
-    }
-  } else if (process.platform === "linux") {
-    return new Promise((resolve) => {
-      const { execFile } = require("child_process");
-      // Probe the polkit action first; if it's not registered (dev mode,
-      // AppImage, missing .deb post-install) skip verification rather than
-      // failing the entire send flow.
-      execFile("pkaction", ["--action-id", `${WCASH_APP_ID}.authenticate`], (_err, stdout) => {
-        const available = stdout && stdout.includes(`${WCASH_APP_ID}.authenticate`);
-        if (!available) {
-          resolve({ success: true });
-          return;
-        }
-        execFile(
-          "pkcheck",
-          ["--action-id", `${WCASH_APP_ID}.authenticate`, "--process", String(process.pid), "--allow-user-interaction"],
-          (err) => resolve({ success: !err }),
-        );
-      });
-    });
+  let native;
+  try {
+    native = getNative();
+  } catch {
+    return { success: false, reason: "device-auth-unavailable" };
   }
-  return { success: true };
+  return verifyWcashDeviceOwner({
+    platform: process.platform,
+    reason,
+    native,
+    getWindow: () => BrowserWindow.getAllWindows()[0] ?? null,
+    execFile: require("child_process").execFile,
+    readFileSync: fs.readFileSync,
+    userId: typeof process.getuid === "function" ? process.getuid() : null,
+    withTimeout: withAuthTimeout,
+    appId: WCASH_APP_ID,
+    processId: process.pid,
+    probeTimeoutMs: AUTH_PROBE_TIMEOUT_MS,
+    verifyTimeoutMs: AUTH_VERIFY_TIMEOUT_MS,
+  });
 }
 
 ipcMain.handle("auth:check", async () => "not_supported");
@@ -898,8 +827,9 @@ function getWcashWalletLifecycle() {
       native,
       service: WCASH_SEED_KEYTAR_SERVICE,
       account: WCASH_SEED_KEYTAR_ACCOUNT,
-      // Credential reads are main-process-only and always pass through the
-      // mature platform-auth implementation before Keychain is accessed.
+      // Signing, backup reveal/acknowledgement, and crash-resume credential
+      // reads invoke this fail-closed platform challenge. Read-only wallet use
+      // never receives the credential outside the main process.
       authenticate: async () => {
         const result = await verifyWcashDeviceAuth(`Access ${WCASH_PRODUCT_NAME} wallet credential`);
         return result?.success === true;

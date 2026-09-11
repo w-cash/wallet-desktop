@@ -141,7 +141,7 @@ describe("Wcash main-process wallet lifecycle", () => {
     await expect(lifecycle.inspectState()).rejects.toMatchObject({ code: "NATIVE_STATUS_AMBIGUOUS" });
   });
 
-  it("authenticates immediately before every existing-wallet credential read and exposes no seed getter", async () => {
+  it("keeps existing-wallet inspection read-only without exposing a seed getter", async () => {
     const { authenticate, events, keytar, lifecycle } = harness({
       stored: record("restore", 123),
       status: { wallet: WALLET },
@@ -150,18 +150,9 @@ describe("Wcash main-process wallet lifecycle", () => {
     await lifecycle.inspectState();
     await lifecycle.inspectState();
 
-    expect(authenticate).toHaveBeenCalledTimes(2);
+    expect(authenticate).not.toHaveBeenCalled();
     expect(keytar.getPassword).toHaveBeenCalledTimes(2);
-    expect(events).toEqual([
-      "status",
-      "authenticate",
-      "getPassword",
-      "verify",
-      "status",
-      "authenticate",
-      "getPassword",
-      "verify",
-    ]);
+    expect(events).toEqual(["status", "getPassword", "verify", "status", "getPassword", "verify"]);
     expect(lifecycle.getSeed).toBeUndefined();
     expect(lifecycle.getCredential).toBeUndefined();
   });
@@ -186,7 +177,9 @@ describe("Wcash main-process wallet lifecycle", () => {
       const { authenticate, keytar, lifecycle } = harness({ status: { wallet: WALLET } });
       authenticate.mockResolvedValueOnce(authenticationResult);
 
-      await expect(lifecycle.inspectState()).rejects.toMatchObject({ code: "AUTHENTICATION_FAILED" });
+      await expect(lifecycle.sendAndBroadcast('{"payments":[]}')).rejects.toMatchObject({
+        code: "AUTHENTICATION_FAILED",
+      });
 
       expect(keytar.getPassword).not.toHaveBeenCalled();
     },
@@ -197,7 +190,7 @@ describe("Wcash main-process wallet lifecycle", () => {
     const { authenticate, keytar, lifecycle } = harness({ status: { wallet: WALLET } });
     authenticate.mockRejectedValueOnce(failure);
 
-    await expect(lifecycle.inspectState()).rejects.toBe(failure);
+    await expect(lifecycle.sendAndBroadcast('{"payments":[]}')).rejects.toBe(failure);
 
     expect(keytar.getPassword).not.toHaveBeenCalled();
   });
@@ -589,8 +582,8 @@ describe("Wcash main-process wallet lifecycle", () => {
     expect(JSON.stringify(result)).not.toContain(PHRASE);
   });
 
-  it("requires authenticated READY state for pending recovery without passing the phrase to native", async () => {
-    const { events, lifecycle, native } = harness({
+  it("allows exact pending recovery without authentication or passing the phrase to native", async () => {
+    const { authenticate, events, keytar, lifecycle, native } = harness({
       stored: record("restore", 123),
       status: { wallet: WALLET },
     });
@@ -602,18 +595,35 @@ describe("Wcash main-process wallet lifecycle", () => {
     expect(native.wcash_rebroadcast_pending).toHaveBeenCalledWith("a".repeat(64));
     expect(native.wcash_pending_transactions.mock.calls.flat()).not.toContain(PHRASE);
     expect(native.wcash_rebroadcast_pending.mock.calls.flat()).not.toContain(PHRASE);
-    expect(events).toEqual([
-      "status",
-      "authenticate",
-      "getPassword",
-      "verify",
-      "pending",
-      "status",
-      "authenticate",
-      "getPassword",
-      "verify",
-      "rebroadcast",
-    ]);
+    expect(authenticate).not.toHaveBeenCalled();
+    expect(keytar.getPassword).not.toHaveBeenCalled();
+    expect(native.wcash_verify_mnemonic).not.toHaveBeenCalled();
+    expect(events).toEqual(["status", "pending", "status", "rebroadcast"]);
+  });
+
+  it("sanitizes rejected native transaction errors before they cross IPC", async () => {
+    const rawHex = "deadc0de".repeat(64);
+    const { lifecycle, native } = harness({
+      stored: record("restore", 123),
+      status: { wallet: WALLET },
+    });
+    native.wcash_send_and_broadcast.mockRejectedValueOnce(
+      new Error(`${PHRASE} ${rawHex} https://wallet-testnet.wcashexplorer.com`),
+    );
+
+    let failure: unknown;
+    try {
+      await lifecycle.sendAndBroadcast('{"payments":[]}');
+    } catch (cause) {
+      failure = cause;
+    }
+    expect(failure).toMatchObject({
+      code: "NATIVE_TRANSACTION_STATUS_UNAVAILABLE",
+      message: "Wcash transaction status is unavailable. Inspect signed pending transactions before trying again.",
+    });
+    expect(String(failure)).not.toContain(PHRASE);
+    expect(String(failure)).not.toContain(rawHex);
+    expect(String(failure)).not.toContain("wallet-testnet.wcashexplorer.com");
   });
 
   it("does not call transaction native methods unless the database, credential, and backup are ready", async () => {
