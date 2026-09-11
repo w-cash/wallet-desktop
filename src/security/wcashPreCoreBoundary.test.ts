@@ -5,8 +5,8 @@ import path from "path";
 const repositoryRoot = path.resolve(__dirname, "../..");
 const read = (relativePath: string) => readFileSync(path.join(repositoryRoot, relativePath), "utf8");
 
-describe("Wcash pre-core product boundary", () => {
-  it("uses an isolated Testnet identity with no claimed core revision", () => {
+describe("Wcash pinned-runtime product boundary", () => {
+  it("uses an isolated Testnet identity and the exact reviewed core revision", () => {
     const packageJson = JSON.parse(read("package.json"));
     const runtime = JSON.parse(read("config/wcash-runtime.json"));
 
@@ -16,8 +16,9 @@ describe("Wcash pre-core product boundary", () => {
     expect(runtime).toEqual({
       appId: "com.wcashwallet.warden.testnet",
       productName: "Wcash Warden Testnet",
-      runtimeReady: false,
-      coreRevision: null,
+      runtimeReady: true,
+      releaseReady: false,
+      coreRevision: "62d729a17fed2263eddac9a11731def20062293d",
       network: "Wcash Testnet",
       ticker: "TWC",
     });
@@ -27,30 +28,44 @@ describe("Wcash pre-core product boundary", () => {
     );
     expect(guardedScripts.length).toBeGreaterThan(0);
     guardedScripts.forEach(([, command]) => expect(command).toMatch(/^node scripts\/assert-wcash-runtime-ready\.js/));
+
+    const releaseScripts = Object.entries<string>(packageJson.scripts).filter(([name]) =>
+      /^(?:release:prep|dist:)/.test(name),
+    );
+    releaseScripts.forEach(([, command]) => expect(command).toContain("node scripts/assert-wcash-release-ready.js"));
+    Object.entries<string>(packageJson.scripts)
+      .filter(([name]) => /^(?:cargo:(?:check|test|clippy)|neon(?:-|$))/.test(name))
+      .forEach(([, command]) => expect(command).toContain("--locked"));
   });
 
-  it("keeps inherited native, protocol, migration and service paths fail-closed", () => {
+  it("keeps the inherited Zcash bridge closed while exposing only fixed Wcash paths", () => {
     const main = read("public/electron.js");
     const preload = read("public/preload.js");
-    const root = read("src/root/Root.tsx");
 
     expect(main).toContain("const WCASH_RUNTIME_READY = WCASH_RUNTIME.runtimeReady;");
-    expect(main).toContain("if (!WCASH_RUNTIME_READY) return null;");
-    expect(main).toContain('if (WCASH_RUNTIME_READY) serverRegistry.load("main");');
-    expect(main).toContain("if (WCASH_RUNTIME_READY && !isInSandbox)");
-    expect(main).toContain("if (WCASH_RUNTIME_READY) {\n    await maybeRunDmgToMasMigration();");
+    expect(main).toContain("const LEGACY_ZCASH_RUNTIME_ENABLED = false;");
+    expect(main).toContain('if (LEGACY_ZCASH_RUNTIME_ENABLED) serverRegistry.load("main");');
+    expect(main).toContain('requireWcashNative("set_wallet_base_dir")');
+    expect(main).toContain('handleWcash("wcash:status"');
+    expect(main).not.toContain('ipcMain.handle("wcash:status"');
+    expect(preload).toContain("const LEGACY_ZCASH_BRIDGE_ENABLED = false;");
     expect(preload).toContain("ALLOWED_INVOKE.clear()");
-    expect(preload).toMatch(/invokeWhenReady\(`native:\$\{method\}`/);
-    expect(root).not.toMatch(/from ["']\.\/Routes["']/);
+    expect(preload).toContain('contextBridge.exposeInMainWorld(\n  "wcash"');
+    expect(preload).not.toContain("wcash_verify_mnemonic");
   });
 
-  it("rejects release packaging before an exact reviewed core pin", () => {
-    const result = spawnSync(process.execPath, ["scripts/assert-wcash-runtime-ready.js"], {
+  it("accepts the exact runtime pin but keeps release packaging blocked", () => {
+    const runtimeResult = spawnSync(process.execPath, ["scripts/assert-wcash-runtime-ready.js"], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+    });
+    const releaseResult = spawnSync(process.execPath, ["scripts/assert-wcash-release-ready.js"], {
       cwd: repositoryRoot,
       encoding: "utf8",
     });
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("Release packaging is blocked");
+    expect(runtimeResult.status).toBe(0);
+    expect(releaseResult.status).toBe(1);
+    expect(releaseResult.stderr).toContain("Release packaging is blocked");
   });
 });

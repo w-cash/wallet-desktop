@@ -2,16 +2,16 @@
 
 const runtime = require("../config/wcash-runtime.json");
 
-const pinnedRevision = typeof runtime.coreRevision === "string" && /^[0-9a-f]{40}$/.test(runtime.coreRevision);
+const reviewedRevision = "62d729a17fed2263eddac9a11731def20062293d";
 
 if (
   runtime.runtimeReady !== true ||
-  !pinnedRevision ||
+  runtime.coreRevision !== reviewedRevision ||
   runtime.appId !== "com.wcashwallet.warden.testnet" ||
   runtime.network !== "Wcash Testnet"
 ) {
   console.error(
-    "Release packaging is blocked: pin and review an exact Wcash wallet-core commit, then update config/wcash-runtime.json.",
+    "Wcash runtime build is blocked: config must select the reviewed wallet-core revision and Testnet identity.",
   );
   process.exit(1);
 }

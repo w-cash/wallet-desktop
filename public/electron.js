@@ -2,9 +2,15 @@ const { app, BrowserWindow, Menu, shell, ipcMain, dialog, session, clipboard } =
 const os = require("os");
 const path = require("path");
 const fs = require("fs");
+const { pathToFileURL } = require("url");
+const { createWcashIpcBoundary } = require("./wcashIpcBoundary");
+const { LIFECYCLE_STATES, createWcashWalletLifecycle } = require("./wcashWalletLifecycle");
 
 const WCASH_RUNTIME = require("../config/wcash-runtime.json");
 const WCASH_RUNTIME_READY = WCASH_RUNTIME.runtimeReady;
+// The Wcash core has its own narrow bridge below. This legacy flag must remain
+// false even after WCASH_RUNTIME_READY becomes true.
+const LEGACY_ZCASH_RUNTIME_ENABLED = false;
 const WCASH_APP_ID = WCASH_RUNTIME.appId;
 const WCASH_PRODUCT_NAME = WCASH_RUNTIME.productName;
 const WCASH_USER_DATA_NAMESPACE = WCASH_PRODUCT_NAME;
@@ -21,6 +27,10 @@ const { createServerRegistry } = require("./serverRegistry");
 
 const STORAGE_KEY = "wallets";
 const isDev = !app.isPackaged;
+const WCASH_RENDERER_URL = isDev
+  ? "http://localhost:3000/"
+  : pathToFileURL(path.resolve(__dirname, "../build/index.html")).href;
+let wcashTrustedWebContents = null;
 
 class MenuBuilder {
   mainWindow;
@@ -487,7 +497,7 @@ if (process.platform === "linux") {
 // Mac/MAS only: the OS routes zcash: links here whether the app is open or closed.
 // Must be registered before app.whenReady() to catch cold-start links.
 // On Windows/Linux, URIs arrive via second-instance argv — open-url is not fired there.
-if (WCASH_RUNTIME_READY && process.platform === "darwin") {
+if (LEGACY_ZCASH_RUNTIME_ENABLED && process.platform === "darwin") {
   app.on("open-url", (event, url) => {
     event.preventDefault();
     handleZcashUri(url);
@@ -508,7 +518,7 @@ if (WCASH_RUNTIME_READY && process.platform === "darwin") {
     app.exit(0);
   } else {
     app.on("second-instance", (_event, argv) => {
-      const uri = WCASH_RUNTIME_READY ? argv.find((a) => a.startsWith("zcash:")) : null;
+      const uri = LEGACY_ZCASH_RUNTIME_ENABLED ? argv.find((a) => a.startsWith("zcash:")) : null;
       if (uri) handleZcashUri(uri);
       const win = BrowserWindow.getAllWindows()[0];
       if (win) {
@@ -536,7 +546,7 @@ const withAuthTimeout = (probe, fallback = "not_supported", ms = 3000) =>
 const AUTH_PROBE_TIMEOUT_MS = 3000;
 const AUTH_VERIFY_TIMEOUT_MS = 60000;
 
-ipcMain.handle("auth:check", async () => {
+async function checkWcashDeviceAuth() {
   if (!WCASH_RUNTIME_READY) return "not_supported";
   const withTimeout = withAuthTimeout;
 
@@ -559,10 +569,10 @@ ipcMain.handle("auth:check", async () => {
     );
   }
   return "not_supported";
-});
+}
 
-ipcMain.handle("auth:verify", async (_e, reason) => {
-  if (!WCASH_RUNTIME_READY) return { success: false, reason: "wcash-runtime-not-ready" };
+async function verifyWcashDeviceAuth(reason) {
+  if (!WCASH_RUNTIME_READY) return { success: false, reason: "wcash-runtime-disabled" };
   // Universal rule: when device authentication is NOT available on the current
   // platform / install (no Touch ID enrolled, Windows Hello not set up, polkit
   // action not registered for AppImage / dev runs, etc.) we silently succeed.
@@ -630,13 +640,18 @@ ipcMain.handle("auth:verify", async (_e, reason) => {
     });
   }
   return { success: true };
-});
+}
+
+ipcMain.handle("auth:check", async () => "not_supported");
+ipcMain.handle("auth:verify", async () => ({ success: false, reason: "legacy-runtime-disabled" }));
 
 // ── Keychain-backed requireDeviceAuth ─────────────────────────────────────
 // Missing or deleted entry is treated as true (auth required by default).
 // Only an explicit "false" stored by the user disables the feature.
 const KEYTAR_SERVICE = WCASH_PRODUCT_NAME;
 const KEYTAR_ACCOUNT = "requireDeviceAuth";
+const WCASH_SEED_KEYTAR_SERVICE = `${WCASH_APP_ID}.wallet-seed.v1`;
+const WCASH_SEED_KEYTAR_ACCOUNT = "wcash-testnet-primary";
 
 // In-process cache of the value so we only hit Keychain ONCE per session.
 // Repeated accesses (loadSettings is called several times across pages) used
@@ -693,7 +708,7 @@ const serverRegistry = createServerRegistry({
 });
 
 ipcMain.handle("servers:fetchList", async (_e, chain) => {
-  if (!WCASH_RUNTIME_READY) return { ok: false, reason: "wcash-runtime-not-ready" };
+  if (!LEGACY_ZCASH_RUNTIME_ENABLED) return { ok: false, reason: "legacy-runtime-disabled" };
   const servers = await serverRegistry.load(chain);
   return servers ? { ok: true, servers } : { ok: false };
 });
@@ -719,7 +734,7 @@ function getZnsClient(chain) {
 }
 
 ipcMain.handle("zns:resolve", async (_e, name, chain) => {
-  if (!WCASH_RUNTIME_READY) return { ok: false, reason: "wcash-runtime-not-ready" };
+  if (!LEGACY_ZCASH_RUNTIME_ENABLED) return { ok: false, reason: "legacy-runtime-disabled" };
   if (typeof name !== "string" || !/^[a-z0-9]{1,62}$/.test(name)) {
     return { ok: false, reason: "invalid-name" };
   }
@@ -855,8 +870,8 @@ function getNative() {
 
 // Throws the load failure rather than letting callers trip over a null.
 function requireNative(method) {
-  if (!WCASH_RUNTIME_READY) {
-    throw new Error(`native.${method} disabled until a reviewed Wcash wallet-core commit is pinned`);
+  if (!LEGACY_ZCASH_RUNTIME_ENABLED) {
+    throw new Error(`native.${method} belongs to the permanently disabled legacy Zcash bridge`);
   }
   const native = getNative();
   if (native && typeof native[method] === "function") {
@@ -866,6 +881,90 @@ function requireNative(method) {
     throw new Error(`native module failed to load (${_nativePath}): ${_mainNativeError.message}`);
   }
   throw new Error(`native.${method} not available`);
+}
+
+function requireWcashNative(method) {
+  if (!WCASH_RUNTIME_READY) {
+    throw new Error("Wcash wallet runtime is disabled");
+  }
+  const native = getNative();
+  if (native && typeof native[method] === "function") {
+    return native;
+  }
+  if (_mainNativeError) {
+    throw new Error(`Wcash native module failed to load: ${_mainNativeError.message}`);
+  }
+  throw new Error(`Wcash native method is unavailable: ${method}`);
+}
+
+function parseWcashNativeJson(method, value) {
+  if (typeof value !== "string") {
+    throw new TypeError(`Wcash native method returned a non-JSON value: ${method}`);
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new Error(`Wcash native method returned invalid data: ${method}`);
+  }
+}
+
+async function invokeWcashJson(method, ...args) {
+  const native = requireWcashNative(method);
+  return parseWcashNativeJson(method, await native[method](...args));
+}
+
+let _wcashWalletLifecycle = null;
+function getWcashWalletLifecycle() {
+  if (_wcashWalletLifecycle === null) {
+    const native = requireWcashNative("wcash_status");
+    const keytar = require("keytar");
+    _wcashWalletLifecycle = createWcashWalletLifecycle({
+      keytar,
+      native,
+      service: WCASH_SEED_KEYTAR_SERVICE,
+      account: WCASH_SEED_KEYTAR_ACCOUNT,
+      // Credential reads are main-process-only and always pass through the
+      // mature platform-auth implementation before Keychain is accessed.
+      authenticate: async () => {
+        const result = await verifyWcashDeviceAuth(`Access ${WCASH_PRODUCT_NAME} wallet credential`);
+        return result?.success === true;
+      },
+    });
+  }
+  return _wcashWalletLifecycle;
+}
+
+const wcashIpcBoundary = createWcashIpcBoundary({
+  trustedUrl: WCASH_RENDERER_URL,
+  getTrustedWebContents: () => wcashTrustedWebContents,
+});
+const handleWcash = (channel, operation, options) => wcashIpcBoundary.register(ipcMain, channel, operation, options);
+
+handleWcash("wcash:status", () => getWcashWalletLifecycle().inspectState());
+handleWcash("wcash:create", () => getWcashWalletLifecycle().create());
+handleWcash("wcash:restore", (seedPhrase, birthdayHeight) =>
+  getWcashWalletLifecycle().restore(seedPhrase, birthdayHeight),
+);
+handleWcash("wcash:resume-pending", () => getWcashWalletLifecycle().resumePending());
+handleWcash("wcash:reveal-backup", () => getWcashWalletLifecycle().revealBackup());
+handleWcash("wcash:acknowledge-backup", () => getWcashWalletLifecycle().acknowledgeBackup());
+handleWcash("wcash:open", async () => {
+  const state = await getWcashWalletLifecycle().inspectState();
+  if (state.state !== LIFECYCLE_STATES.READY) {
+    throw new Error("Wcash wallet cannot open until its database, credential, and backup are ready");
+  }
+  return invokeWcashJson("wcash_open");
+});
+handleWcash("wcash:sync", () => invokeWcashJson("wcash_sync"));
+handleWcash("wcash:stop-sync", () => requireWcashNative("wcash_stop_sync").wcash_stop_sync(), { outOfBand: true });
+handleWcash("wcash:balance", () => invokeWcashJson("wcash_balance"));
+handleWcash("wcash:receivers", () => invokeWcashJson("wcash_receivers"));
+
+function configureWcashWalletBaseDir() {
+  const native = requireWcashNative("set_wallet_base_dir");
+  if (native.set_wallet_base_dir(app.getPath("userData")) !== true) {
+    throw new Error("Wcash native wallet directory could not be configured");
+  }
 }
 
 // Activates a security-scoped bookmark from the main process, which has
@@ -1723,6 +1822,12 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
     },
   });
+  wcashTrustedWebContents = mainWindow.webContents;
+  mainWindow.webContents.once("destroyed", () => {
+    if (wcashTrustedWebContents === mainWindow.webContents) {
+      wcashTrustedWebContents = null;
+    }
+  });
 
   const ignore = process.platform !== "darwin";
   mainWindow.webContents.setIgnoreMenuShortcuts(ignore);
@@ -1736,14 +1841,13 @@ function createWindow() {
 
   // Block navigation away from the app URL.
   // Prevents the renderer from loading an external page inside the Electron window.
-  const appOrigin = isDev ? "http://localhost:3000" : "file://";
   mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (!url.startsWith(appOrigin)) event.preventDefault();
+    if (!wcashIpcBoundary.isTrustedUrl(url)) event.preventDefault();
   });
 
   // Load from localhost if in development
   // Otherwise load index.html file
-  mainWindow.loadURL(isDev ? "http://localhost:3000" : `file://${path.join(__dirname, "../build/index.html")}`);
+  mainWindow.loadURL(WCASH_RENDERER_URL);
 
   // Diagnostic logging for MAS/sandbox builds — writes to userData so we can
   // read it from ~/Library/Containers/co.zingo.pc/Data/Library/Application Support/Zingo PC/startup.log
@@ -1774,7 +1878,7 @@ function createWindow() {
     });
   }
 
-  if (WCASH_RUNTIME_READY) {
+  if (LEGACY_ZCASH_RUNTIME_ENABLED) {
     const menuBuilder = new MenuBuilder(mainWindow);
     menuBuilder.buildMenu();
   } else {
@@ -1803,7 +1907,7 @@ function createWindow() {
   mainWindow.on("close", (event) => {
     // The pre-core renderer has no wallet state to flush and intentionally has
     // no wallet IPC bridge, so close normally without the legacy save handshake.
-    if (!WCASH_RUNTIME_READY) return;
+    if (!LEGACY_ZCASH_RUNTIME_ENABLED) return;
 
     // If we are clear to close, then return and allow everything to close
     if (proceedToClose) {
@@ -1853,7 +1957,7 @@ function createWindow() {
 // zingo-pc-uri.sh wrapper on Linux, which avoids passing it as a positional
 // argv that Electron's runtime misinterprets as the app-module path) or as a
 // direct argv entry on Windows.
-if (WCASH_RUNTIME_READY && process.platform !== "darwin") {
+if (LEGACY_ZCASH_RUNTIME_ENABLED && process.platform !== "darwin") {
   const envUri = process.env.ZINGO_PC_URI;
   const coldStartUri =
     envUri && envUri.startsWith("zcash:") ? envUri : process.argv.find((a) => a.startsWith("zcash:"));
@@ -2124,13 +2228,24 @@ async function maybeRunDebAppImageToFlatpakMigration() {
 // function once the Electron application is initialized.
 // Install REACT_DEVELOPER_TOOLS as well if isDev
 app.whenReady().then(async () => {
+  if (WCASH_RUNTIME_READY) {
+    try {
+      // The renderer never receives this path and cannot override it.
+      configureWcashWalletBaseDir();
+    } catch (error) {
+      dialog.showErrorBox("Wcash wallet unavailable", error instanceof Error ? error.message : String(error));
+      app.quit();
+      return;
+    }
+  }
+
   // Register zcash: protocol handler at runtime.
   // - MAS: handled declaratively via protocols in package.json (sandbox forbids this call).
   // - Flatpak: handled declaratively via the manifest .desktop file (sandbox forbids this call).
   // - Windows/Linux packaged: the installer registers it, but calling this too doesn't hurt.
   // - Dev mode on any platform: needed because electron-builder hasn't run.
   const isInSandbox = process.mas || !!process.env.FLATPAK_ID;
-  if (WCASH_RUNTIME_READY && !isInSandbox) {
+  if (LEGACY_ZCASH_RUNTIME_ENABLED && !isInSandbox) {
     if (process.defaultApp) {
       // Dev mode on Windows/Linux: register so URIs reach this instance via second-instance.
       // Skipped on macOS: cold-start doesn't work in dev anyway, and registering here would
@@ -2161,7 +2276,7 @@ app.whenReady().then(async () => {
   // LoadingScreen asks, the request has usually already landed, so `auto` costs
   // the launch nothing. Testnet is fetched on demand — far rarer, and no reason
   // to spend a second clearnet request on every launch.
-  if (WCASH_RUNTIME_READY) serverRegistry.load("main");
+  if (LEGACY_ZCASH_RUNTIME_ENABLED) serverRegistry.load("main");
 
   if (isDev) {
     try {
@@ -2226,7 +2341,7 @@ app.whenReady().then(async () => {
   });
   session.defaultSession.setPermissionCheckHandler(() => false);
 
-  if (WCASH_RUNTIME_READY) {
+  if (LEGACY_ZCASH_RUNTIME_ENABLED) {
     await maybeRunDmgToMasMigration();
     await maybeRunDebAppImageToFlatpakMigration();
   }

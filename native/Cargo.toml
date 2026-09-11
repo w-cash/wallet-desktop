@@ -12,83 +12,19 @@ crate-type = ["cdylib"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# Ironwood (NU6.3). Versions match the zingolib lockfile at the commit this
-# resolves to: mostly published crates.io zcash crates, plus a few from
-# librustzcash git (zcash_pool_migration, zcash_primitives 0.30) that the branch
-# needs, pinned in Cargo.lock (see the [patch] note below). Ground truth = that
-# Cargo.lock, not zingo-mobile's manifest. Build with `yarn neon` (needs
-# `protoc` on PATH).
-#
-# Pinned to dev: fix/for-zingo-pc-working (the boundary-carrier serde mint on
-# MixnetStatus + the Nym surface) merged via PR #2610, so dev now carries
-# attach_mixnet, the five-state Mixnet Mode, the MixnetStatus wire (with its
-# follow-up mode-scoping-on-lift hardening), the treestate fix, and the private
-# ironwood migration. Price is mixnet-only: update_current_price is
-# #[cfg(feature="nym")] and returns MixnetPriceFetch with no clearnet tier, so
-# zec_price_over_mixnet reads its .usd. The critical rc.1 lockfile crates match
-# (zcash_client_backend 0.24.0-rc.1, crypto-common rc.1, zcash_primitives 0.29
-# crates.io + 0.30 git coexist, orchard 0.15.4). See the [patch] note below on
-# the librustzcash rev pin zcash_pool_migration requires.
-zingolib = { git = "https://github.com/zingolabs/zingolib", branch = "dev", features = ["nym"] }
-pepper-sync = { git="https://github.com/zingolabs/zingolib", branch = "dev" }
-zingo-netutils = { git="https://github.com/zingolabs/zingolib", branch = "dev" }
+# The Wcash facade is pinned to one immutable, reviewed wallet-core revision.
+# The inherited Zingo implementation remains in legacy_zcash.rs for future
+# reference but is neither linked nor exported by the Wcash native artifact.
+zingolib = { git = "https://github.com/w-cash/wallet-core.git", rev = "62d729a17fed2263eddac9a11731def20062293d" }
+wcash-wallet = { git = "https://github.com/w-cash/wolf.git", rev = "47c44cd2adab6e6aa911ac740450c62ab600b4f5" }
 
-zcash_address = "0.13"
-# Keep at rc.1 (matches zingolib@79d575bf's lockfile). rc.4 pulls zcash_primitives
-# 0.30 from crates.io, which collides with pepper-sync's 0.29 (HashSer mismatch) —
-# so after any full `cargo update`, re-pin with `cargo update -p zcash_client_backend
-# --precise 0.24.0-rc.1` (and orchard must stay >=0.15.4 for the Ironwood builder).
-zcash_client_backend = { version = "0.24.0-rc.1", features = [
-    "lightwalletd-tonic",
-    "orchard",
-    "transparent-inputs",
-] }
-zcash_encoding = "0.4"
-zcash_keys = { version = "0.15", features = [
-    "transparent-inputs",
-    "sapling",
-    "orchard",
-] }
-zcash_note_encryption = "0.4.2"
-zcash_proofs = "0.29"
-zcash_protocol = "0.10"
-zcash_transparent = "0.9"
-
-rusqlite = { version = "0.37.0", features = ["bundled"] }
-
-zingo_common_components = "0.4.0"
-
-bip0039 = { version = "0.14", features = [ "rand" ] }
-zip32 = "0.2.0"
-json = "0.12"
+bip0039 = { version = "0.14", features = ["rand"] }
 serde_json = "1"
-hex = "0.4"
-http = "1"
 tokio = "1"
-# aws_lc_rs, not ring: the zingolib feat/ironwood workspace excised ring and
-# uses aws-lc-rs as its sole rustls CryptoProvider (with prefer-post-quantum).
-# zingo-netutils (sync) and zingo-price (Gemini fetch) both install aws-lc-rs;
-# we must install the same default or the price handshake fails. See lib.rs.
-rustls = { version = "0.23", features = ["aws_lc_rs"] }
-
-# zingo-price fetches the ZEC price over HTTPS with reqwest built as
-# `rustls-tls-no-provider`, which resolves to `rustls-tls-manual-roots` — an
-# EMPTY root-certificate store. It relies on some other crate in the build
-# enabling a reqwest roots feature (cargo unifies reqwest features across the
-# whole graph). Nothing else in zingo-pc's native build does, so the Gemini
-# request fails with no trust anchors. We enable webpki (Mozilla) roots here.
-# The `-no-provider` variant is required: the plain `rustls-tls-webpki-roots`
-# also pulls in the `ring` provider, which the ironwood workspace excised.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots-no-provider"] }
 thiserror = "2"
-log = "0.4"
-
+secrecy = "0.8"
+zeroize = "1"
 once_cell = "1"
-lazy_static = "1.4.0"
-
-# Force static linking of liblzma so the MAS sandbox cannot block Homebrew's
-# /opt/homebrew/opt/xz/lib/liblzma.5.dylib at runtime (sandbox error 159).
-liblzma = { version = "0.4", features = ["static"] }
 
 [dependencies.neon]
 version = "1"
@@ -100,22 +36,16 @@ windows = { version = "0.61", features = ["Security_Credentials_UI"] }
 [build-dependencies]
 cc = "1"
 
-# Only the patches the zingolib branch actually needs (per its Cargo.lock): a
-# dependency's own [patch] table is ignored by cargo, so this must be replicated
-# here. lightwallet-protocol carries the Ironwood proto fields (its
-# `rebuild-proto` feature needs `protoc` on PATH).
-#
-# librustzcash rev pin lives in Cargo.lock, NOT here. zingolib depends on
-# zcash_pool_migration (and, transitively, zcash_primitives 0.30 / zcash_address
-# / zcash_protocol / equihash / f4jumble / zcash_transparent) from
-# librustzcash's git DEFAULT BRANCH with no rev, so a bare `cargo update` floats
-# them to main's tip, where the migration denomination constants
-# (MIGRATION_MAX_DENOMINATION_ZEC, RESIDUAL_MIGRATION_MIN) were renamed and
-# zingolib no longer compiles. The lock is pinned to e12f1d0f, matching the
-# branch's own Cargo.lock. After any float, re-pin with
-# `cargo update -p zcash_pool_migration --precise e12f1d0ff7be5e5bfd2e4bcbb8d9a863a405f031`.
+[dev-dependencies]
+tempfile = "3"
+
+# Cargo ignores a dependency's patch table, so this native root repeats the
+# immutable Wcash/Ironwood source selections from wallet-core at the pinned SHA.
 [patch.crates-io]
 time = { git = "https://github.com/time-rs/time", tag = "v0.3.47" }
+pczt = { git = "https://github.com/w-cash/wolf.git", rev = "47c44cd2adab6e6aa911ac740450c62ab600b4f5" }
+zcash_primitives = { git = "https://github.com/w-cash/wolf.git", rev = "47c44cd2adab6e6aa911ac740450c62ab600b4f5" }
+zcash_protocol = { git = "https://github.com/w-cash/wolf.git", rev = "47c44cd2adab6e6aa911ac740450c62ab600b4f5" }
 lightwallet-protocol = { git = "https://github.com/zingolabs/lightwallet-protocol-rust", rev = "9bdfdc77eb283f2a3d26c27100cc2ac90148cd93" }
 
 [profile.release]
