@@ -3,7 +3,16 @@
 // proxied to the main process via IPC (see ALLOWED_INVOKE below).
 const { contextBridge, ipcRenderer } = require("electron");
 
-const WCASH_RUNTIME = require("../config/wcash-runtime.json");
+// Sandboxed Electron preload scripts can only require Electron's allowlisted
+// built-ins. Keep this public, immutable identity inline and assert it against
+// config/wcash-runtime.json in the product-boundary tests.
+const WCASH_RUNTIME = Object.freeze({
+  productName: "Wcash Warden Testnet",
+  network: "Wcash Testnet",
+  ticker: "TWC",
+  runtimeReady: true,
+  coreRevision: "62d729a17fed2263eddac9a11731def20062293d",
+});
 const WCASH_RUNTIME_READY = WCASH_RUNTIME.runtimeReady;
 // The inherited bridge is intentionally never reopened. Wcash calls use the
 // fixed allowlist exposed as window.wcash below.

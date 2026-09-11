@@ -41,6 +41,7 @@ describe("Wcash pinned-runtime product boundary", () => {
   it("keeps the inherited Zcash bridge closed while exposing only fixed Wcash paths", () => {
     const main = read("public/electron.js");
     const preload = read("public/preload.js");
+    const runtime = JSON.parse(read("config/wcash-runtime.json"));
 
     expect(main).toContain("const WCASH_RUNTIME_READY = WCASH_RUNTIME.runtimeReady;");
     expect(main).toContain("const LEGACY_ZCASH_RUNTIME_ENABLED = false;");
@@ -49,6 +50,9 @@ describe("Wcash pinned-runtime product boundary", () => {
     expect(main).toContain('handleWcash("wcash:status"');
     expect(main).not.toContain('ipcMain.handle("wcash:status"');
     expect(preload).toContain("const LEGACY_ZCASH_BRIDGE_ENABLED = false;");
+    expect(preload).not.toContain('require("../config/wcash-runtime.json")');
+    expect(preload).toContain('productName: "Wcash Warden Testnet"');
+    expect(preload).toContain(`coreRevision: "${runtime.coreRevision}"`);
     expect(preload).toContain("ALLOWED_INVOKE.clear()");
     expect(preload).toContain('contextBridge.exposeInMainWorld(\n  "wcash"');
     expect(preload).not.toContain("wcash_verify_mnemonic");

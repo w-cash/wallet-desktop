@@ -163,13 +163,15 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
     return operation;
   }
 
-  async function readCredential() {
-    const authenticated = await authenticate();
-    if (authenticated !== true) {
-      throw new WcashWalletLifecycleError(
-        "AUTHENTICATION_FAILED",
-        "Authentication is required to access the Wcash wallet credential",
-      );
+  async function readCredential(requireAuthentication = true) {
+    if (requireAuthentication) {
+      const authenticated = await authenticate();
+      if (authenticated !== true) {
+        throw new WcashWalletLifecycleError(
+          "AUTHENTICATION_FAILED",
+          "Authentication is required to access the Wcash wallet credential",
+        );
+      }
     }
     const stored = await keytar.getPassword(service, account);
     return stored === null ? null : parseCredential(stored);
@@ -179,10 +181,16 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
     return parseStatus(await native.wcash_status());
   }
 
-  async function classifyUnsafe() {
-    const credential = await readCredential();
+  async function classifyUnsafe({ inspectPendingWithoutDeviceAuth = false } = {}) {
     const status = await inspectNativeStatus();
     const databaseExists = status.wallet !== null;
+    // A fresh install has no wallet database and therefore no spend authority
+    // to protect. During public startup inspection only, read the keychain
+    // record without an extra biometric prompt so we can distinguish EMPTY
+    // from a crash-safe PENDING setup. The phrase remains main-process-only,
+    // and every operation that uses it still calls this function in the
+    // authenticated mode.
+    const credential = await readCredential(databaseExists || !inspectPendingWithoutDeviceAuth);
 
     if (!databaseExists && credential === null) {
       return { state: LIFECYCLE_STATES.EMPTY, status };
@@ -391,7 +399,7 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
 
   return Object.freeze({
     inspectState() {
-      return serialize(async () => publicState(await classifyUnsafe()));
+      return serialize(async () => publicState(await classifyUnsafe({ inspectPendingWithoutDeviceAuth: true })));
     },
 
     create() {

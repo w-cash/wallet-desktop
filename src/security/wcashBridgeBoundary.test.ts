@@ -7,7 +7,7 @@ const runtimeConfig = {
   ticker: "TWC",
 };
 
-const loadPreload = (runtimeReady: boolean) => {
+const loadPreload = () => {
   jest.resetModules();
   const exposeInMainWorld = jest.fn();
   const invoke = jest.fn().mockResolvedValue({ ok: true });
@@ -20,7 +20,6 @@ const loadPreload = (runtimeReady: boolean) => {
   };
 
   jest.doMock("electron", () => ({ contextBridge: { exposeInMainWorld }, ipcRenderer }));
-  jest.doMock("../../config/wcash-runtime.json", () => ({ ...runtimeConfig, runtimeReady }));
   jest.isolateModules(() => require("../../public/preload.js"));
 
   return {
@@ -31,10 +30,8 @@ const loadPreload = (runtimeReady: boolean) => {
 };
 
 describe("Wcash renderer bridge boundary", () => {
-  afterEach(() => jest.dontMock("../../config/wcash-runtime.json"));
-
   it("keeps every inherited native, invoke and filesystem path closed when Wcash is ready", async () => {
-    const { exposed, invoke, ipcRenderer } = loadPreload(true);
+    const { exposed, invoke, ipcRenderer } = loadPreload();
 
     await expect(exposed.electronAPI.native.get_seed()).rejects.toThrow("Legacy Zcash renderer bridge");
     await expect(exposed.electronAPI.fs.promises.readFile("/tmp/seed")).rejects.toThrow("Legacy Zcash renderer bridge");
@@ -48,7 +45,7 @@ describe("Wcash renderer bridge boundary", () => {
   });
 
   it("exposes only the fixed Wcash receive-wallet allowlist and no seed retrieval or path controls", async () => {
-    const { exposed, invoke } = loadPreload(true);
+    const { exposed, invoke } = loadPreload();
     const wcash = exposed.wcash;
 
     expect(Object.isFrozen(wcash)).toBe(true);
@@ -100,10 +97,15 @@ describe("Wcash renderer bridge boundary", () => {
     ]);
   });
 
-  it("does not call any Wcash channel while the reviewed runtime gate is closed", async () => {
-    const { exposed, invoke } = loadPreload(false);
+  it("publishes the exact reviewed Wcash Testnet identity without loading a local preload module", () => {
+    const { exposed } = loadPreload();
 
-    await expect(exposed.wcash.status()).rejects.toThrow("Wallet runtime disabled");
-    expect(invoke).not.toHaveBeenCalled();
+    expect(exposed.wcash.config).toEqual({
+      productName: runtimeConfig.productName,
+      network: runtimeConfig.network,
+      ticker: runtimeConfig.ticker,
+      runtimeReady: true,
+      coreRevision: runtimeConfig.coreRevision,
+    });
   });
 });

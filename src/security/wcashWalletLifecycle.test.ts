@@ -125,23 +125,49 @@ describe("Wcash main-process wallet lifecycle", () => {
     await expect(lifecycle.inspectState()).rejects.toMatchObject({ code: "NATIVE_STATUS_AMBIGUOUS" });
   });
 
-  it("authenticates immediately before every credential read and exposes no seed getter", async () => {
-    const { authenticate, events, keytar, lifecycle } = harness();
+  it("authenticates immediately before every existing-wallet credential read and exposes no seed getter", async () => {
+    const { authenticate, events, keytar, lifecycle } = harness({
+      stored: record("restore", 123),
+      status: { wallet: WALLET },
+    });
 
     await lifecycle.inspectState();
     await lifecycle.inspectState();
 
     expect(authenticate).toHaveBeenCalledTimes(2);
     expect(keytar.getPassword).toHaveBeenCalledTimes(2);
-    expect(events).toEqual(["authenticate", "getPassword", "status", "authenticate", "getPassword", "status"]);
+    expect(events).toEqual([
+      "status",
+      "authenticate",
+      "getPassword",
+      "verify",
+      "status",
+      "authenticate",
+      "getPassword",
+      "verify",
+    ]);
     expect(lifecycle.getSeed).toBeUndefined();
     expect(lifecycle.getCredential).toBeUndefined();
+  });
+
+  it("shows empty or pending onboarding state without an unnecessary device-auth prompt", async () => {
+    const empty = harness();
+    await expect(empty.lifecycle.inspectState()).resolves.toEqual(publicState(LIFECYCLE_STATES.EMPTY));
+    expect(empty.authenticate).not.toHaveBeenCalled();
+    expect(empty.events).toEqual(["status", "getPassword"]);
+
+    const pending = harness({ stored: record("create", 1) });
+    await expect(pending.lifecycle.inspectState()).resolves.toEqual(
+      publicState(LIFECYCLE_STATES.PENDING, { intent: "create", birthdayHeight: 1 }),
+    );
+    expect(pending.authenticate).not.toHaveBeenCalled();
+    expect(JSON.stringify(await pending.lifecycle.inspectState())).not.toContain("abandon");
   });
 
   it.each([undefined, null, {}, { success: false }, { success: true }])(
     "does not read the credential for a non-true authentication result: %p",
     async (authenticationResult) => {
-      const { authenticate, keytar, lifecycle } = harness();
+      const { authenticate, keytar, lifecycle } = harness({ status: { wallet: WALLET } });
       authenticate.mockResolvedValueOnce(authenticationResult);
 
       await expect(lifecycle.inspectState()).rejects.toMatchObject({ code: "AUTHENTICATION_FAILED" });
@@ -152,7 +178,7 @@ describe("Wcash main-process wallet lifecycle", () => {
 
   it("does not read the credential when authentication rejects", async () => {
     const failure = new Error("authentication unavailable");
-    const { authenticate, keytar, lifecycle } = harness();
+    const { authenticate, keytar, lifecycle } = harness({ status: { wallet: WALLET } });
     authenticate.mockRejectedValueOnce(failure);
 
     await expect(lifecycle.inspectState()).rejects.toBe(failure);
@@ -426,7 +452,7 @@ describe("Wcash main-process wallet lifecycle", () => {
       seed_scheme: SEED_SCHEME,
     });
 
-    expect(events).toEqual(["authenticate", "getPassword", "status", "verify"]);
+    expect(events).toEqual(["status", "authenticate", "getPassword", "verify"]);
     expect(native.wcash_verify_mnemonic).toHaveBeenCalledWith(PHRASE);
   });
 
