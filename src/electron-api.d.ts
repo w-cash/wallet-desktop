@@ -31,6 +31,11 @@ declare global {
       stopSync: () => Promise<boolean>;
       balance: () => Promise<unknown>;
       receivers: () => Promise<unknown>;
+      validateRecipient: (address: string) => Promise<unknown>;
+      send: (request: unknown) => Promise<unknown>;
+      shieldCoinbase: () => Promise<unknown>;
+      pendingTransactions: (afterCursor?: string) => Promise<unknown>;
+      rebroadcastPending: (txid: string) => Promise<unknown>;
     };
     wcashShell: {
       readonly productName: "Wcash Warden Testnet";

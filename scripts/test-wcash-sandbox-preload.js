@@ -9,13 +9,18 @@ const EXPECTED_METHODS = [
   "config",
   "create",
   "open",
+  "pendingTransactions",
+  "rebroadcastPending",
   "receivers",
   "restore",
   "resumePending",
   "revealBackup",
   "status",
   "stopSync",
+  "send",
+  "shieldCoinbase",
   "sync",
+  "validateRecipient",
 ];
 
 const timeout = setTimeout(() => {

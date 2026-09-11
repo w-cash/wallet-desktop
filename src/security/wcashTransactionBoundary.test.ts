@@ -1,0 +1,320 @@
+export {};
+
+const {
+  buildSendConfirmation,
+  buildShieldConfirmation,
+  cancelledOperation,
+  createWcashTransactionController,
+  parseCanonicalAmount,
+  parseNativeOperationEnvelope,
+  parseNativePendingTransactions,
+  parseNativeRecipientValidation,
+  parseRendererSendRequest,
+  requireCanonicalTxid,
+  RECOVERY_MESSAGE,
+  visibleText,
+} = require("../../public/wcashTransactionBoundary");
+
+const TXID = "a".repeat(64);
+const ADDRESS = `wutest1${"q".repeat(80)}`;
+
+const broadcastEnvelope = (overrides = {}) => ({
+  schema_version: 1,
+  operation: "send",
+  outcome: "broadcast",
+  txid: TXID,
+  branch_id: "b3cfd27e",
+  expiry_height: 180,
+  target_height: 140,
+  fee_zat: "15000",
+  internal_change_receiver_verified: true,
+  broadcast: {
+    txid: TXID,
+    disposition: "submitted",
+    status: { state: "mempool" },
+  },
+  recovery: null,
+  ...overrides,
+});
+
+describe("Wcash transaction main-process boundary", () => {
+  it.each([
+    ["0.00000001", "1"],
+    ["1", "100000000"],
+    ["1.25", "125000000"],
+    ["21000000", "2100000000000000"],
+  ])("converts canonical TWC without floating point: %s", (amount, amountZat) => {
+    expect(parseCanonicalAmount(amount)).toEqual({ amount, amountZat });
+  });
+
+  it.each([
+    "",
+    "0",
+    "00.1",
+    "01",
+    ".1",
+    "1.",
+    "1.0",
+    "1.250",
+    "1.000000000",
+    "+1",
+    "-1",
+    "1e2",
+    " 1",
+    "1,000",
+    "21000000.00000001",
+  ])("rejects non-canonical or out-of-range amount %p", (amount) => {
+    expect(() => parseCanonicalAmount(amount)).toThrow();
+  });
+
+  it("accepts exactly one immutable payment and counts UTF-8 memo bytes", () => {
+    const parsed = parseRendererSendRequest({ payments: [{ address: ADDRESS, amount: "1.25", memo: "💚" }] });
+
+    expect(parsed).toEqual({
+      payments: [{ address: ADDRESS, amount: "1.25", memo: "💚" }],
+      amountZat: "125000000",
+      memo: "💚",
+      memoBytes: 4,
+    });
+    expect(Object.isFrozen(parsed)).toBe(true);
+    expect(Object.isFrozen(parsed.payments)).toBe(true);
+    expect(Object.isFrozen(parsed.payments[0])).toBe(true);
+  });
+
+  it("rejects extra request fields, multiple UI recipients, and a 513-byte memo", () => {
+    expect(() =>
+      parseRendererSendRequest({ payments: [{ address: ADDRESS, amount: "1" }], endpoint: "attacker" }),
+    ).toThrow("exactly one");
+    expect(() =>
+      parseRendererSendRequest({
+        payments: [
+          { address: ADDRESS, amount: "1" },
+          { address: ADDRESS, amount: "1" },
+        ],
+      }),
+    ).toThrow("exactly one");
+    expect(() =>
+      parseRendererSendRequest({ payments: [{ address: ADDRESS, amount: "1", memo: "é".repeat(257) }] }),
+    ).toThrow("512-byte");
+  });
+
+  it("accepts only a Wcash Testnet Ironwood native validation envelope", () => {
+    const valid = {
+      schema_version: 1,
+      valid: true,
+      network: "Wcash Testnet",
+      recipient_kind: "ironwood",
+      canonical_address: ADDRESS,
+      error: null,
+    };
+    expect(parseNativeRecipientValidation(JSON.stringify(valid))).toEqual(valid);
+
+    expect(() => parseNativeRecipientValidation({ ...valid, network: "Zcash Testnet" })).toThrow();
+    expect(() => parseNativeRecipientValidation({ ...valid, raw_transaction_hex: "secret" })).toThrow();
+  });
+
+  it("preserves a typed invalid-recipient result without trusting extra native data", () => {
+    const invalid = {
+      schema_version: 1,
+      valid: false,
+      network: "Wcash Testnet",
+      recipient_kind: null,
+      canonical_address: null,
+      error: { code: "invalid_recipient", message: "Not a Wcash Testnet Ironwood address" },
+    };
+    expect(parseNativeRecipientValidation(invalid)).toEqual(invalid);
+    expect(() => parseNativeRecipientValidation({ ...invalid, error: { ...invalid.error, seed: "bad" } })).toThrow();
+  });
+
+  it("allowlists successful and recovery transaction envelopes", () => {
+    expect(parseNativeOperationEnvelope(broadcastEnvelope(), "send")).toEqual(broadcastEnvelope());
+
+    const recovery = broadcastEnvelope({
+      operation: "shield_coinbase",
+      outcome: "recovery_required",
+      broadcast: null,
+      recovery: {
+        code: "exact_transaction_rebroadcast_required",
+        message: "sensitive server endpoint diagnostic",
+      },
+    });
+    expect(parseNativeOperationEnvelope(JSON.stringify(recovery), "shield_coinbase")).toEqual({
+      ...recovery,
+      recovery: { code: "exact_transaction_rebroadcast_required", message: RECOVERY_MESSAGE },
+    });
+  });
+
+  it("rejects raw bytes, secret fields, wrong branch, mismatched txid, and unknown status", () => {
+    expect(() =>
+      parseNativeOperationEnvelope({ ...broadcastEnvelope(), raw_transaction_hex: "deadbeef" }, "send"),
+    ).toThrow();
+    expect(() => parseNativeOperationEnvelope({ ...broadcastEnvelope(), seed: "phrase" }, "send")).toThrow();
+    expect(() => parseNativeOperationEnvelope({ ...broadcastEnvelope(), branch_id: "deadbeef" }, "send")).toThrow(
+      "wrong branch",
+    );
+    expect(() =>
+      parseNativeOperationEnvelope(
+        { ...broadcastEnvelope(), broadcast: { ...broadcastEnvelope().broadcast, txid: "b".repeat(64) } },
+        "send",
+      ),
+    ).toThrow();
+    expect(() =>
+      parseNativeOperationEnvelope({ ...broadcastEnvelope(), internal_change_receiver_verified: false }, "send"),
+    ).toThrow("operation-specific metadata");
+    expect(() => parseNativeOperationEnvelope({ ...broadcastEnvelope(), fee_zat: null }, "send")).toThrow(
+      "operation-specific metadata",
+    );
+    expect(() =>
+      parseNativeOperationEnvelope(
+        { ...broadcastEnvelope(), broadcast: { ...broadcastEnvelope().broadcast, status: { state: "unknown" } } },
+        "send",
+      ),
+    ).toThrow();
+  });
+
+  it("allowlists pending metadata without exposing stored signed bytes", () => {
+    const pending = {
+      schema_version: 1,
+      transactions: [{ txid: TXID, branch_id: "b3cfd27e", expiry_height: 180 }],
+      next_cursor: "42",
+    };
+    expect(parseNativePendingTransactions(pending)).toEqual(pending);
+    expect(() =>
+      parseNativePendingTransactions({
+        ...pending,
+        transactions: [{ ...pending.transactions[0], raw_transaction_hex: "deadbeef" }],
+      }),
+    ).toThrow();
+    expect(() => parseNativePendingTransactions({ ...pending, next_cursor: "01" })).toThrow();
+  });
+
+  it("requires exact lowercase transaction IDs for retry", () => {
+    expect(requireCanonicalTxid(TXID)).toBe(TXID);
+    expect(() => requireCanonicalTxid(TXID.toUpperCase())).toThrow();
+    expect(() => requireCanonicalTxid("../wallet.dat")).toThrow();
+  });
+
+  it("makes control and bidi characters visible in system confirmation text", () => {
+    expect(visibleText("safe\u202Etxt\n\u0000")).toBe("safe\\u{202E}txt\\u{A}\\u{0}");
+    const request = parseRendererSendRequest({
+      payments: [{ address: ADDRESS, amount: "1.25", memo: "safe\u202Etxt" }],
+    });
+    const confirmation = buildSendConfirmation(request, ADDRESS);
+    expect(confirmation.detail).toContain(ADDRESS);
+    expect(confirmation.detail).toContain("1.25 TWC");
+    expect(confirmation.detail).toContain("125000000");
+    expect(confirmation.detail).toContain("10 UTF-8 bytes");
+    expect(confirmation.detail).toContain("\\u{202E}");
+    expect(confirmation.defaultId).toBe(1);
+    expect(confirmation.cancelId).toBe(1);
+  });
+
+  it("makes shielding consequences explicit and cancellation non-transactional", () => {
+    const confirmation = buildShieldConfirmation();
+    expect(confirmation.detail).toContain("own private Ironwood receiver");
+    expect(confirmation.detail).toContain("Up to 100 mature");
+    expect(confirmation.detail).toContain("fee");
+    expect(cancelledOperation("send")).toEqual({ schema_version: 1, operation: "send", outcome: "cancelled" });
+  });
+
+  it("cancels before credential access when the independent send confirmation is declined", async () => {
+    const sendAndBroadcast = jest.fn();
+    const controller = createWcashTransactionController({
+      validateRecipientNative: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        valid: true,
+        network: "Wcash Testnet",
+        recipient_kind: "ironwood",
+        canonical_address: ADDRESS,
+        error: null,
+      }),
+      sendAndBroadcast,
+      shieldCoinbaseAndBroadcast: jest.fn(),
+      pendingTransactionsNative: jest.fn(),
+      rebroadcastPendingNative: jest.fn(),
+      confirmSend: jest.fn().mockResolvedValue(false),
+      confirmShield: jest.fn().mockResolvedValue(false),
+    });
+
+    await expect(controller.send({ payments: [{ address: ADDRESS, amount: "1" }] })).resolves.toEqual({
+      schema_version: 1,
+      operation: "send",
+      outcome: "cancelled",
+    });
+    expect(sendAndBroadcast).not.toHaveBeenCalled();
+  });
+
+  it("revalidates, confirms, then invokes one composite sign-and-broadcast operation", async () => {
+    const events: string[] = [];
+    const sendAndBroadcast = jest.fn(async () => {
+      events.push("sign-and-broadcast");
+      return broadcastEnvelope();
+    });
+    const controller = createWcashTransactionController({
+      validateRecipientNative: jest.fn(async () => {
+        events.push("validate");
+        return {
+          schema_version: 1,
+          valid: true,
+          network: "Wcash Testnet",
+          recipient_kind: "ironwood",
+          canonical_address: ADDRESS,
+          error: null,
+        };
+      }),
+      sendAndBroadcast,
+      shieldCoinbaseAndBroadcast: jest.fn(),
+      pendingTransactionsNative: jest.fn(),
+      rebroadcastPendingNative: jest.fn(),
+      confirmSend: jest.fn(async (options: { detail: string }) => {
+        events.push("confirm");
+        expect(options.detail).toContain(ADDRESS);
+        expect(options.detail).toContain("100000000");
+        return true;
+      }),
+      confirmShield: jest.fn(),
+    });
+
+    await expect(controller.send({ payments: [{ address: ADDRESS, amount: "1" }] })).resolves.toMatchObject({
+      outcome: "broadcast",
+      txid: TXID,
+    });
+
+    expect(events).toEqual(["validate", "confirm", "sign-and-broadcast"]);
+    expect(sendAndBroadcast).toHaveBeenCalledWith(JSON.stringify({ payments: [{ address: ADDRESS, amount: "1" }] }));
+  });
+
+  it("cancels shielding before signing and strictly sanitizes pending recovery", async () => {
+    const shieldCoinbaseAndBroadcast = jest.fn();
+    const pendingTransactionsNative = jest.fn().mockResolvedValue({
+      schema_version: 1,
+      transactions: [{ txid: TXID, branch_id: "b3cfd27e", expiry_height: 180 }],
+      next_cursor: null,
+    });
+    const controller = createWcashTransactionController({
+      validateRecipientNative: jest.fn(),
+      sendAndBroadcast: jest.fn(),
+      shieldCoinbaseAndBroadcast,
+      pendingTransactionsNative,
+      rebroadcastPendingNative: jest.fn().mockResolvedValue(
+        broadcastEnvelope({
+          operation: "rebroadcast_pending",
+          target_height: null,
+          fee_zat: null,
+          internal_change_receiver_verified: null,
+        }),
+      ),
+      confirmSend: jest.fn(),
+      confirmShield: jest.fn().mockResolvedValue(false),
+    });
+
+    await expect(controller.shieldCoinbase()).resolves.toMatchObject({ outcome: "cancelled" });
+    expect(shieldCoinbaseAndBroadcast).not.toHaveBeenCalled();
+    await expect(controller.pendingTransactions("42")).resolves.toMatchObject({ transactions: [{ txid: TXID }] });
+    expect(pendingTransactionsNative).toHaveBeenCalledWith("42");
+    await expect(controller.rebroadcastPending(TXID)).resolves.toMatchObject({
+      operation: "rebroadcast_pending",
+      outcome: "broadcast",
+    });
+  });
+});

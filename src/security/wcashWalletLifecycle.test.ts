@@ -83,6 +83,22 @@ function harness({ stored = null, status = { wallet: null } }: HarnessOptions = 
       events.push("restore");
       return JSON.stringify({ wallet: WALLET, seed_scheme: SEED_SCHEME });
     }),
+    wcash_send_and_broadcast: jest.fn(async () => {
+      events.push("send");
+      return JSON.stringify({ safe: "send-result" });
+    }),
+    wcash_shield_coinbase_and_broadcast: jest.fn(async () => {
+      events.push("shield");
+      return JSON.stringify({ safe: "shield-result" });
+    }),
+    wcash_pending_transactions: jest.fn(async () => {
+      events.push("pending");
+      return JSON.stringify({ safe: "pending-result" });
+    }),
+    wcash_rebroadcast_pending: jest.fn(async () => {
+      events.push("rebroadcast");
+      return JSON.stringify({ safe: "rebroadcast-result" });
+    }),
   };
   const lifecycle = createWcashWalletLifecycle({
     keytar,
@@ -543,5 +559,100 @@ describe("Wcash main-process wallet lifecycle", () => {
 
     expect(keytar.setPassword).not.toHaveBeenCalled();
     expect(native.wcash_create).not.toHaveBeenCalled();
+  });
+
+  it("authenticates and verifies ownership before passing the phrase to the composite send operation", async () => {
+    const { events, lifecycle, native } = harness({
+      stored: record("restore", 123),
+      status: { wallet: WALLET },
+    });
+    const request = JSON.stringify({ payments: [{ address: "wutest1recipient", amount: "1" }] });
+
+    await expect(lifecycle.sendAndBroadcast(request)).resolves.toEqual({ safe: "send-result" });
+
+    expect(events).toEqual(["status", "authenticate", "getPassword", "verify", "send"]);
+    expect(native.wcash_send_and_broadcast).toHaveBeenCalledWith(PHRASE, request);
+    expect(JSON.stringify(await lifecycle.sendAndBroadcast(request))).not.toContain(PHRASE);
+  });
+
+  it("authenticates before shielding and never returns the credential", async () => {
+    const { events, lifecycle, native } = harness({
+      stored: record("restore", 123),
+      status: { wallet: WALLET },
+    });
+
+    const result = await lifecycle.shieldCoinbaseAndBroadcast();
+
+    expect(events).toEqual(["status", "authenticate", "getPassword", "verify", "shield"]);
+    expect(native.wcash_shield_coinbase_and_broadcast).toHaveBeenCalledWith(PHRASE);
+    expect(result).toEqual({ safe: "shield-result" });
+    expect(JSON.stringify(result)).not.toContain(PHRASE);
+  });
+
+  it("requires authenticated READY state for pending recovery without passing the phrase to native", async () => {
+    const { events, lifecycle, native } = harness({
+      stored: record("restore", 123),
+      status: { wallet: WALLET },
+    });
+
+    await expect(lifecycle.pendingTransactions("42")).resolves.toEqual({ safe: "pending-result" });
+    await expect(lifecycle.rebroadcastPending("a".repeat(64))).resolves.toEqual({ safe: "rebroadcast-result" });
+
+    expect(native.wcash_pending_transactions).toHaveBeenCalledWith("42");
+    expect(native.wcash_rebroadcast_pending).toHaveBeenCalledWith("a".repeat(64));
+    expect(native.wcash_pending_transactions.mock.calls.flat()).not.toContain(PHRASE);
+    expect(native.wcash_rebroadcast_pending.mock.calls.flat()).not.toContain(PHRASE);
+    expect(events).toEqual([
+      "status",
+      "authenticate",
+      "getPassword",
+      "verify",
+      "pending",
+      "status",
+      "authenticate",
+      "getPassword",
+      "verify",
+      "rebroadcast",
+    ]);
+  });
+
+  it("does not call transaction native methods unless the database, credential, and backup are ready", async () => {
+    const { lifecycle, native } = harness({
+      stored: record("create", 321),
+      status: { wallet: WALLET },
+    });
+
+    await expect(lifecycle.sendAndBroadcast('{"payments":[]}')).rejects.toMatchObject({
+      code: "WALLET_BACKUP_REQUIRED",
+    });
+    await expect(lifecycle.shieldCoinbaseAndBroadcast()).rejects.toMatchObject({ code: "WALLET_BACKUP_REQUIRED" });
+
+    expect(native.wcash_send_and_broadcast).not.toHaveBeenCalled();
+    expect(native.wcash_shield_coinbase_and_broadcast).not.toHaveBeenCalled();
+  });
+
+  it("serializes transaction authority so duplicate submits cannot sign concurrently", async () => {
+    const { lifecycle, native } = harness({
+      stored: record("restore", 123),
+      status: { wallet: WALLET },
+    });
+    const releases: Array<() => void> = [];
+    native.wcash_send_and_broadcast.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releases.push(() => resolve(JSON.stringify({ safe: "send-result" })));
+        }),
+    );
+
+    const first = lifecycle.sendAndBroadcast('{"payments":[{"address":"wutest1recipient","amount":"1"}]}');
+    const second = lifecycle.sendAndBroadcast('{"payments":[{"address":"wutest1recipient","amount":"2"}]}');
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(native.wcash_send_and_broadcast).toHaveBeenCalledTimes(1);
+    releases.shift()!();
+    await first;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(native.wcash_send_and_broadcast).toHaveBeenCalledTimes(2);
+    releases.shift()!();
+    await second;
   });
 });

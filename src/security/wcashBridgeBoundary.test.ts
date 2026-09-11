@@ -44,7 +44,7 @@ describe("Wcash renderer bridge boundary", () => {
     expect(ipcRenderer.send).not.toHaveBeenCalled();
   });
 
-  it("exposes only the fixed Wcash receive-wallet allowlist and no seed retrieval or path controls", async () => {
+  it("exposes only the fixed Wcash semantic wallet allowlist and no seed, raw signing, or path controls", async () => {
     const { exposed, invoke } = loadPreload();
     const wcash = exposed.wcash;
 
@@ -57,18 +57,26 @@ describe("Wcash renderer bridge boundary", () => {
         "config",
         "create",
         "open",
+        "pendingTransactions",
+        "rebroadcastPending",
         "receivers",
         "resumePending",
         "revealBackup",
         "restore",
         "status",
         "stopSync",
+        "send",
+        "shieldCoinbase",
         "sync",
+        "validateRecipient",
       ].sort(),
     );
     expect(wcash.getSeed).toBeUndefined();
     expect(wcash.setWalletBaseDir).toBeUndefined();
     expect(wcash.changeServer).toBeUndefined();
+    expect(wcash.sign).toBeUndefined();
+    expect(wcash.broadcast).toBeUndefined();
+    expect(wcash.rawTransaction).toBeUndefined();
 
     await wcash.status();
     await wcash.create();
@@ -81,6 +89,11 @@ describe("Wcash renderer bridge boundary", () => {
     await wcash.stopSync();
     await wcash.balance();
     await wcash.receivers();
+    await wcash.validateRecipient("wutest1recipient");
+    await wcash.send({ payments: [{ address: "wutest1recipient", amount: "1" }] });
+    await wcash.shieldCoinbase();
+    await wcash.pendingTransactions("42");
+    await wcash.rebroadcastPending("a".repeat(64));
 
     expect(invoke.mock.calls).toEqual([
       ["wcash:status"],
@@ -94,6 +107,11 @@ describe("Wcash renderer bridge boundary", () => {
       ["wcash:stop-sync"],
       ["wcash:balance"],
       ["wcash:receivers"],
+      ["wcash:validate-recipient", "wutest1recipient"],
+      ["wcash:send", { payments: [{ address: "wutest1recipient", amount: "1" }] }],
+      ["wcash:shield-coinbase"],
+      ["wcash:pending-transactions", "42"],
+      ["wcash:rebroadcast-pending", "a".repeat(64)],
     ]);
   });
 

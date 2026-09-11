@@ -21,13 +21,26 @@ describe("Wcash renderer privilege boundary", () => {
     expect(wallet).not.toMatch(/\bconsole\.(?:log|debug|info|warn|error|trace)\b/);
   });
 
-  it("has no send or signing UI before those reviewed bridge methods exist", () => {
+  it("uses only semantic transaction methods and never exposes generic signing or raw broadcast", () => {
     const wallet = read("src/wcash/WcashWallet.tsx");
     const bridgeTypes = read("src/electron-api.d.ts");
     const wcashBridgeTypes = bridgeTypes.slice(bridgeTypes.indexOf("wcash: {"), bridgeTypes.indexOf("wcashShell: {"));
 
-    expect(wallet).not.toMatch(/window\.wcash\.(?:send|sign|broadcast)/);
-    expect(wcashBridgeTypes).not.toMatch(/^\s+(?:send|sign|broadcast):/m);
+    expect(wcashBridgeTypes).toMatch(/^\s+send:/m);
+    expect(wcashBridgeTypes).toMatch(/^\s+shieldCoinbase:/m);
+    expect(wcashBridgeTypes).toMatch(/^\s+rebroadcastPending:/m);
+    expect(wcashBridgeTypes).not.toMatch(/^\s+(?:sign|broadcast|rawTransaction):/m);
     expect(wcashBridgeTypes).not.toMatch(/(?:check|verify)DeviceAuth/);
+  });
+
+  it("routes transaction IPC through the independently tested main-process controller", () => {
+    const main = read("public/electron.js");
+    const controller = read("public/wcashTransactionBoundary.js");
+
+    expect(main).toContain("createWcashTransactionController");
+    expect(main).toContain('handleWcash("wcash:send", (request) => wcashTransactionController.send(request))');
+    expect(main).toContain("dialog.showMessageBox(owner, options)");
+    expect(controller.indexOf("confirmSend")).toBeLessThan(controller.indexOf("sendAndBroadcast(JSON.stringify"));
+    expect(controller.indexOf("confirmShield")).toBeLessThan(controller.indexOf("shieldCoinbaseAndBroadcast()"));
   });
 });

@@ -185,6 +185,11 @@ contextBridge.exposeInMainWorld(
     stopSync: () => invokeWcash("wcash:stop-sync"),
     balance: () => invokeWcash("wcash:balance"),
     receivers: () => invokeWcash("wcash:receivers"),
+    validateRecipient: (address) => invokeWcash("wcash:validate-recipient", address),
+    send: (request) => invokeWcash("wcash:send", request),
+    shieldCoinbase: () => invokeWcash("wcash:shield-coinbase"),
+    pendingTransactions: (afterCursor) => invokeWcash("wcash:pending-transactions", afterCursor),
+    rebroadcastPending: (txid) => invokeWcash("wcash:rebroadcast-pending", txid),
   }),
 );
 

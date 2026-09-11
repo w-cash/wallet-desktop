@@ -283,6 +283,28 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
     }
   }
 
+  function requireReadyCredential(classification) {
+    if (classification.state === LIFECYCLE_STATES.FAIL_CLOSED) {
+      throw new WcashWalletLifecycleError(
+        "WALLET_OWNERSHIP_UNVERIFIED",
+        "The Wcash wallet database and credential could not be matched",
+      );
+    }
+    if (classification.state === LIFECYCLE_STATES.BACKUP_REQUIRED) {
+      throw new WcashWalletLifecycleError(
+        "WALLET_BACKUP_REQUIRED",
+        "Confirm the Wcash recovery phrase backup before authorizing transactions",
+      );
+    }
+    if (classification.state !== LIFECYCLE_STATES.READY) {
+      throw new WcashWalletLifecycleError(
+        "WALLET_NOT_READY",
+        "The Wcash wallet is not ready to authorize transactions",
+      );
+    }
+    return classification.credential;
+  }
+
   async function normalizeMnemonic(phrase) {
     if (typeof phrase !== "string" || phrase.length < 32 || phrase.length > 512) {
       throw new WcashWalletLifecycleError("MNEMONIC_INVALID", "Wcash recovery phrase must be a 24-word BIP39 phrase");
@@ -474,6 +496,52 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
           );
         }
         return initializeFromCredential(classification.credential, "wcash_restore", undefined, false);
+      });
+    },
+
+    sendAndBroadcast(requestJson) {
+      return serialize(async () => {
+        if (typeof requestJson !== "string" || requestJson.length === 0 || requestJson.length > 128 * 1024) {
+          throw new WcashWalletLifecycleError("TRANSACTION_REQUEST_INVALID", "Wcash transaction request is invalid");
+        }
+        const credential = requireReadyCredential(await classifyUnsafe());
+        assertFunction(native, "wcash_send_and_broadcast", "native");
+        return parseJsonObject(
+          "wcash_send_and_broadcast",
+          await native.wcash_send_and_broadcast(credential.phrase, requestJson),
+        );
+      });
+    },
+
+    shieldCoinbaseAndBroadcast() {
+      return serialize(async () => {
+        const credential = requireReadyCredential(await classifyUnsafe());
+        assertFunction(native, "wcash_shield_coinbase_and_broadcast", "native");
+        return parseJsonObject(
+          "wcash_shield_coinbase_and_broadcast",
+          await native.wcash_shield_coinbase_and_broadcast(credential.phrase),
+        );
+      });
+    },
+
+    pendingTransactions(afterCursor) {
+      return serialize(async () => {
+        requireReadyCredential(await classifyUnsafe());
+        assertFunction(native, "wcash_pending_transactions", "native");
+        return parseJsonObject(
+          "wcash_pending_transactions",
+          afterCursor === undefined
+            ? await native.wcash_pending_transactions()
+            : await native.wcash_pending_transactions(afterCursor),
+        );
+      });
+    },
+
+    rebroadcastPending(txid) {
+      return serialize(async () => {
+        requireReadyCredential(await classifyUnsafe());
+        assertFunction(native, "wcash_rebroadcast_pending", "native");
+        return parseJsonObject("wcash_rebroadcast_pending", await native.wcash_rebroadcast_pending(txid));
       });
     },
   });

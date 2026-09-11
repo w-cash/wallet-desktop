@@ -5,6 +5,7 @@ const fs = require("fs");
 const { pathToFileURL } = require("url");
 const { createWcashIpcBoundary } = require("./wcashIpcBoundary");
 const { LIFECYCLE_STATES, createWcashWalletLifecycle } = require("./wcashWalletLifecycle");
+const { createWcashTransactionController } = require("./wcashTransactionBoundary");
 
 const WCASH_RUNTIME = require("../config/wcash-runtime.json");
 const WCASH_RUNTIME_READY = WCASH_RUNTIME.runtimeReady;
@@ -940,6 +941,27 @@ const wcashIpcBoundary = createWcashIpcBoundary({
 });
 const handleWcash = (channel, operation, options) => wcashIpcBoundary.register(ipcMain, channel, operation, options);
 
+const wcashTransactionController = createWcashTransactionController({
+  validateRecipientNative: (address) => {
+    const native = requireWcashNative("wcash_validate_recipient");
+    return native.wcash_validate_recipient(address);
+  },
+  sendAndBroadcast: (requestJson) => getWcashWalletLifecycle().sendAndBroadcast(requestJson),
+  shieldCoinbaseAndBroadcast: () => getWcashWalletLifecycle().shieldCoinbaseAndBroadcast(),
+  pendingTransactionsNative: (afterCursor) => getWcashWalletLifecycle().pendingTransactions(afterCursor),
+  rebroadcastPendingNative: (txid) => getWcashWalletLifecycle().rebroadcastPending(txid),
+  confirmSend: async (options) => {
+    const owner =
+      BrowserWindow.getAllWindows().find((window) => window.webContents === wcashTrustedWebContents) ?? null;
+    return (await dialog.showMessageBox(owner, options)).response === 0;
+  },
+  confirmShield: async (options) => {
+    const owner =
+      BrowserWindow.getAllWindows().find((window) => window.webContents === wcashTrustedWebContents) ?? null;
+    return (await dialog.showMessageBox(owner, options)).response === 0;
+  },
+});
+
 handleWcash("wcash:status", () => getWcashWalletLifecycle().inspectState());
 handleWcash("wcash:create", () => getWcashWalletLifecycle().create());
 handleWcash("wcash:restore", (seedPhrase, birthdayHeight) =>
@@ -959,6 +981,11 @@ handleWcash("wcash:sync", () => invokeWcashJson("wcash_sync"));
 handleWcash("wcash:stop-sync", () => requireWcashNative("wcash_stop_sync").wcash_stop_sync(), { outOfBand: true });
 handleWcash("wcash:balance", () => invokeWcashJson("wcash_balance"));
 handleWcash("wcash:receivers", () => invokeWcashJson("wcash_receivers"));
+handleWcash("wcash:validate-recipient", (address) => wcashTransactionController.validateRecipient(address));
+handleWcash("wcash:send", (request) => wcashTransactionController.send(request));
+handleWcash("wcash:shield-coinbase", () => wcashTransactionController.shieldCoinbase());
+handleWcash("wcash:pending-transactions", (afterCursor) => wcashTransactionController.pendingTransactions(afterCursor));
+handleWcash("wcash:rebroadcast-pending", (txid) => wcashTransactionController.rebroadcastPending(txid));
 
 function configureWcashWalletBaseDir() {
   const native = requireWcashNative("set_wallet_base_dir");
