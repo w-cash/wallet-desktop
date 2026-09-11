@@ -8,6 +8,7 @@ import {
   parseBalance,
   parseCreatedWallet,
   parseOpenedWallet,
+  parseRecoveryPhrase,
   parseReceivers,
   parseStatus,
   publicErrorMessage,
@@ -20,6 +21,7 @@ type Screen =
   | "onboarding"
   | "restore"
   | "backup"
+  | "backupRequired"
   | "pending"
   | "locked"
   | "wallet"
@@ -29,6 +31,9 @@ type Screen =
 const CONFIRMATION_WORDS = [3, 11, 19] as const;
 
 const sum = (values: readonly bigint[]): bigint => values.reduce((total, value) => total + value, 0n);
+
+const isSameWallet = (left: WcashWalletMetadata, right: WcashWalletMetadata): boolean =>
+  left.accountId === right.accountId && left.birthdayHeight === right.birthdayHeight;
 
 const WcashHeader = () => (
   <header className="warden-header">
@@ -99,7 +104,10 @@ const WcashWallet = () => {
       }
 
       const status = parseStatus(await bridge.status());
-      if (status.network !== "Wcash Testnet" || status.ticker !== "TWC") {
+      if (
+        (status.network !== undefined && status.network !== "Wcash Testnet") ||
+        (status.ticker !== undefined && status.ticker !== "TWC")
+      ) {
         throw new Error("Wallet runtime reported an unexpected network identity");
       }
       switch (status.state) {
@@ -121,6 +129,12 @@ const WcashWallet = () => {
           setPendingBirthday(null);
           setScreen("locked");
           break;
+        case "database-secret-backup-required":
+          setWallet(status.wallet);
+          setPendingIntent(null);
+          setPendingBirthday(null);
+          setScreen("backupRequired");
+          break;
         case "database-only-fail-closed":
           setWallet(status.wallet);
           setPendingIntent(null);
@@ -139,14 +153,14 @@ const WcashWallet = () => {
   }, [bootstrap]);
 
   const enterWallet = async (metadata: WcashWalletMetadata) => {
-    setWallet(metadata);
     setReceivers(null);
     setBalance(null);
     setSyncNote("Checking wallet state…");
-    setScreen("wallet");
 
     const addresses = parseReceivers(await window.wcash.receivers());
+    setWallet(metadata);
     setReceivers(addresses);
+    setScreen("wallet");
 
     try {
       const current = parseBalance(await window.wcash.balance());
@@ -201,11 +215,19 @@ const WcashWallet = () => {
 
     setBusy(true);
     setError(null);
+    setScreen("backupRequired");
     try {
-      await enterWallet(metadata);
+      const acknowledged = parseStatus(await window.wcash.acknowledgeBackup());
+      if (acknowledged.state !== "database-and-secret-ready" || !isSameWallet(acknowledged.wallet, metadata)) {
+        throw new Error("Wallet backup acknowledgement did not reach a durable ready state");
+      }
+      const opened = parseOpenedWallet(await window.wcash.open());
+      if (!isSameWallet(opened, metadata)) throw new Error("Opened wallet identity changed after backup confirmation");
+      await enterWallet(opened);
     } catch (cause) {
       setError(publicErrorMessage(cause));
-      setScreen("locked");
+      setWallet(metadata);
+      setScreen("backupRequired");
     } finally {
       setBusy(false);
     }
@@ -271,6 +293,22 @@ const WcashWallet = () => {
         const metadata = parseOpenedWallet(result, "Pending wallet restore");
         await enterWallet(metadata);
       }
+    } catch (cause) {
+      setError(publicErrorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revealRequiredBackup = async () => {
+    if (!wallet) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const phrase = parseRecoveryPhrase(await window.wcash.revealBackup());
+      setPendingPhrase(phrase);
+      setConfirmation({});
+      setScreen("backup");
     } catch (cause) {
       setError(publicErrorMessage(cause));
     } finally {
@@ -409,6 +447,20 @@ const WcashWallet = () => {
           </section>
         ) : null}
 
+        {screen === "backupRequired" ? (
+          <section className="warden-centered">
+            <p className="warden-kicker">Backup not confirmed</p>
+            <h1>Finish the recovery phrase backup</h1>
+            <p>
+              The wallet stays locked until the 24 recovery words are verified and the acknowledgement is stored
+              durably. Operating-system authentication is required before the phrase can be revealed.
+            </p>
+            <button className="warden-button" type="button" disabled={busy} onClick={() => void revealRequiredBackup()}>
+              {busy ? "Opening backup…" : "Continue backup"}
+            </button>
+          </section>
+        ) : null}
+
         {screen === "restore" ? (
           <section className="warden-panel warden-form-panel" aria-labelledby="restore-title">
             <button className="warden-back" type="button" disabled={busy} onClick={() => setScreen("onboarding")}>
@@ -459,8 +511,9 @@ const WcashWallet = () => {
             <p className="warden-kicker">Required backup</p>
             <h1 id="backup-title">Write down these 24 words</h1>
             <p>
-              This is the only time Wcash Warden displays the recovery phrase. Store it offline. Anyone with these words
-              can spend the wallet.
+              Store this phrase offline. Until you confirm it, Wcash Warden can reveal it again through the secured
+              operating-system keychain. After confirmation, it is never exposed by the app again. Anyone with these
+              words can spend the wallet.
             </p>
             <ol className="warden-words" aria-label="Recovery phrase">
               {phraseWords.map((word, index) => (

@@ -1,4 +1,5 @@
 const ZATOSHIS_PER_COIN = 100_000_000n;
+const WCASH_SEED_SCHEME = "bip39-english-24-empty-passphrase-v1";
 
 export interface WcashProductConfig {
   readonly productName: string;
@@ -14,9 +15,9 @@ export interface WcashWalletMetadata {
 }
 
 interface WcashStatusBase {
-  readonly network: string;
-  readonly ticker: string;
-  readonly storageNamespace: string;
+  readonly network?: string;
+  readonly ticker?: string;
+  readonly storageNamespace?: string;
 }
 
 export type WcashStatus =
@@ -24,10 +25,14 @@ export type WcashStatus =
   | (WcashStatusBase & {
       readonly state: "secret-only-pending";
       readonly intent: "create" | "restore";
-      readonly birthdayHeight: number | null;
+      readonly birthdayHeight: number;
     })
   | (WcashStatusBase & {
       readonly state: "database-and-secret-ready";
+      readonly wallet: WcashWalletMetadata;
+    })
+  | (WcashStatusBase & {
+      readonly state: "database-secret-backup-required";
       readonly wallet: WcashWalletMetadata;
     })
   | (WcashStatusBase & {
@@ -121,10 +126,12 @@ const parseWalletMetadata = (value: unknown, operation: string): WcashWalletMeta
 export const parseStatus = (payload: unknown): WcashStatus => {
   const operation = "Wallet status";
   const record = requireRecord(payload, operation);
-  const base = {
-    network: requireString(record, "network", operation),
-    ticker: requireString(record, "ticker", operation),
-    storageNamespace: requireString(record, "storage_namespace", operation),
+  const base: WcashStatusBase = {
+    ...(record.network === undefined ? {} : { network: requireString(record, "network", operation) }),
+    ...(record.ticker === undefined ? {} : { ticker: requireString(record, "ticker", operation) }),
+    ...(record.storage_namespace === undefined
+      ? {}
+      : { storageNamespace: requireString(record, "storage_namespace", operation) }),
   };
   switch (record.state) {
     case "no-database-no-secret":
@@ -133,19 +140,17 @@ export const parseStatus = (payload: unknown): WcashStatus => {
       const intent = record.intent;
       if (intent !== "create" && intent !== "restore") throw new Error(`${operation} returned malformed data`);
       const birthdayHeight = record.birthdayHeight;
-      if (intent === "create" && birthdayHeight !== null) throw new Error(`${operation} returned malformed data`);
-      if (intent === "restore") {
-        if (
-          !Number.isInteger(birthdayHeight) ||
-          (birthdayHeight as number) < 1 ||
-          (birthdayHeight as number) > 0xffff_ffff
-        ) {
-          throw new Error(`${operation} returned malformed data`);
-        }
+      if (
+        !Number.isInteger(birthdayHeight) ||
+        (birthdayHeight as number) < 1 ||
+        (birthdayHeight as number) > 0xffff_ffff
+      ) {
+        throw new Error(`${operation} returned malformed data`);
       }
-      return { ...base, state: record.state, intent, birthdayHeight: birthdayHeight as number | null };
+      return { ...base, state: record.state, intent, birthdayHeight: birthdayHeight as number };
     }
     case "database-and-secret-ready":
+    case "database-secret-backup-required":
     case "database-only-fail-closed":
       return { ...base, state: record.state, wallet: parseWalletMetadata(record.wallet, operation) };
     default:
@@ -157,9 +162,18 @@ export const parseCreatedWallet = (payload: unknown): WcashCreatedWallet => {
   const operation = "Wallet creation";
   const record = requireRecord(payload, operation);
   const wallet = parseWalletMetadata(record.wallet, operation);
+  const recoveryPhrase = parseRecoveryPhrase(record, operation);
+  return { wallet, recoveryPhrase };
+};
+
+export const parseRecoveryPhrase = (payload: unknown, operation = "Wallet backup"): string => {
+  const record = requireRecord(payload, operation);
+  if (requireString(record, "seed_scheme", operation) !== WCASH_SEED_SCHEME) {
+    throw new Error(`${operation} returned an unsupported seed scheme`);
+  }
   const recoveryPhrase = requireString(record, "recoveryPhrase", operation).trim();
   if (recoveryPhrase.split(/\s+/).length !== 24) throw new Error(`${operation} returned malformed data`);
-  return { wallet, recoveryPhrase };
+  return recoveryPhrase;
 };
 
 export const parseOpenedWallet = (payload: unknown, operation = "Wallet open"): WcashWalletMetadata => {

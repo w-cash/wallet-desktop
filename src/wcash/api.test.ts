@@ -89,6 +89,7 @@ describe("Wcash renderer boundary", () => {
     expect(parseStatus({ ...base, state: "no-database-no-secret" })).toMatchObject({
       state: "no-database-no-secret",
     });
+    expect(parseStatus({ state: "no-database-no-secret" })).toEqual({ state: "no-database-no-secret" });
     expect(
       parseStatus({
         ...base,
@@ -98,8 +99,22 @@ describe("Wcash renderer boundary", () => {
       }),
     ).toMatchObject({ state: "secret-only-pending", intent: "restore", birthdayHeight: 17 });
     expect(() => parseStatus({ ...base, state: "unknown" })).toThrow("malformed data");
-    expect(() => parseStatus({ ...base, state: "secret-only-pending", intent: "create", birthdayHeight: 17 })).toThrow(
-      "malformed data",
-    );
+    expect(parseStatus({ ...base, state: "secret-only-pending", intent: "create", birthdayHeight: 17 })).toMatchObject({
+      state: "secret-only-pending",
+      intent: "create",
+      birthdayHeight: 17,
+    });
+    expect(() =>
+      parseStatus({ ...base, state: "secret-only-pending", intent: "create", birthdayHeight: null }),
+    ).toThrow("malformed data");
+    expect(
+      parseStatus({
+        state: "database-secret-backup-required",
+        wallet: { account_id: "id", birthday_height: 1 },
+      }),
+    ).toMatchObject({
+      state: "database-secret-backup-required",
+      wallet: { accountId: "id", birthdayHeight: 1 },
+    });
   });
 });

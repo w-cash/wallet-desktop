@@ -24,6 +24,8 @@ declare global {
       create: () => Promise<unknown>;
       restore: (seedPhrase: string, birthdayHeight: number) => Promise<unknown>;
       resumePending: () => Promise<unknown>;
+      revealBackup: () => Promise<unknown>;
+      acknowledgeBackup: () => Promise<unknown>;
       open: () => Promise<unknown>;
       sync: () => Promise<unknown>;
       stopSync: () => Promise<boolean>;

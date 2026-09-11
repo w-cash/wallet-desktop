@@ -28,5 +28,6 @@ describe("Wcash renderer privilege boundary", () => {
 
     expect(wallet).not.toMatch(/window\.wcash\.(?:send|sign|broadcast)/);
     expect(wcashBridgeTypes).not.toMatch(/^\s+(?:send|sign|broadcast):/m);
+    expect(wcashBridgeTypes).not.toMatch(/(?:check|verify)DeviceAuth/);
   });
 });

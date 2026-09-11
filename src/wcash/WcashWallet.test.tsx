@@ -1,5 +1,5 @@
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import WcashWallet from "./WcashWallet";
 
@@ -58,7 +58,9 @@ const installBridge = (overrides: Partial<Bridge> = {}): Bridge => {
     create: jest.fn(),
     restore: jest.fn(),
     resumePending: jest.fn(),
-    open: jest.fn(),
+    revealBackup: jest.fn(),
+    acknowledgeBackup: jest.fn().mockResolvedValue({ state: "database-and-secret-ready", wallet }),
+    open: jest.fn().mockResolvedValue({ wallet }),
     sync: jest.fn(),
     stopSync: jest.fn().mockResolvedValue(true),
     balance: jest.fn(),
@@ -97,7 +99,11 @@ describe("Wcash Testnet desktop wallet", () => {
     const user = userEvent.setup();
     const words = Array.from({ length: 24 }, (_, index) => `word${index + 1}`);
     const bridge = installBridge({
-      create: jest.fn().mockResolvedValue({ wallet, recoveryPhrase: words.join(" ") }),
+      create: jest.fn().mockResolvedValue({
+        wallet,
+        recoveryPhrase: words.join(" "),
+        seed_scheme: "bip39-english-24-empty-passphrase-v1",
+      }),
       balance: jest.fn().mockResolvedValue(balance(90)),
     });
     render(<WcashWallet />);
@@ -122,6 +128,7 @@ describe("Wcash Testnet desktop wallet", () => {
     expect(screen.queryByText("word24")).not.toBeInTheDocument();
     expect(screen.getByText("wutest1private")).toBeInTheDocument();
     expect(bridge.create).toHaveBeenCalledWith();
+    expect(bridge.acknowledgeBackup).toHaveBeenCalledWith();
   });
 
   it("restores with an explicit birthday and clears the phrase from the form before completion", async () => {
@@ -246,9 +253,13 @@ describe("Wcash Testnet desktop wallet", () => {
         storage_namespace: "wcashtestnet-v5",
         state: "secret-only-pending",
         intent: "create",
-        birthdayHeight: null,
+        birthdayHeight: 1,
       }),
-      resumePending: jest.fn().mockResolvedValue({ wallet, recoveryPhrase: words.join(" ") }),
+      resumePending: jest.fn().mockResolvedValue({
+        wallet,
+        recoveryPhrase: words.join(" "),
+        seed_scheme: "bip39-english-24-empty-passphrase-v1",
+      }),
     });
     render(<WcashWallet />);
 
@@ -278,5 +289,46 @@ describe("Wcash Testnet desktop wallet", () => {
     expect(screen.queryByRole("button", { name: "Open wallet" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Restore wallet" })).not.toBeInTheDocument();
     expect(bridge.open).not.toHaveBeenCalled();
+  });
+
+  it("continues an unacknowledged backup after restart before opening the wallet", async () => {
+    const user = userEvent.setup();
+    const words = Array.from({ length: 24 }, (_, index) => `backup${index + 1}`);
+    let releaseAcknowledgement: ((value: unknown) => void) | undefined;
+    const bridge = installBridge({
+      status: jest.fn().mockResolvedValue({ state: "database-secret-backup-required", wallet }),
+      revealBackup: jest.fn().mockResolvedValue({
+        recoveryPhrase: words.join(" "),
+        seed_scheme: "bip39-english-24-empty-passphrase-v1",
+      }),
+      acknowledgeBackup: jest.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            releaseAcknowledgement = resolve;
+          }),
+      ),
+      balance: jest.fn().mockResolvedValue(balance(90)),
+    });
+    render(<WcashWallet />);
+
+    expect(await screen.findByRole("heading", { name: "Finish the recovery phrase backup" })).toBeInTheDocument();
+    expect(screen.queryByText("backup24")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Continue backup" }));
+    expect(await screen.findByText("backup24")).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Word 4"), "backup4");
+    await user.type(screen.getByLabelText("Word 12"), "backup12");
+    await user.type(screen.getByLabelText("Word 20"), "backup20");
+    await user.click(screen.getByRole("button", { name: "Confirm offline backup" }));
+
+    expect(screen.queryByText("backup24")).not.toBeInTheDocument();
+    expect(bridge.acknowledgeBackup).toHaveBeenCalledWith();
+    expect(bridge.open).not.toHaveBeenCalled();
+    act(() => {
+      releaseAcknowledgement?.({ state: "database-and-secret-ready", wallet });
+    });
+    expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument();
+    expect(bridge.revealBackup).toHaveBeenCalledWith();
+    expect(bridge.open).toHaveBeenCalledWith();
   });
 });
