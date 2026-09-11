@@ -41,3 +41,6 @@ yarn-error.log*
 
 # throwaway self-signed cert for sideloading local MSIX builds (docs/windows-msix.md)
 zingo-dev.pfx
+
+# Local SwapKit credentials must never be committed.
+src/swap/swapKitSecrets.ts
