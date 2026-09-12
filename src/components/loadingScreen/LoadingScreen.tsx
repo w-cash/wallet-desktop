@@ -106,11 +106,11 @@ class LoadingScreen extends Component<LoadingScreenProps, LoadingScreenState> {
       const { openErrorModal, closeErrorModal } = this.context as React.ContextType<typeof ContextApp>;
       closeErrorModal();
       openErrorModal(
-        "Zingo PC is taking too long to start",
+        "Wcash Wallet is taking too long to start",
         <div>
           <div>Startup stopped responding at: {this.state.step}</div>
           <div className={cstyles.margintoplarge}>
-            Please report this at github.com/zingolabs/zingo-pc/issues, including the step above and the version shown
+            Please report this at github.com/w-cash/wallet-desktop/issues, including the step above and the version shown
             on the start screen.
           </div>
         </div>,
@@ -142,12 +142,12 @@ class LoadingScreen extends Component<LoadingScreenProps, LoadingScreenState> {
       console.error(`Critical Error first time setup ${error}`);
       closeErrorModal();
       openErrorModal(
-        "Zingo PC could not start",
+        "Wcash Wallet could not start",
         <div>
           <div>Something failed while preparing the wallet, and the app cannot continue.</div>
           <div className={cstyles.margintoplarge}>{String(error)}</div>
           <div className={cstyles.margintoplarge}>
-            Please report this at github.com/zingolabs/zingo-pc/issues, including the message above.
+            Please report this at github.com/w-cash/wallet-desktop/issues, including the message above.
           </div>
         </div>,
       );

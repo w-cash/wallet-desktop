@@ -350,7 +350,7 @@ describe("getDefaultDonationAmount", () => {
 
 describe("getDefaultDonationMemo", () => {
   it("returns the expected support memo", () => {
-    expect(Utils.getDefaultDonationMemo(false)).toBe("Thanks for supporting Zingo!");
+    expect(Utils.getDefaultDonationMemo(false)).toBe("Thanks for supporting Wcash Wallet!");
   });
 });
 

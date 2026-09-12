@@ -1,15 +1,16 @@
 {
-  "name": "zingo-pc",
-  "productName": "Zingo PC",
+  "name": "wcash-wallet",
+  "productName": "Wcash Wallet",
   "version": "2.0.25",
   "private": true,
-  "description": "Zingo PC",
+  "description": "Wcash Wallet",
   "license": "MIT",
   "author": {
     "name": "zingolabs",
     "email": "zingo@zingolabs.com",
     "url": "https://github.com/zingolabs/zingo-pc"
   },
+  "contributors": ["Wcash Wallet contributors"],
   "engines": {
     "node": ">=18"
   },
@@ -201,8 +202,8 @@
   "homepage": "./",
   "main": "./public/electron.js",
   "build": {
-    "productName": "Zingo PC",
-    "appId": "co.zingo.pc",
+    "productName": "Wcash Wallet",
+    "appId": "com.wcashwallet.wallet",
     "buildVersion": "180",
     "artifactName": "${productName}-${version}-${buildVersion}-${arch}.${ext}",
     "zip": {
@@ -239,9 +240,9 @@
       },
       "protocols": [
         {
-          "name": "Zcash",
+          "name": "Wcash",
           "schemes": [
-            "zcash"
+            "wcash"
           ]
         }
       ],
@@ -267,9 +268,9 @@
       },
       "protocols": [
         {
-          "name": "Zcash",
+          "name": "Wcash",
           "schemes": [
-            "zcash"
+            "wcash"
           ]
         }
       ],
@@ -297,9 +298,9 @@
       ],
       "protocols": [
         {
-          "name": "Zcash",
+          "name": "Wcash",
           "schemes": [
-            "zcash"
+            "wcash"
           ]
         }
       ],
@@ -321,7 +322,7 @@
       "identityName": "JuanCarlosCarmonaCalvo.ZingoPC",
       "publisher": "CN=96EC5B6E-FB9F-4DEA-9C02-05C6CAF8DDF8",
       "publisherDisplayName": "Juan Carlos Carmona Calvo",
-      "displayName": "Zingo PC",
+      "displayName": "Wcash Wallet",
       "backgroundColor": "#06172d",
       "showNameOnTiles": true,
       "languages": [
@@ -359,19 +360,19 @@
         }
       ],
       "mimeTypes": [
-        "x-scheme-handler/zcash"
+        "x-scheme-handler/wcash"
       ],
       "desktop": {
         "entry": {
-          "Name": "Zingo PC",
-          "Comment": "Shielded Lightclient for Zcash",
+          "Name": "Wcash Wallet",
+          "Comment": "Private wallet for Wcash",
           "GenericName": "Wallet",
           "Type": "Application",
           "StartupNotify": true,
-          "StartupWMClass": "zingopc",
+          "StartupWMClass": "wcash-wallet",
           "Categories": "Utility;",
-          "Keywords": "zingo;",
-          "MimeType": "x-scheme-handler/zcash"
+          "Keywords": "wcash;wallet;",
+          "MimeType": "x-scheme-handler/wcash"
         }
       }
     }

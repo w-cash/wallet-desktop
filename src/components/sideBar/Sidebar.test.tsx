@@ -158,7 +158,7 @@ describe("Sidebar", () => {
       const openErrorModal = jest.fn();
       renderSidebar({ openErrorModal });
       act(() => getListener("about")?.({}));
-      expect(openErrorModal).toHaveBeenCalledWith("Zingo PC", expect.anything());
+      expect(openErrorModal).toHaveBeenCalledWith("Wcash Wallet", expect.anything());
     });
 
     it("'payuri' with empty uri opens the PayURI modal", () => {

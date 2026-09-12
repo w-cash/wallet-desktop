@@ -1,4 +1,4 @@
-import logo from "../../assets/img/logobig.png";
+import logo from "../../assets/img/wcash-mark.svg";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faSnowflake } from "@fortawesome/free-solid-svg-icons";
 import Utils from "../../utils/utils";
@@ -13,7 +13,7 @@ const Logo = ({ readOnly, onlyVersion }: LogoProps) => {
   return (
     <>
       <div style={{ color: Utils.getCssVariable("--color-zingo"), fontWeight: "bold", marginBottom: 10 }}>
-        Zingo PC v{APP_VERSION}
+        Wcash Wallet v{APP_VERSION}
       </div>
       {!onlyVersion && (
         <div>

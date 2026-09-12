@@ -8,7 +8,7 @@ jest.mock("../../electronBridge");
 describe("Logo", () => {
   it("always shows the version string", () => {
     render(<Logo onlyVersion={false} readOnly={false} />);
-    expect(screen.getByText(`Zingo PC v${APP_VERSION}`)).toBeInTheDocument();
+    expect(screen.getByText(`Wcash Wallet v${APP_VERSION}`)).toBeInTheDocument();
   });
 
   it("shows the logo image when onlyVersion is false", () => {

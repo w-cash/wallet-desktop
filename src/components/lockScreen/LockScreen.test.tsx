@@ -24,9 +24,9 @@ describe("LockScreen", () => {
     expect(screen.getByRole("button", { name: /unlock/i })).toBeInTheDocument();
   });
 
-  it("shows 'Zingo PC is locked' text", () => {
+  it("shows 'Wcash Wallet is locked' text", () => {
     render(<LockScreen onUnlock={jest.fn()} />);
-    expect(screen.getByText("Zingo PC is locked")).toBeInTheDocument();
+    expect(screen.getByText("Wcash Wallet is locked")).toBeInTheDocument();
   });
 
   it("calls onUnlock when authentication succeeds", async () => {

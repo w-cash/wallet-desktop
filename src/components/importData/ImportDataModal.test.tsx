@@ -22,7 +22,7 @@ const ImportDataModal = require("./ImportDataModal").default;
 type ImportScanResult = { sourceDir: string; present: string[] };
 
 const scanResultBoth: ImportScanResult = {
-  sourceDir: "/Users/test/Library/Application Support/Zingo PC",
+  sourceDir: "/Users/test/Library/Application Support/Wcash Wallet",
   present: ["wallets.json", "AddressBook.json"],
 };
 

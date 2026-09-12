@@ -8,5 +8,5 @@ test("renders without crashing", () => {
 
 test("displays app version string", () => {
   render(<App />);
-  expect(screen.getByText(/Zingo PC v/i)).toBeInTheDocument();
+  expect(screen.getByText(/Wcash Wallet v/i)).toBeInTheDocument();
 });

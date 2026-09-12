@@ -308,9 +308,9 @@ const Sidebar: React.FC<SidebarProps> = ({ doRescan, navigateToLoadingScreenChan
     const about = (_event: any) => {
       if (!active) return;
       openErrorModal(
-        "Zingo PC",
+        "Wcash Wallet",
         <div className={cstyles.verticalflex}>
-          <div className={cstyles.margintoplarge}>Zingo PC v{APP_VERSION}</div>
+          <div className={cstyles.margintoplarge}>Wcash Wallet v{APP_VERSION}</div>
           <div className={cstyles.margintoplarge}>Built with Electron. Copyright (c) 2026, ZingoLabs.</div>
           <div className={cstyles.margintoplarge}>
             The MIT License (MIT) Copyright (c) 2026 ZingoLabs

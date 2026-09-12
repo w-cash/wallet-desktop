@@ -45,7 +45,7 @@ const AppSecurityModal: React.FC<Props> = ({ isOpen, onClose }) => {
     availability === "not_configured"
       ? "Windows Hello is not configured on this device. Go to Windows Settings → Accounts → Sign-in options to set it up."
       : availability === "not_installed_linux"
-        ? "Device authentication via polkit is not available. Install the Zingo PC .deb package to enable this feature."
+        ? "Device authentication via polkit is not available. Install the Wcash Wallet .deb package to enable this feature."
         : availability === "not_supported"
           ? "Device authentication is not supported on this platform."
           : null;

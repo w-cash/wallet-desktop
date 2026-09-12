@@ -9,7 +9,7 @@ import { ipcRenderer, fs } from "../../electronBridge";
 export default class AddressbookImpl {
   static async getFileName(): Promise<string> {
     const relativePath: string = await ipcRenderer.invoke("get-app-data-path");
-    const dir: string = path.join(relativePath, "Zingo PC");
+    const dir: string = path.join(relativePath, "Wcash Wallet");
     if (!(await fs.existsSync(dir))) {
       await fs.promises.mkdir(dir);
     }

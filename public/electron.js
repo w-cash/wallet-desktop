@@ -62,10 +62,10 @@ class MenuBuilder {
     const { mainWindow } = this;
 
     const subMenuAbout = {
-      label: "Zingo PC",
+      label: "Wcash Wallet",
       submenu: [
         {
-          label: "About Zingo PC",
+          label: "About Wcash Wallet",
           selector: "orderFrontStandardAboutPanel:",
           click: () => {
             mainWindow.webContents.send("about");
@@ -75,7 +75,7 @@ class MenuBuilder {
         { label: "Services", submenu: [] },
         { type: "separator" },
         {
-          label: "Hide Zingo PC",
+          label: "Hide Wcash Wallet",
           accelerator: "Command+H",
           selector: "hide:",
         },
@@ -219,13 +219,13 @@ class MenuBuilder {
         {
           label: "Check github.com for updates",
           click() {
-            shell.openExternal("https://github.com/zingolabs/zingo-pc");
+            shell.openExternal("https://github.com/w-cash/wallet-desktop");
           },
         },
         {
           label: "File a bug...",
           click() {
-            shell.openExternal("https://github.com/zingolabs/zingo-pc/issues");
+            shell.openExternal("https://github.com/w-cash/wallet-desktop/issues");
           },
         },
       ],
@@ -336,7 +336,7 @@ class MenuBuilder {
         label: "Help",
         submenu: [
           {
-            label: "About Zingo PC",
+            label: "About Wcash Wallet",
             click: () => {
               mainWindow.webContents.send("about");
             },
@@ -344,13 +344,13 @@ class MenuBuilder {
           {
             label: "Check github.com for updates",
             click() {
-              shell.openExternal("https://github.com/zingolabs/zingo-pc/releases");
+              shell.openExternal("https://github.com/w-cash/wallet-desktop/releases");
             },
           },
           {
             label: "File a bug...",
             click() {
-              shell.openExternal("https://github.com/zingolabs/zingo-pc/issues");
+              shell.openExternal("https://github.com/w-cash/wallet-desktop/issues");
             },
           },
         ],
@@ -446,7 +446,7 @@ function handleZcashUri(uri) {
 //   DO NOT use show:false+ready-to-show — macOS state restoration bypasses it and
 //   shows the window before the renderer is ready, breaking the React render pipeline
 //   (v126/v127 lesson).
-// Zingo PC does not use location services, so all three flags can be safely disabled.
+// Wcash Wallet does not use location services, so all three flags can be safely disabled.
 if (process.platform === "darwin") {
   app.commandLine.appendSwitch("disable-features", "NetworkServiceInProcess,NetworkLocationProvider");
   app.commandLine.appendSwitch("disable-geolocation");
@@ -620,7 +620,7 @@ ipcMain.handle("auth:verify", async (_e, reason) => {
 // ── Keychain-backed requireDeviceAuth ─────────────────────────────────────
 // Missing or deleted entry is treated as true (auth required by default).
 // Only an explicit "false" stored by the user disables the feature.
-const KEYTAR_SERVICE = "Zingo PC";
+const KEYTAR_SERVICE = "Wcash Wallet";
 const KEYTAR_ACCOUNT = "requireDeviceAuth";
 
 // In-process cache of the value so we only hit Keychain ONCE per session.
@@ -1215,9 +1215,9 @@ ipcMain.handle("wallet-dir:request", async () => {
       const { response } = await dialog.showMessageBox(mainWindow, {
         type: "info",
         title: "Wallet folder access",
-        message: "Zingo needs access to the wallet folder",
+        message: "Wcash Wallet needs access to the wallet folder",
         detail: `Your wallets are stored in:\n${zcashDir}\n\nIn the next screen, select that folder and click "Confirm".`,
-        buttons: ["Continue", "Quit Zingo"],
+        buttons: ["Continue", "Quit Wcash Wallet"],
         defaultId: 0,
         cancelId: 1,
       });
@@ -1240,8 +1240,8 @@ ipcMain.handle("wallet-dir:request", async () => {
         const { response: r2 } = await dialog.showMessageBox(mainWindow, {
           type: "warning",
           title: "Access required",
-          message: "Zingo cannot run without access to the wallet folder.",
-          buttons: ["Retry", "Quit Zingo"],
+          message: "Wcash Wallet cannot run without access to the wallet folder.",
+          buttons: ["Retry", "Quit Wcash Wallet"],
           defaultId: 0,
           cancelId: 1,
         });
@@ -1265,7 +1265,7 @@ ipcMain.handle("wallet-dir:request", async () => {
           title: "Create the Zcash folder?",
           message: `"${path.basename(selectedPath)}" is not the Zcash folder.`,
           detail:
-            `Zingo PC stores its wallets in a folder called "Zcash" — typically inside Application Support, ` +
+            `Wcash Wallet stores its wallets in a folder called "Zcash" — typically inside Application Support, ` +
             `shared with other Zcash apps. ` +
             `You can either create one inside "${path.basename(selectedPath)}" now, or go back and pick a different folder.`,
           buttons: ["Create Zcash folder here", "Pick a different folder"],
@@ -1346,7 +1346,7 @@ ipcMain.handle("wallet-dir:change", async () => {
     title: "Change wallet folder",
     message: "Change wallet folder location?",
     detail:
-      "Zingo PC will close and reopen with the new wallet folder. " +
+      "Wcash Wallet will close and reopen with the new wallet folder. " +
       "Make sure your wallets exist in the folder you select.",
     buttons: ["Continue", "Cancel"],
     defaultId: 0,
@@ -1380,7 +1380,7 @@ ipcMain.handle("wallet-dir:change", async () => {
         title: "Create the Zcash folder?",
         message: `"${path.basename(selectedPath)}" is not the Zcash folder.`,
         detail:
-          `Zingo PC stores its wallets in a folder called "Zcash". ` +
+          `Wcash Wallet stores its wallets in a folder called "Zcash". ` +
           `You can either create one inside "${path.basename(selectedPath)}" now, or go back and pick a different folder.`,
         buttons: ["Create Zcash folder here", "Pick a different folder"],
         defaultId: 0,
@@ -1439,7 +1439,7 @@ ipcMain.handle("wallet-dir:change", async () => {
       type: "info",
       title: "Restart required",
       message: "Wallet folder updated.",
-      detail: "Zingo PC will now close. Please reopen it to use the new wallet folder.",
+      detail: "Wcash Wallet will now close. Please reopen it to use the new wallet folder.",
       buttons: ["Quit"],
     });
     app.quit();
@@ -1458,15 +1458,15 @@ ipcMain.handle("import:scan", async () => {
   let defaultPath;
   if (process.mas) {
     const realHome = path.join("/Users", os.userInfo().username);
-    defaultPath = path.join(realHome, "Library", "Application Support", "Zingo PC");
+    defaultPath = path.join(realHome, "Library", "Application Support", "Wcash Wallet");
   } else {
     // Flatpak: the standard Linux Electron userData for .deb / AppImage
-    defaultPath = path.join(os.homedir(), ".config", "Zingo PC");
+    defaultPath = path.join(os.homedir(), ".config", "Wcash Wallet");
   }
 
   const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
     title: "Select source folder",
-    message: "Select the data folder from your previous Zingo PC installation.",
+    message: "Select the data folder from your previous Wcash Wallet installation.",
     buttonLabel: "Open",
     defaultPath,
     properties: ["openDirectory"],
@@ -1484,7 +1484,7 @@ ipcMain.handle("import:scan", async () => {
       type: "warning",
       title: "Invalid folder",
       message: "Cannot import from the current installation's own folder.",
-      detail: "Please select a different Zingo PC data folder.",
+      detail: "Please select a different Wcash Wallet data folder.",
       buttons: ["OK"],
     });
     return { ok: false, reason: "same-folder" };
@@ -1504,7 +1504,7 @@ ipcMain.handle("import:scan", async () => {
       message: "No importable data found in this folder.",
       detail:
         "The selected folder doesn't contain a wallets.json or AddressBook.json " +
-        "from a previous Zingo PC installation.",
+        "from a previous Wcash Wallet installation.",
       buttons: ["OK"],
     });
     return { ok: false, reason: "no-data-found", sourceDir };
@@ -1661,7 +1661,7 @@ ipcMain.handle("import:apply", async (_e, { sourceDir, choices }) => {
     type: "info",
     title: "Import complete",
     message: "Data imported.",
-    detail: "Zingo PC will now close. Please reopen it to use the imported data.",
+    detail: "Wcash Wallet will now close. Please reopen it to use the imported data.",
     buttons: ["Quit"],
   });
   app.quit();
@@ -1734,7 +1734,7 @@ function createWindow() {
   mainWindow.loadURL(isDev ? "http://localhost:3000" : `file://${path.join(__dirname, "../build/index.html")}`);
 
   // Diagnostic logging for MAS/sandbox builds — writes to userData so we can
-  // read it from ~/Library/Containers/co.zingo.pc/Data/Library/Application Support/Zingo PC/startup.log
+  // read it from ~/Library/Containers/co.zingo.pc/Data/Library/Application Support/Wcash Wallet/startup.log
   if (!isDev) {
     const logPath = path.join(app.getPath("userData"), "startup.log");
     const ts = () => new Date().toISOString();
@@ -1774,7 +1774,7 @@ function createWindow() {
         title: "Security Warning",
         message: "Chromium sandbox is disabled",
         detail:
-          "Zingo PC is running without the Chromium process sandbox because your system " +
+          "Wcash Wallet is running without the Chromium process sandbox because your system " +
           "has user namespaces disabled (unprivileged_userns_clone=0).\n\n" +
           "This reduces the security isolation of the application. " +
           "For full security, install the .deb package instead of the AppImage — " +
@@ -1884,9 +1884,9 @@ async function maybeRunDmgToMasMigration() {
   const { response: choice } = await dialog.showMessageBox(null, {
     type: "question",
     title: "Migrate from previous installation?",
-    message: "Did you previously use Zingo PC?",
+    message: "Did you previously use Wcash Wallet?",
     detail:
-      "If you used a previous version of Zingo PC (installed from the website's DMG), " +
+      "If you used a previous version of Wcash Wallet (installed from the website's DMG), " +
       "click Migrate to import your wallets, address book, and settings.\n\n" +
       "If this is a fresh install, click Skip.",
     buttons: ["Migrate", "Skip"],
@@ -1901,12 +1901,12 @@ async function maybeRunDmgToMasMigration() {
   }
 
   const realHome = path.join("/Users", os.userInfo().username);
-  const defaultPath = path.join(realHome, "Library", "Application Support", "Zingo PC");
+  const defaultPath = path.join(realHome, "Library", "Application Support", "Wcash Wallet");
 
   while (true) {
     const { canceled, filePaths } = await dialog.showOpenDialog(null, {
-      title: "Select your previous Zingo PC data folder",
-      message: 'Select the "Zingo PC" folder inside ~/Library/Application Support and click "Open".',
+      title: "Select your previous Wcash Wallet data folder",
+      message: 'Select the "Wcash Wallet" folder inside ~/Library/Application Support and click "Open".',
       buttonLabel: "Open",
       defaultPath,
       properties: ["openDirectory"],
@@ -1936,11 +1936,11 @@ async function maybeRunDmgToMasMigration() {
     if (present.length === 0) {
       const { response: retry } = await dialog.showMessageBox(null, {
         type: "warning",
-        title: "No Zingo PC data found",
-        message: "Selected folder does not contain Zingo PC data.",
+        title: "No Wcash Wallet data found",
+        message: "Selected folder does not contain Wcash Wallet data.",
         detail:
           "None of settings.json, wallets.json or AddressBook.json was found. " +
-          "Try selecting your previous Zingo PC data folder, or click Skip.",
+          "Try selecting your previous Wcash Wallet data folder, or click Skip.",
         buttons: ["Try again", "Skip"],
         defaultId: 0,
         cancelId: 1,
@@ -1986,7 +1986,7 @@ async function maybeRunDmgToMasMigration() {
       detail:
         (copied.length > 0 ? `Imported: ${copied.join(", ")}\n` : "") +
         (failed.length > 0 ? `Failed: ${failed.join(", ")}\n` : "") +
-        "\nZingo PC will now ask for access to your Zcash wallet folder.",
+        "\nWcash Wallet will now ask for access to your Zcash wallet folder.",
       buttons: ["OK"],
     });
 
@@ -1996,8 +1996,8 @@ async function maybeRunDmgToMasMigration() {
 
 // One-shot migration for a Flatpak install that follows a previous
 // deb/AppImage (non-sandboxed) install. Flatpak redirects userData into its
-// per-app sandbox (~/.var/app/co.zingo.pc/config/Zingo PC), so a fresh Flatpak
-// starts with an EMPTY wallets.json even though the old ~/.config/Zingo PC data
+// per-app sandbox (~/.var/app/co.zingo.pc/config/Wcash Wallet), so a fresh Flatpak
+// starts with an EMPTY wallets.json even though the old ~/.config/Wcash Wallet data
 // (and the .dat wallet files it points at) are intact. Unlike MAS, the manifest
 // grants --filesystem=home, so we read the old folder directly (a confirm, not a
 // folder picker). Only the deb/AppImage -> Flatpak direction is handled; the
@@ -2033,7 +2033,7 @@ async function maybeRunDebAppImageToFlatpakMigration() {
 
   // The old non-sandbox location. os.userInfo().homedir is the real home from
   // the passwd db (reliable inside the Flatpak sandbox, where $HOME may differ).
-  const sourceDir = path.join(os.userInfo().homedir, ".config", "Zingo PC");
+  const sourceDir = path.join(os.userInfo().homedir, ".config", "Wcash Wallet");
   const present = fileNames.filter((f) => fs.existsSync(resolveDataFile(sourceDir, f)));
 
   // No previous data → fresh install; don't bother the user.
@@ -2046,7 +2046,7 @@ async function maybeRunDebAppImageToFlatpakMigration() {
   const { response: choice } = await dialog.showMessageBox(null, {
     type: "question",
     title: "Import previous installation?",
-    message: "A previous Zingo PC installation was found.",
+    message: "A previous Wcash Wallet installation was found.",
     detail:
       "The Flatpak version stores its data in a separate location, so your wallets " +
       "from the deb/AppImage version are not visible yet. Click Import to bring over " +
@@ -2095,7 +2095,7 @@ async function maybeRunDebAppImageToFlatpakMigration() {
     detail:
       (copied.length > 0 ? `Imported: ${copied.join(", ")}\n` : "") +
       (failed.length > 0 ? `Failed: ${failed.join(", ")}\n` : "") +
-      "\nZingo PC will now use your previous wallets and settings.",
+      "\nWcash Wallet will now use your previous wallets and settings.",
     buttons: ["OK"],
   });
 }
@@ -2196,7 +2196,7 @@ app.whenReady().then(async () => {
     });
   });
 
-  // Deny all renderer permission requests by default. Zingo PC does not use
+  // Deny all renderer permission requests by default. Wcash Wallet does not use
   // camera, microphone, geolocation, notifications, MIDI, USB, clipboard-read,
   // or any other web-platform permission. Explicit deny-all is defense in depth
   // on top of MAS sandbox entitlements (which already restrict these at the OS

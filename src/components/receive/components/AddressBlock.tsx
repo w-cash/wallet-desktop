@@ -95,7 +95,7 @@ const AddressBlock: React.FC<AddressBlockProps> = ({
     // Append the wallet alias so users with multiple wallets can tell the QR
     // files apart at a glance. Strip filesystem-unfriendly characters.
     const walletSuffix = currentWallet?.alias ? "_" + currentWallet.alias.replace(/[\\/:*?"<>|]/g, "_") : "";
-    const suggestedName = "QR_" + type + "_Zingo_PC" + walletSuffix + ".png";
+    const suggestedName = "QR_" + type + "_Wcash_Wallet" + walletSuffix + ".png";
 
     // MAS sandbox can't write to the Downloads folder without the
     // `files.downloads.read-write` entitlement (which Apple flagged as unused

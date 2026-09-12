@@ -108,7 +108,7 @@ const ImportDataModal: React.FC<Props> = ({ isOpen, onClose, scanResult }) => {
       </div>
 
       <div className={`${cstyles.small} ${cstyles.margintopsmall}`} style={{ opacity: 0.7, marginTop: 12 }}>
-        Zingo PC will restart after import to load the new data.
+        Wcash Wallet will restart after import to load the new data.
       </div>
 
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 24 }}>

@@ -16,7 +16,7 @@ const LockScreen: React.FC<Props> = ({ onUnlock }) => {
     setLoading(true);
     setError("");
     try {
-      const result: { success: boolean } = await ipcRenderer.invoke("auth:verify", "Unlock Zingo PC");
+      const result: { success: boolean } = await ipcRenderer.invoke("auth:verify", "Unlock Wcash Wallet");
       if (result.success) {
         onUnlock();
       } else {
@@ -43,7 +43,7 @@ const LockScreen: React.FC<Props> = ({ onUnlock }) => {
       }}
     >
       <i className="fas fa-lock" style={{ fontSize: 48, marginBottom: 24, opacity: 0.7 }} />
-      <div className={`${cstyles.large} ${cstyles.center} ${cstyles.margintopsmall}`}>Zingo PC is locked</div>
+      <div className={`${cstyles.large} ${cstyles.center} ${cstyles.margintopsmall}`}>Wcash Wallet is locked</div>
       <div className={`${cstyles.sublight} ${cstyles.center}`} style={{ opacity: 0.5, marginTop: 4 }}>
         v{APP_VERSION}
       </div>

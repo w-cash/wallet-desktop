@@ -269,7 +269,7 @@ export default class Utils {
   }
 
   static getDefaultDonationMemo(testnet: boolean): string {
-    return "Thanks for supporting Zingo!";
+    return "Thanks for supporting Wcash Wallet!";
   }
 
   static getZecToUsdString(price?: number, zecValue?: number): string {

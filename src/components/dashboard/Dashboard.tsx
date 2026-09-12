@@ -629,7 +629,7 @@ const Dashboard: React.FC<DashboardProps> = ({ navigateToHistory }) => {
                           <DetailLine label="Server URI" value={info ? info.serverUri : ""} />
                           <DetailLine label="Server Network" value={Utils.chainDisplayName(info.chainName)} />
                           <DetailLine label="Server Version" value={info.version} />
-                          <DetailLine label="Zingolib Version" value={info.zingolib} />
+                          <DetailLine label="Wallet Core Version" value={info.zingolib} />
                           <DetailLine label="Block Height" value={`${info.latestBlock}`} />
                           {info.currencyName === "ZEC" && (
                             <DetailLine label="ZEC Price" value={zecPrice ? `USD ${zecPrice.toFixed(2)}` : "USD --"} />
