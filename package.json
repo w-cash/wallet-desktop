@@ -61,6 +61,7 @@
     "test:wcash-live-native": "node scripts/test-wcash-live-native.js",
     "test:wcash-live-native-localnet": "node scripts/assert-wcash-localnet-development.js && cross-env WCASH_LOCALNET_DEV=1 node scripts/test-wcash-live-native.js",
     "test:wcash-sandbox-preload": "electron scripts/test-wcash-sandbox-preload.js",
+    "test:wcash-small-window": "electron scripts/test-wcash-small-window.js",
     "test:wcash-localnet-boundary": "node scripts/assert-wcash-localnet-development.js",
     "test:package:unsigned-local": "node scripts/assert-wcash-unsigned-local-package.js",
     "build": "cross-env node scripts/build.js",

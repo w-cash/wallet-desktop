@@ -100,6 +100,9 @@ jobs:
       - name: Check sandboxed preload
         run: xvfb-run -a yarn test:wcash-sandbox-preload
 
+      - name: Check small-window scrolling
+        run: xvfb-run -a yarn test:wcash-small-window
+
   packages:
     name: Package ${{ matrix.name }}
     needs: quality
