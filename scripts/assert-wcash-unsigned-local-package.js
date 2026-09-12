@@ -25,6 +25,10 @@ const serializedLocalConfig = JSON.stringify(localConfig);
 const platforms = [packageJson.build.mac, packageJson.build.mas, packageJson.build.win, packageJson.build.linux];
 const localScripts = Object.entries(packageJson.scripts).filter(([name]) => name.startsWith("package:unsigned-local:"));
 
+assert(
+  packageJson.author && packageJson.author.name === "Wcash" && packageJson.author.email === "placex.com@gmail.com",
+  "Linux package maintainer metadata is incomplete",
+);
 assert(runtime.runtimeReady === true, "the reviewed Wcash runtime is not enabled");
 assert(runtime.releaseReady === false, "this target must never enable public release readiness");
 assert(localConfig.extends === undefined, "the local config must not inherit release packaging metadata");
