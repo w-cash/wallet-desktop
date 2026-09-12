@@ -44,7 +44,9 @@ function toCanonicalAmount(amount) {
   }
   const zatoshis = amount;
   const whole = Math.floor(zatoshis / 100_000_000);
-  const fraction = String(zatoshis % 100_000_000).padStart(8, "0").replace(/0+$/, "");
+  const fraction = String(zatoshis % 100_000_000)
+    .padStart(8, "0")
+    .replace(/0+$/, "");
   return { zatoshis, decimal: fraction ? `${whole}.${fraction}` : String(whole) };
 }
 
@@ -211,6 +213,30 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
     return JSON.stringify({ birthday });
   }
 
+  async function deleteWallet(uri, chainHint, _performance, _confirmations, walletName) {
+    requireProfile(uri, chainHint);
+    const credential = await readCredential();
+    if (walletName && credential && credential.walletName && credential.walletName !== walletName) {
+      throw new Error("The selected wallet name does not match the Wcash wallet database");
+    }
+
+    // Native closes the fixed-profile runtime and removes only its compiled
+    // SQLite path. Keep the recovery credential until that succeeds so a failed
+    // delete cannot strand an undeletable wallet without its seed.
+    const result = await nativeJson("wcash_delete");
+    const current = await status();
+    if (current.wallet !== null) throw new Error("Wcash wallet deletion did not remove the database");
+
+    const removed = await deleteCredential();
+    if (!removed && (await readCredential()) !== null) {
+      throw new Error("Wcash wallet database was deleted, but its recovery credential could not be removed");
+    }
+    pendingProposal = null;
+    syncState = { phase: "idle", result: null, error: null, promise: null };
+    lastBalance = null;
+    return JSON.stringify({ deleted: result.deleted === true });
+  }
+
   async function runSync() {
     if (syncState.phase === "running") return "Sync task is already running.";
     syncState = { phase: "running", result: null, error: null, promise: null };
@@ -355,8 +381,11 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
     } catch (cause) {
       throw new Error("Wcash send request is invalid", { cause });
     }
-    if (!Array.isArray(transfers) || transfers.length === 0 || transfers.length > 16) {
-      return JSON.stringify({ error: "Wcash send requires 1 through 16 recipients" });
+    // This compatibility slice has validated the upstream single-recipient
+    // screen and its one-Ironwood-output 10,000-zat fee. Reject wider shapes
+    // until the backend exposes proposal-derived fees to the renderer.
+    if (!Array.isArray(transfers) || transfers.length !== 1) {
+      return JSON.stringify({ error: "Wcash Wallet currently supports exactly one recipient per transaction" });
     }
     let totalZat = 0;
     const payments = [];
@@ -383,7 +412,10 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
       if (!Number.isSafeInteger(totalZat) || totalZat > MAX_MONEY_ZAT) {
         return JSON.stringify({ error: "Wcash payment total is outside the accepted range" });
       }
-      if (transfer.memo !== undefined && (typeof transfer.memo !== "string" || Buffer.byteLength(transfer.memo) > 512)) {
+      if (
+        transfer.memo !== undefined &&
+        (typeof transfer.memo !== "string" || Buffer.byteLength(transfer.memo) > 512)
+      ) {
         return JSON.stringify({ error: "Memo is longer than the 512-byte Wcash limit" });
       }
       payments.push({
@@ -434,6 +466,8 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
         return initFromSeed(...args);
       case "init_from_b64":
         return initFromB64(...args);
+      case "delete_wallet":
+        return deleteWallet(...args);
       case "get_seed": {
         const credential = await readCredential();
         if (!credential) throw new Error("Wcash recovery phrase is unavailable");
@@ -617,7 +651,6 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
       case "remove_transaction":
       case "create_new_unified_address":
       case "create_new_transparent_address":
-      case "delete_wallet":
         throw new Error(`Wcash core does not yet implement ${method}`);
       case "get_developer_donation_address":
       case "get_zennies_for_zingo_donation_address":

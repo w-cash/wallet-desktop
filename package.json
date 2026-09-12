@@ -81,10 +81,12 @@
     "neon-win-x64": "rimraf src/native.node && cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --release --target x86_64-pc-windows-msvc --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
     "neon-win-arm64": "rimraf src/native.node && cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --release --target aarch64-pc-windows-msvc --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
     "test:wcash-adapter": "node scripts/test-wcash-zingo-native-adapter.js",
+    "test:wcash-main-security": "node scripts/test-sensitive-native-policy.js",
+    "rebuild:keytar:local-regtest-qa:mac-arm64": "electron-rebuild --version 40.10.0 --arch arm64 --force --only keytar",
     "neon:wcash-regtest": "rimraf src/native.node && cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --release --no-default-features --features wcash-regtest --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
     "neon:wcash-regtest:mac-arm64": "rimraf src/native.node && LZMA_API_STATIC=1 cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --locked --release --target aarch64-apple-darwin --no-default-features --features wcash-regtest --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
     "build:local-regtest-qa:mac-arm64": "yarn verify:upstream-ui-parity && yarn neon:wcash-regtest:mac-arm64 && cross-env node scripts/build.js",
-    "package:local-regtest-qa:mac-arm64": "node scripts/assert-wcash-local-regtest-qa-package.js && rimraf dist/local-regtest-qa && yarn build:local-regtest-qa:mac-arm64 && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config config/electron-builder.local-regtest-qa.json --mac zip --arm64 -c.extraMetadata.main=build/electron.js --publish never"
+    "package:local-regtest-qa:mac-arm64": "node scripts/assert-wcash-local-regtest-qa-package.js && rimraf dist/local-regtest-qa && yarn rebuild:keytar:local-regtest-qa:mac-arm64 && yarn build:local-regtest-qa:mac-arm64 && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config config/electron-builder.local-regtest-qa.json --mac zip --arm64 -c.extraMetadata.main=build/electron.js --publish never"
   },
   "electronmon": {
     "patterns": [

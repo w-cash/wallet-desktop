@@ -82,6 +82,7 @@ pub(super) fn export(cx: &mut ModuleContext) -> NeonResult<()> {
     cx.export_function("wcash_create", create)?;
     cx.export_function("wcash_restore", restore)?;
     cx.export_function("wcash_open", open)?;
+    cx.export_function("wcash_delete", delete_wallet)?;
     cx.export_function("wcash_sync", sync)?;
     cx.export_function("wcash_stop_sync", stop_sync)?;
     cx.export_function("wcash_balance", balance)?;
@@ -120,6 +121,36 @@ fn wallet_path_under(base: &Path) -> Result<PathBuf, ZingolibError> {
     }
 
     Ok(wallet_directory.join(WCASH_WALLET_DATABASE))
+}
+
+fn wallet_companion_path(wallet: &Path, suffix: &str) -> PathBuf {
+    let mut path = wallet.as_os_str().to_os_string();
+    path.push(suffix);
+    PathBuf::from(path)
+}
+
+fn delete_wallet_database_files(wallet: &Path) -> Result<bool, ZingolibError> {
+    let mut deleted = false;
+    for candidate in [
+        wallet_companion_path(wallet, "-wal"),
+        wallet_companion_path(wallet, "-shm"),
+        wallet_companion_path(wallet, "-journal"),
+        // Remove the primary database last. A companion-file failure therefore
+        // leaves the wallet openable while metadata and credentials remain.
+        wallet.to_path_buf(),
+    ] {
+        match fs::remove_file(&candidate) {
+            Ok(()) => deleted = true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(ZingolibError::Delete(format!(
+                    "remove fixed-profile wallet file {}: {error}",
+                    candidate.display()
+                )))
+            }
+        }
+    }
+    Ok(deleted)
 }
 
 fn store_runtime(runtime: WcashRuntime) -> Result<(), ZingolibError> {
@@ -962,6 +993,27 @@ fn open(cx: FunctionContext) -> JsResult<JsPromise> {
     })
 }
 
+fn delete_wallet(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    if !cx.is_empty() {
+        return cx.throw_type_error("wcash_delete expects no arguments");
+    }
+    json_promise(cx, || {
+        with_panic_guard(|| {
+            // The path is compiled/profile scoped and supplied by trusted main
+            // process setup; no renderer-controlled path reaches deletion.
+            cancel_active_sync(&ACTIVE_SYNC);
+            let mut slot = WCASH_RUNTIME
+                .lock()
+                .map_err(|_| ZingolibError::Delete("Wcash runtime lock poisoned".to_owned()))?;
+            *slot = None;
+            drop(slot);
+
+            let deleted = delete_wallet_database_files(&wallet_path()?)?;
+            Ok(serde_json::json!({ "deleted": deleted }).to_string())
+        })
+    })
+}
+
 #[derive(Default)]
 struct ActiveSyncRegistry {
     next_generation: u64,
@@ -1478,6 +1530,45 @@ mod tests {
                 .path()
                 .join(WcashProfile.storage_namespace())
                 .join(WCASH_WALLET_DATABASE)
+        );
+    }
+
+    #[test]
+    fn deletion_removes_only_the_fixed_database_and_sqlite_companions() {
+        let temporary = tempfile::tempdir().unwrap();
+        let wallet = temporary.path().join(WCASH_WALLET_DATABASE);
+        let unrelated = temporary.path().join("keep-me.txt");
+        fs::write(&unrelated, b"keep").unwrap();
+        for candidate in [
+            wallet.clone(),
+            wallet_companion_path(&wallet, "-wal"),
+            wallet_companion_path(&wallet, "-shm"),
+            wallet_companion_path(&wallet, "-journal"),
+        ] {
+            fs::write(candidate, b"wallet").unwrap();
+        }
+
+        assert!(delete_wallet_database_files(&wallet).unwrap());
+        assert!(!wallet.exists());
+        assert!(!wallet_companion_path(&wallet, "-wal").exists());
+        assert!(!wallet_companion_path(&wallet, "-shm").exists());
+        assert!(!wallet_companion_path(&wallet, "-journal").exists());
+        assert!(unrelated.exists());
+        assert!(!delete_wallet_database_files(&wallet).unwrap());
+    }
+
+    #[test]
+    fn deletion_keeps_primary_database_when_a_companion_cannot_be_removed() {
+        let temporary = tempfile::tempdir().unwrap();
+        let wallet = temporary.path().join(WCASH_WALLET_DATABASE);
+        fs::write(&wallet, b"wallet").unwrap();
+        fs::write(wallet_companion_path(&wallet, "-wal"), b"wal").unwrap();
+        fs::create_dir(wallet_companion_path(&wallet, "-shm")).unwrap();
+
+        assert!(delete_wallet_database_files(&wallet).is_err());
+        assert!(
+            wallet.exists(),
+            "the primary database must be the final removal"
         );
     }
 

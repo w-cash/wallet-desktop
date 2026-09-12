@@ -22,6 +22,16 @@
     "build/native.node",
     "node_modules/keytar/**/*.node"
   ],
+  "extraResources": [
+    {
+      "from": "LICENSE",
+      "to": "LICENSE"
+    },
+    {
+      "from": "THIRD_PARTY_NOTICES.md",
+      "to": "THIRD_PARTY_NOTICES.md"
+    }
+  ],
   "directories": {
     "buildResources": "public",
     "output": "dist/local-regtest-qa"

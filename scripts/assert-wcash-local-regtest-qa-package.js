@@ -30,10 +30,14 @@ if (!policyOnly && (process.platform !== "darwin" || process.arch !== "arm64")) 
 }
 
 const packageJson = readJson("package.json");
+const yarnLock = read("yarn.lock");
 const qaConfig = readJson("config/electron-builder.local-regtest-qa.json");
 const qaSerialized = JSON.stringify(qaConfig);
 const nativeManifest = read("native/Cargo.toml");
+const nativeLock = read("native/Cargo.lock");
 const main = read("public/electron.js");
+const sensitivePolicy = read("public/sensitiveNativePolicy.js");
+const candidateWorkflow = read(".github/workflows/electron.yml");
 const commonStyles = read("src/components/common/Common.module.css");
 const scrollPane = read("src/components/scrollPane/ScrollPane.tsx");
 const sendScreen = read("src/components/send/Send.tsx");
@@ -72,7 +76,10 @@ requireCondition(qaConfig.forceCodeSigning === false, "code signing must remain 
 requireCondition(qaConfig.npmRebuild === false, "native rebuilding must stay in the explicit build step");
 requireCondition(qaConfig.afterSign === undefined, "the QA package must not run a signing hook");
 requireCondition(qaConfig.afterAllArtifactBuild === undefined, "the QA package must not run a release hook");
-requireCondition(qaConfig.mas === undefined && qaConfig.win === undefined && qaConfig.linux === undefined, "the QA config must be macOS-only");
+requireCondition(
+  qaConfig.mas === undefined && qaConfig.win === undefined && qaConfig.linux === undefined,
+  "the QA config must be macOS-only",
+);
 requireCondition(qaConfig.mac?.identity === null, "the macOS signing identity must be explicitly null");
 requireCondition(
   Array.isArray(qaConfig.mac?.target) && qaConfig.mac.target.length === 1 && qaConfig.mac.target[0] === "zip",
@@ -96,6 +103,12 @@ requireCondition(
 requireCondition(!/(?:zingo|zcash|nym)/i.test(qaSerialized), "the QA config contains inherited network/product wiring");
 requireCondition(!qaSerialized.includes("protocols"), "the QA package must not register a URI protocol");
 requireCondition(
+  Array.isArray(qaConfig.extraResources) &&
+    qaConfig.extraResources.some((resource) => resource.from === "LICENSE") &&
+    qaConfig.extraResources.some((resource) => resource.from === "THIRD_PARTY_NOTICES.md"),
+  "upstream license or third-party notices are missing from the package",
+);
+requireCondition(
   packageJson.author?.name === "Wcash Wallet contributors" &&
     packageJson.author?.url === "https://github.com/w-cash/wallet-desktop" &&
     packageJson.author?.email === undefined,
@@ -117,19 +130,32 @@ for (const required of [
   "--no-default-features",
   "--features wcash-regtest",
 ]) {
-  requireCondition(typeof nativeCommand === "string" && nativeCommand.includes(required), `native build is missing ${required}`);
+  requireCondition(
+    typeof nativeCommand === "string" && nativeCommand.includes(required),
+    `native build is missing ${required}`,
+  );
 }
 const packageCommand = packageJson.scripts["package:local-regtest-qa:mac-arm64"];
+const keytarCommand = packageJson.scripts["rebuild:keytar:local-regtest-qa:mac-arm64"];
+requireCondition(
+  keytarCommand === "electron-rebuild --version 40.10.0 --arch arm64 --force --only keytar" &&
+    yarnLock.includes('electron@^40.0.0:\n  version "40.10.0"'),
+  "the Keychain binding is not deterministically rebuilt for the packaged Electron arm64 ABI",
+);
 for (const required of [
   "node scripts/assert-wcash-local-regtest-qa-package.js",
   "rimraf dist/local-regtest-qa",
+  "yarn rebuild:keytar:local-regtest-qa:mac-arm64",
   "yarn build:local-regtest-qa:mac-arm64",
   "CSC_IDENTITY_AUTO_DISCOVERY=false",
   "config/electron-builder.local-regtest-qa.json",
   "--mac zip --arm64",
   "--publish never",
 ]) {
-  requireCondition(typeof packageCommand === "string" && packageCommand.includes(required), `package command is missing ${required}`);
+  requireCondition(
+    typeof packageCommand === "string" && packageCommand.includes(required),
+    `package command is missing ${required}`,
+  );
 }
 requireCondition(
   nativeManifest.includes('default = ["wcash-testnet"]') &&
@@ -140,10 +166,75 @@ requireCondition(
   nativeManifest.includes('authors = ["Wcash Wallet contributors"]'),
   "the native package author metadata is inherited from upstream",
 );
+for (const [repository, revision] of [
+  ["https://github.com/w-cash/wallet-core.git", "58bc22ec63bbe3eddab5f961c137836431589c95"],
+  ["https://github.com/w-cash/wolf.git", "5b4e29980eb45e84ddab9024f530c923986d7e1e"],
+  ["https://github.com/w-cash/wolf.git", "9a9c0668784117f116d5b69bdb3a090765092343"],
+]) {
+  requireCondition(
+    nativeManifest.includes(`git = "${repository}", rev = "${revision}"`) &&
+      nativeLock.includes(`git+${repository}?rev=${revision}#${revision}`),
+    `the reviewed Wcash core pin ${repository}@${revision} is missing from the manifest or lockfile`,
+  );
+}
+requireCondition(
+  /^\s*workflow_dispatch:\s*$/m.test(candidateWorkflow) &&
+    !/^\s*(?:push|pull_request|schedule):\s*$/m.test(candidateWorkflow),
+  "the candidate workflow must be manual-only",
+);
+requireCondition(
+  /^permissions:\s*\n\s+contents:\s+read\s*$/m.test(candidateWorkflow),
+  "the candidate workflow must have read-only repository permission",
+);
+for (const required of [
+  "runs-on: macos-14",
+  'test "$(uname -m)" = arm64',
+  "yarn install --frozen-lockfile",
+  "yarn package:local-regtest-qa:mac-arm64",
+  "wcash-wallet-local-regtest-qa-macos-arm64-unsigned",
+]) {
+  requireCondition(candidateWorkflow.includes(required), `the candidate workflow is missing ${required}`);
+}
+for (const forbidden of [
+  /contents:\s*write/i,
+  /secrets\./i,
+  /(?:create|publish)[-_ ]release/i,
+  /zingo-pc/i,
+  /zingolabs/i,
+  /nym/i,
+  /dist:(?:linux|win|mac-(?:mas|x64))/i,
+  /(?:codesign|notari|provision|certificate|azure)/i,
+  /runs-on:\s*(?:ubuntu|windows)/i,
+]) {
+  requireCondition(
+    !forbidden.test(candidateWorkflow),
+    `the candidate workflow contains forbidden release wiring: ${forbidden}`,
+  );
+}
 requireCondition(
   main.includes('intent: wcashProfile.runtimeReady ? "off" : "on"') &&
     main.includes('phase: wcashProfile.runtimeReady ? "switched_off" : "unattached"'),
   "a Wcash build can start inherited Nym transport",
+);
+const noParamMethods = main.match(/const _NATIVE_NO_PARAM_METHODS = \[([\s\S]*?)\];/)?.[1] || "";
+requireCondition(!noParamMethods.includes('"get_seed"'), "seed export is exposed through the generic native IPC loop");
+requireCondition(
+  !noParamMethods.includes('"confirm"'),
+  "transaction signing is exposed through the generic native IPC loop",
+);
+requireCondition(
+  main.includes('for (const method of ["get_seed", "confirm"])') &&
+    main.includes("createSensitiveNativeHandler") &&
+    sensitivePolicy.includes("verifyDeviceAuthentication"),
+  "trusted-main authentication is not wired for seed export and transaction signing",
+);
+const securityTest = spawnSync(process.execPath, [path.join(root, "scripts", "test-sensitive-native-policy.js")], {
+  cwd: root,
+  encoding: "utf8",
+});
+requireCondition(
+  securityTest.status === 0,
+  (securityTest.stderr || securityTest.stdout || "trusted-main security policy tests failed").trim(),
 );
 requireCondition(
   main.includes("if (wcashProfile.localnet)") &&
@@ -153,7 +244,7 @@ requireCondition(
 requireCondition(
   main.includes('appendStartupLog("app ready; configuring Wcash native wallet directory")') &&
     main.includes('appendStartupLog("BrowserWindow created")') &&
-    main.includes('appendStartupLog(`app startup failed: ${message}`)'),
+    main.includes("appendStartupLog(`app startup failed: ${message}`)"),
   "pre-window packaged startup diagnostics are missing",
 );
 
@@ -173,13 +264,12 @@ requireCondition(
 );
 requireCondition(main.includes("minHeight: 600"), "the supported minimum window height changed");
 requireCondition(
-  scrollPane.includes("window.innerHeight - offsetHeight") &&
-    scrollPane.includes('overflowY: "auto"'),
+  scrollPane.includes("window.innerHeight - offsetHeight") && scrollPane.includes('overflowY: "auto"'),
   "the exact screen content panes no longer scroll within the minimum window",
 );
 requireCondition(
   sendScreen.includes("<ScrollPaneTop offsetHeight={280}>") &&
-    sendScreen.includes('className={cstyles.verticalbuttons}'),
+    sendScreen.includes("className={cstyles.verticalbuttons}"),
   "the Send actions do not fit the minimum 600px framed Mac window",
 );
 

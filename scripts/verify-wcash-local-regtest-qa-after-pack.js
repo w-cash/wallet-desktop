@@ -33,6 +33,8 @@ function verifyPackagedApplication(context) {
   const archive = path.join(resources, "app.asar");
   const executable = path.join(contents, "MacOS", productFilename);
   const nativeBinding = path.join(resources, "app.asar.unpacked", "build", "native.node");
+  const license = path.join(resources, "LICENSE");
+  const notices = path.join(resources, "THIRD_PARTY_NOTICES.md");
   const keytarBinding = path.join(
     resources,
     "app.asar.unpacked",
@@ -56,6 +58,10 @@ function verifyPackagedApplication(context) {
   assert(fs.existsSync(executable), "main executable is missing");
   assert(fs.existsSync(nativeBinding) && fs.statSync(nativeBinding).size > 0, "native wallet binding is missing");
   assert(fs.existsSync(keytarBinding) && fs.statSync(keytarBinding).size > 0, "Keychain binding is missing");
+  assert(fs.existsSync(license), "the upstream license is missing");
+  assert(fs.existsSync(notices), "third-party notices are missing");
+  assert(fs.readFileSync(license, "utf8").includes("ZingoLabs"), "the upstream copyright was not preserved");
+  assert(fs.readFileSync(notices, "utf8").includes("zingo-pc-2.0.25-180"), "the upstream source tag is not attributed");
   assert(architectures(executable).join(" ") === "arm64", "main executable is not arm64-only");
   assert(architectures(nativeBinding).join(" ") === "arm64", "native wallet binding is not arm64-only");
   assert(architectures(keytarBinding).join(" ") === "arm64", "Keychain binding is not arm64-only");
@@ -64,14 +70,26 @@ function verifyPackagedApplication(context) {
   const containsNativeText = (value) => nativeBytes.indexOf(Buffer.from(value, "utf8")) !== -1;
   assert(containsNativeText("http://127.0.0.1:48234"), "native wallet was not compiled for the loopback endpoint");
   assert(containsNativeText("wcashregtest-v5"), "native wallet was not compiled for the Regtest namespace");
-  assert(!containsNativeText("https://wallet-testnet.wcashexplorer.com:443"), "native wallet contains the Testnet endpoint");
+  assert(
+    !containsNativeText("https://wallet-testnet.wcashexplorer.com:443"),
+    "native wallet contains the Testnet endpoint",
+  );
   assert(!containsNativeText("wcashtestnet-v5"), "native wallet contains the Testnet namespace");
 
-  assert(!fs.readdirSync(resources).some((name) => forbiddenResource.test(name)), "an inherited network helper was staged");
-  assert(!asar.listPackage(archive).some((name) => forbiddenResource.test(name)), "app.asar contains an inherited network helper");
+  assert(
+    !fs.readdirSync(resources).some((name) => forbiddenResource.test(name)),
+    "an inherited network helper was staged",
+  );
+  assert(
+    !asar.listPackage(archive).some((name) => forbiddenResource.test(name)),
+    "app.asar contains an inherited network helper",
+  );
 
   const packagedMetadata = JSON.parse(asar.extractFile(archive, "package.json").toString());
-  assert(packagedMetadata.name === "wcash-wallet-local-regtest-qa", "package name is not dedicated to Local Regtest QA");
+  assert(
+    packagedMetadata.name === "wcash-wallet-local-regtest-qa",
+    "package name is not dedicated to Local Regtest QA",
+  );
   assert(packagedMetadata.productName === EXPECTED_PRODUCT, "packaged product name is not exact");
   assert(
     packagedMetadata.author?.name === "Wcash Wallet contributors" &&
@@ -105,11 +123,23 @@ function verifyPackagedApplication(context) {
 
   const packagedProfile = asar.extractFile(archive, "build/wcashRuntimeProfile.js").toString();
   const packagedMain = asar.extractFile(archive, "build/electron.js").toString();
+  const packagedSensitivePolicy = asar.extractFile(archive, "build/sensitiveNativePolicy.js").toString();
   assert(packagedProfile.includes('endpoint: "http://127.0.0.1:48234"'), "packaged profile is not loopback-only");
-  assert(packagedProfile.includes('ironwoodPrefix: "w' + 'u' + 'regtest1"'), "packaged Wcash Regtest private prefix is missing");
+  assert(
+    packagedProfile.includes('ironwoodPrefix: "w' + "u" + 'regtest1"'),
+    "packaged Wcash Regtest private prefix is missing",
+  );
   assert(packagedMain.includes("wcashPackagedProfile"), "main ignores the packaged QA marker");
   assert(packagedMain.includes("Wcash Wallet"), "main does not set the exact product name");
-  assert(packagedMain.includes('phase: wcashProfile.runtimeReady ? "switched_off" : "unattached"'), "main can start inherited Nym transport");
+  assert(packagedMain.includes("createSensitiveNativeHandler"), "main does not enforce sensitive native operations");
+  assert(
+    packagedSensitivePolicy.includes("get_seed") && packagedSensitivePolicy.includes("confirm"),
+    "sensitive native policy is missing",
+  );
+  assert(
+    packagedMain.includes('phase: wcashProfile.runtimeReady ? "switched_off" : "unattached"'),
+    "main can start inherited Nym transport",
+  );
 
   const info = plist.parse(fs.readFileSync(path.join(contents, "Info.plist"), "utf8"));
   assert(info.CFBundleIdentifier === EXPECTED_APP_ID, "Info.plist bundle identifier is wrong");

@@ -1,318 +1,61 @@
-name: Electron CD
+name: Wcash Wallet Local Regtest QA Candidate
 
+# Local Regtest QA artifacts are created only by an explicit maintainer action.
+# It only uploads an unsigned review artifact and has no signing credentials.
 on:
-  push:
-    tags:
-      - "zingo-pc-*"
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: wcash-wallet-local-regtest-qa-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-22.04
-            platform: linux
-            arch: x64
-            dist_script: dist:linux
-
-          - runner: macos-15
-            platform: mac
-            arch: x64
-            dist_script: dist:mac-x64
-            rust_target: x86_64-apple-darwin
-
-          - runner: macos-14
-            platform: mac
-            arch: arm64
-            dist_script: dist:mac-arm64
-
-          - runner: macos-14
-            platform: mas
-            arch: universal
-            dist_script: dist:mac-mas
-            rust_target: x86_64-apple-darwin
-
-          - runner: windows-latest
-            platform: win
-            arch: x64
-            dist_script: dist:win-x64
-
-          - runner: windows-latest
-            platform: win
-            arch: arm64
-            dist_script: dist:win-arm64
-            rust_target: aarch64-pc-windows-msvc
+  macos-arm64-local-regtest-qa:
+    name: Unsigned macOS arm64 Local Regtest QA
+    runs-on: macos-14
+    timeout-minutes: 90
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the reviewed source and upstream parity tag
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@1.91.0
         with:
-          components: rustfmt
-          targets: ${{ matrix.rust_target || '' }}
+          targets: aarch64-apple-darwin
 
-      - name: Use Node.js
+      - name: Use Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: 22.x
+          cache: yarn
 
-      - name: Setup cmake
-        uses: jwlawson/actions-setup-cmake@v2
-        with:
-          cmake-version: "latest"
-
-      - name: Install Protoc
+      - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          version: "36.1"
 
-      - name: yarn install
-        run: yarn install
+      - name: Verify the native runner architecture
+        run: test "$(uname -m)" = arm64
 
-      # The nym-proxy binary (bundled via extraResources on every platform) is
-      # built from zingolib, a separate repo. Fetching it is scripts/stage-nym-proxy.js'
-      # job, at the exact commit native/Cargo.lock resolved to, so the bundled
-      # binary always matches the zingolib the native addon compiles against —
-      # and so CI and a developer's machine run the same steps. Nothing to set
-      # up here; the dist:* script below drives it.
+      - name: Install locked JavaScript dependencies
+        run: yarn install --frozen-lockfile
 
-      - name: Decode macOS certificate (DMG)
-        if: matrix.platform == 'mac'
+      - name: Verify the candidate policy and build the unsigned ZIP
         env:
-          p12base64: ${{ secrets.p12cert }}
-        run: echo "$p12base64" | openssl base64 -d -out cert.p12
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          LZMA_API_STATIC: "1"
+        run: yarn package:local-regtest-qa:mac-arm64
 
-      - name: Import macOS certificate (DMG)
-        if: matrix.platform == 'mac'
-        uses: apple-actions/import-codesign-certs@v3
-        with:
-          p12-file-base64: ${{ secrets.p12cert }}
-          p12-password: ${{ secrets.p12certpassword }}
-
-      - name: Import macOS certificates (MAS)
-        if: matrix.platform == 'mas'
-        uses: apple-actions/import-codesign-certs@v3
-        with:
-          p12-file-base64: ${{ secrets.p12certMas }}
-          p12-password: ${{ secrets.p12certMasPassword }}
-          keychain-password: ${{ secrets.p12certMasPassword }}
-
-      - name: Import macOS installer certificate (MAS)
-        if: matrix.platform == 'mas'
-        uses: apple-actions/import-codesign-certs@v3
-        with:
-          p12-file-base64: ${{ secrets.p12certMasInstaller }}
-          p12-password: ${{ secrets.p12certMasInstallerPassword }}
-          keychain-password: ${{ secrets.p12certMasPassword }}
-          create-keychain: false
-
-      - name: Install provisioning profile (MAS)
-        if: matrix.platform == 'mas'
-        env:
-          profile: ${{ secrets.provisioningProfile }}
-        run: |
-          echo "$profile" | base64 -D -o configs/Zingo_PC_Profile.provisionprofile
-
-      - name: Build (Linux)
-        if: matrix.platform == 'linux'
-        run: yarn ${{ matrix.dist_script }}
-
-      - name: Build (macOS)
-        if: matrix.platform == 'mac'
-        env:
-          APPLE_ID: ${{ secrets.appleId }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.appleIdPassword }}
-          APPLE_TEAM_ID: ${{ secrets.appleTeamId }}
-          LZMA_API_STATIC: 1
-        run: yarn ${{ matrix.dist_script }}
-
-      - name: Build (macOS MAS)
-        if: matrix.platform == 'mas'
-        env:
-          LZMA_API_STATIC: 1
-          CSC_NAME: "Distheirs LLC (788KRST4S8)"
-        run: yarn ${{ matrix.dist_script }}
-
-      # Signed through Azure Artifact Signing (build.win.azureSignOptions). The
-      # certificate lives in Azure, never on disk; these three variables are what
-      # electron-builder's EnvironmentCredential authenticates with.
-      - name: Build (Windows)
-        if: matrix.platform == 'win'
-        env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-        run: yarn ${{ matrix.dist_script }}
-
-      # The Store package. Locally this is `yarn dist:win-msix-<arch>`, mirroring
-      # dist:mac-mas; here electron-builder is called directly so it reuses what the
-      # step above produced instead of wiping dist/ and rebuilding Rust for the
-      # third time.
-      #
-      # The Store package must ship unsigned: Partner Center re-signs it, and our
-      # certificate subject (CN=Juan Carlos Carmona Calvo) does not match the
-      # package publisher (CN=96EC5B6E-…) anyway, which would make it invalid.
-      #
-      # Three separate switches are needed for that, none of them obvious:
-      #   - "!.appx" in build.win.signExts stops the package itself being signed.
-      #     signAndEditExecutable does NOT cover it — AppxTarget calls signIf on
-      #     the artifact directly, and signIf never consults that flag.
-      #   - signAndEditExecutable=false skips the binaries inside the package.
-      #     Microsoft's signature covers them, so signing here would only burn
-      #     signing calls — and would make this step need the Azure credentials.
-      #   - azureSignOptions is cleared. Left in place, electron-builder builds the
-      #     Azure signing manager just to ask it for a publisher name, which both
-      #     demands the credentials this step does not carry and writes the
-      #     certificate's subject into Identity/@Publisher, ignoring
-      #     build.appx.publisher (windowsSignAzureManager.computePublisherName
-      #     discards its argument) — a bare personal name, not a valid DN, which
-      #     makeappx rejects. Cleared, the publisher comes from build.appx.publisher.
-      - name: Build MSIX (Microsoft Store)
-        if: matrix.platform == 'win'
-        shell: bash
-        run: >
-          npx electron-builder -w appx --${{ matrix.arch }}
-          "-c.extraMetadata.main=build/electron.js"
-          "-c.win.signAndEditExecutable=false"
-          "-c.win.azureSignOptions="
-          --publish never
-
-      - name: Upload artifacts (Linux)
-        uses: actions/upload-artifact@v4
-        if: matrix.platform == 'linux'
-        with:
-          name: zingo-pc-linux-${{ matrix.arch }}
-          path: |
-            dist/*.deb
-            dist/*.AppImage
-
-      - name: Upload artifacts (macOS DMG)
-        uses: actions/upload-artifact@v4
-        if: matrix.platform == 'mac'
-        with:
-          name: zingo-pc-mac-${{ matrix.arch }}
-          path: dist/*.dmg
-
-      - name: Upload artifacts (macOS MAS)
-        uses: actions/upload-artifact@v4
-        if: matrix.platform == 'mas'
-        with:
-          name: zingo-pc-mas-${{ matrix.arch }}
-          path: dist/**/*.pkg
-
-      - name: Upload artifacts (Windows)
-        uses: actions/upload-artifact@v4
-        if: matrix.platform == 'win'
-        with:
-          name: zingo-pc-win-${{ matrix.arch }}
-          path: |
-            dist/*.msi
-            dist/*.zip
-
-      # Produced by dist:win-* alongside the msi/zip, but kept in its own artifact:
-      # this one goes to Partner Center, which signs it on upload. That signature is
-      # what gets it past Smart App Control — the msi/zip above stay unsigned and
-      # blocked. It is excluded from the public release in the release job, since
-      # unsigned it cannot be installed by anyone who downloads it.
-      - name: Upload MSIX (Microsoft Store)
-        uses: actions/upload-artifact@v4
-        if: matrix.platform == 'win'
-        with:
-          name: zingo-pc-win-msix-${{ matrix.arch }}
-          path: dist/*.appx
-
-  flatpak:
-    needs: build
-    runs-on: ubuntu-latest
-    container:
-      image: bilelmoussaoui/flatpak-github-actions:freedesktop-24.08
-      options: --privileged
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download Linux AppImage artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: zingo-pc-linux-x64
-          path: flatpak/
-
-      - name: Add Flathub remote (for Electron BaseApp)
-        run: flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-
-      - name: Resolve bundle name and patch manifest to use local AppImage
-        id: meta
-        run: |
-          TAG=${GITHUB_REF#refs/tags/}
-          # Version and build, so the bundle is named like every other artifact.
-          # The tag carries both (zingo-pc-2.0.25-179); electron-builder gets the
-          # build from build.buildVersion, but this bundle is named here.
-          VERSION=$(echo "$TAG" | grep -oP '\d+\.\d+\.\d+-\d+')
-          APPIMAGE=$(basename flatpak/*.AppImage)
-          echo "bundle=Zingo.PC-${VERSION}.flatpak" >> $GITHUB_OUTPUT
-          # Replace empty url+sha256 with the local artifact path
-          sed -i "s|url:.*|path: ${APPIMAGE}|" flatpak/co.zingo.pc.yml
-          sed -i "/sha256:/d" flatpak/co.zingo.pc.yml
-
-      - name: Build Flatpak bundle
-        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
-        with:
-          bundle: ${{ steps.meta.outputs.bundle }}
-          manifest-path: flatpak/co.zingo.pc.yml
-          cache-key: flatpak-builder-${{ github.sha }}
-
-      - name: Upload Flatpak as CI artifact
+      - name: Upload the unsigned Local Regtest QA candidate
         uses: actions/upload-artifact@v4
         with:
-          name: zingo-pc-flatpak
-          path: ${{ steps.meta.outputs.bundle }}
-
-  release:
-    needs: [build, flatpak]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: false
-
-      # Store-bound packages, not user downloads. The .appx goes to Partner Center
-      # and the .pkg to App Store Connect; both are signed by the store on upload,
-      # so as published on a release page they are files nobody can install.
-      - name: Keep the store packages out of the public release
-        run: rm -rf artifacts/zingo-pc-win-msix-* artifacts/zingo-pc-mas-*
-
-      - name: Generate release notes
-        id: notes
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const tag = context.ref.replace('refs/tags/', '');
-            const { data } = await github.rest.repos.generateReleaseNotes({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: tag,
-            });
-            return data.body;
-          result-encoding: string
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          body: |
-            ${{ steps.notes.outputs.result }}
-
-            ## Zingolabs
-            * @Oscar-Pepper @fluidvanadium @AloeareV @idky137 @dorianvp @nachog00 @karentaponte and @zancas making the magic behind the scenes.
-
-            ## Manual Testing
-            * Windows & Linux by @edicksonjga.
-            * MacOS by @juanky201271
-          files: artifacts/**/*
+          name: wcash-wallet-local-regtest-qa-macos-arm64-unsigned
+          path: dist/local-regtest-qa/Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-*-arm64.zip
+          if-no-files-found: error
+          retention-days: 14

@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("crypto");
+const { spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
@@ -12,6 +13,14 @@ const excluded = new Set(manifest.protected.excludedPaths);
 
 const toPosix = (value) => value.split(path.sep).join("/");
 const sha256 = (value) => crypto.createHash("sha256").update(value).digest("hex");
+
+function git(args) {
+  const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error((result.stderr || result.stdout || `git ${args.join(" ")} failed`).trim());
+  }
+  return result.stdout.trim();
+}
 
 function visit(relativePath, output) {
   const absolutePath = path.join(root, relativePath);
@@ -42,6 +51,42 @@ for (const relativePath of protectedFiles) {
 }
 
 const failures = [];
+const taggedCommit = git(["rev-parse", `refs/tags/${manifest.baseline.tag}^{commit}`]);
+if (taggedCommit !== manifest.baseline.commit) {
+  failures.push(`upstream tag resolves to ${taggedCommit}, expected ${manifest.baseline.commit}`);
+}
+
+// Anchor the allowlist to the actual upstream Git tree. This catches removed,
+// renamed, and newly added production UI files rather than trusting only a
+// hash manifest maintained on the same branch as the changes it approves.
+const productionPath = (relativePath) =>
+  allowedExtensions.has(path.extname(relativePath)) &&
+  !/\.(?:test|spec)\.[^.]+$/.test(relativePath) &&
+  !relativePath.includes("/__mocks__/");
+const diffArgs = [
+  "diff",
+  "--name-only",
+  "--diff-filter=ACDMRTUXB",
+  manifest.baseline.commit,
+  "--",
+  ...manifest.protected.roots,
+];
+const changedFromUpstream = new Set(git(diffArgs).split("\n").filter(Boolean).map(toPosix).filter(productionPath));
+const untracked = git(["ls-files", "--others", "--exclude-standard", "--", ...manifest.protected.roots])
+  .split("\n")
+  .filter(Boolean)
+  .map(toPosix)
+  .filter(productionPath);
+for (const relativePath of untracked) changedFromUpstream.add(relativePath);
+for (const relativePath of changedFromUpstream) {
+  if (!excluded.has(relativePath))
+    failures.push(`${relativePath}: production UI change is not approved against upstream`);
+}
+for (const relativePath of excluded) {
+  if (!changedFromUpstream.has(relativePath))
+    failures.push(`${relativePath}: approved UI deviation does not differ from upstream`);
+}
+
 if (protectedFiles.length !== manifest.protected.fileCount) {
   failures.push(`protected file count ${protectedFiles.length} != ${manifest.protected.fileCount}`);
 }
@@ -79,7 +124,8 @@ if (failures.length > 0) {
 }
 
 console.log(
-  `Exact Zingo UI parity passed: ${protectedFiles.length} protected files, ` +
+  `Exact Zingo UI parity passed against ${manifest.baseline.tag}: ${protectedFiles.length} unchanged protected files, ` +
+    `${changedFromUpstream.size} explicit upstream deviations, ` +
     `${Object.keys(manifest.approvedBrandingFiles).length} branding files, ` +
     `${Object.keys(manifest.approvedProtocolFiles || {}).length} protocol files, ` +
     `${Object.keys(manifest.approvedLayoutFiles || {}).length} accessibility layout files.`,

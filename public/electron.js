@@ -3,6 +3,7 @@ const os = require("os");
 const path = require("path");
 const fs = require("fs");
 const { createWcashZingoNativeAdapter } = require("./wcashZingoNativeAdapter");
+const { createRequireAuthSettingHandler, createSensitiveNativeHandler } = require("./sensitiveNativePolicy");
 const {
   TESTNET_PACKAGED_PROFILE,
   resolveWcashUserDataPath,
@@ -165,23 +166,25 @@ class MenuBuilder {
       label: "Wallet",
       submenu: [
         {
-          label: "&Add new Wallet",
+          label: wcashProfile.localnet ? "Add new Wallet (fixed Local Regtest profile)" : "&Add new Wallet",
           accelerator: "Ctrl+A",
+          enabled: !wcashProfile.localnet,
           click: () => {
             mainWindow.webContents.send("addnewwallet");
           },
         },
         { type: "separator" },
         {
-          label: "Wallet &Seed Phrase / Viewing Key",
+          label: "Wallet &Seed Phrase",
           accelerator: "Ctrl+S",
           click: () => {
             mainWindow.webContents.send("seed");
           },
         },
         {
-          label: "&Rescan Wallet",
+          label: wcashProfile.localnet ? "Rescan Wallet (unavailable in Local Regtest QA)" : "&Rescan Wallet",
           accelerator: "Ctrl+R",
+          enabled: !wcashProfile.localnet,
           click: () => {
             mainWindow.webContents.send("rescan");
           },
@@ -214,8 +217,9 @@ class MenuBuilder {
       label: "Settings",
       submenu: [
         {
-          label: "Select Block &Explorer",
+          label: wcashProfile.localnet ? "Block Explorer (unavailable in Local Regtest QA)" : "Select Block &Explorer",
           accelerator: "Ctrl+E",
+          enabled: !wcashProfile.localnet,
           click: () => {
             mainWindow.webContents.send("blockexplorer");
           },
@@ -229,21 +233,22 @@ class MenuBuilder {
           },
         },
         {
-          label: "&Nym Mixnet",
+          label: wcashProfile.localnet ? "Nym Mixnet (unavailable in Local Regtest QA)" : "&Nym Mixnet",
+          enabled: !wcashProfile.localnet,
           click: () => {
             mainWindow.webContents.send("mixnet-settings");
           },
         },
         {
           label: "Change &Wallets Folder Location…",
-          visible: process.mas === true,
+          visible: process.mas === true && !wcashProfile.localnet,
           click: () => {
             mainWindow.webContents.send("change-wallet-dir");
           },
         },
         {
           label: "&Import Data from Another Installation…",
-          visible: process.mas === true || !!process.env.FLATPAK_ID,
+          visible: (process.mas === true || !!process.env.FLATPAK_ID) && !wcashProfile.localnet,
           click: () => {
             mainWindow.webContents.send("import-data");
           },
@@ -311,23 +316,25 @@ class MenuBuilder {
         label: "&Wallet",
         submenu: [
           {
-            label: "&Add new Wallet",
+            label: wcashProfile.localnet ? "Add new Wallet (fixed Local Regtest profile)" : "&Add new Wallet",
             accelerator: "Ctrl+A",
+            enabled: !wcashProfile.localnet,
             click: () => {
               mainWindow.webContents.send("addnewwallet");
             },
           },
           { type: "separator" },
           {
-            label: "Wallet &Seed Phrase / Viewing Key",
+            label: "Wallet &Seed Phrase",
             accelerator: "Ctrl+S",
             click: () => {
               mainWindow.webContents.send("seed");
             },
           },
           {
-            label: "&Rescan Wallet",
+            label: wcashProfile.localnet ? "Rescan Wallet (unavailable in Local Regtest QA)" : "&Rescan Wallet",
             accelerator: "Ctrl+R",
+            enabled: !wcashProfile.localnet,
             click: () => {
               mainWindow.webContents.send("rescan");
             },
@@ -353,8 +360,11 @@ class MenuBuilder {
         label: "&Settings",
         submenu: [
           {
-            label: "Select Block &Explorer",
+            label: wcashProfile.localnet
+              ? "Block Explorer (unavailable in Local Regtest QA)"
+              : "Select Block &Explorer",
             accelerator: "Ctrl+E",
+            enabled: !wcashProfile.localnet,
             click: () => {
               mainWindow.webContents.send("blockexplorer");
             },
@@ -368,14 +378,15 @@ class MenuBuilder {
             },
           },
           {
-            label: "&Nym Mixnet",
+            label: wcashProfile.localnet ? "Nym Mixnet (unavailable in Local Regtest QA)" : "&Nym Mixnet",
+            enabled: !wcashProfile.localnet,
             click: () => {
               mainWindow.webContents.send("mixnet-settings");
             },
           },
           {
             label: "&Import Data from Another Installation…",
-            visible: !!process.env.FLATPAK_ID,
+            visible: !!process.env.FLATPAK_ID && !wcashProfile.localnet,
             click: () => {
               mainWindow.webContents.send("import-data");
             },
@@ -597,13 +608,12 @@ ipcMain.handle("auth:check", async () => {
   return "not_supported";
 });
 
-ipcMain.handle("auth:verify", async (_e, reason) => {
+async function verifyDeviceAuthentication(reason, { requireAvailable = false } = {}) {
   // Universal rule: when device authentication is NOT available on the current
   // platform / install (no Touch ID enrolled, Windows Hello not set up, polkit
   // action not registered for AppImage / dev runs, etc.) we silently succeed.
   // Otherwise the user gets a "Send" button that does nothing — surprising and
-  // hard to debug. Security-wise we already require an explicit opt-in for the
-  // feature: `requireDeviceAuth` defaults to true, but the renderer also gates
+  // hard to debug. `requireDeviceAuth` defaults to true, but the renderer also gates
   // the LOCK screen on auth:check === "available", so disabling here keeps the
   // two callers consistent.
   // Both calls are timed out for the same reason auth:check is: a native probe
@@ -618,7 +628,8 @@ ipcMain.handle("auth:verify", async (_e, reason) => {
         "not_supported",
         AUTH_PROBE_TIMEOUT_MS,
       );
-      if (availability !== "available") return { success: true };
+      if (availability !== "available")
+        return requireAvailable ? { success: false, unavailable: true } : { success: true };
       if (win) win.blur();
       const result = await withAuthTimeout(
         () => native.verifyWindowsUser(String(reason)),
@@ -635,7 +646,8 @@ ipcMain.handle("auth:verify", async (_e, reason) => {
     try {
       const native = getNative();
       const availability = await withAuthTimeout(() => native.checkMacAuth(), "not_supported", AUTH_PROBE_TIMEOUT_MS);
-      if (availability !== "available") return { success: true };
+      if (availability !== "available")
+        return requireAvailable ? { success: false, unavailable: true } : { success: true };
       return await withAuthTimeout(
         () => native.verifyMacUser(String(reason)),
         { success: false },
@@ -653,7 +665,7 @@ ipcMain.handle("auth:verify", async (_e, reason) => {
       execFile("pkaction", ["--action-id", "co.zingo.pc.authenticate"], (_err, stdout) => {
         const available = stdout && stdout.includes("co.zingo.pc.authenticate");
         if (!available) {
-          resolve({ success: true });
+          resolve(requireAvailable ? { success: false, unavailable: true } : { success: true });
           return;
         }
         execFile(
@@ -664,8 +676,10 @@ ipcMain.handle("auth:verify", async (_e, reason) => {
       });
     });
   }
-  return { success: true };
-});
+  return requireAvailable ? { success: false, unavailable: true } : { success: true };
+}
+
+ipcMain.handle("auth:verify", (_e, reason) => verifyDeviceAuthentication(reason));
 
 // ── Keychain-backed requireDeviceAuth ─────────────────────────────────────
 // Missing or deleted entry is treated as true (auth required by default).
@@ -703,6 +717,12 @@ async function setRequireAuth(value) {
   }
   _requireAuthCache = value;
 }
+
+const updateRequireAuthSetting = createRequireAuthSettingHandler({
+  getRequireDeviceAuth: getRequireAuth,
+  verifyDeviceAuthentication,
+  setRequireDeviceAuth: setRequireAuth,
+});
 
 // shell.openExternal and clipboard.writeText are not available in sandboxed preload —
 // route them through IPC so the main process performs the action.
@@ -767,7 +787,7 @@ ipcMain.handle("loadSettings", async () => {
 });
 ipcMain.handle("saveSettings", async (_e, kv) => {
   if (kv.key === "requireDeviceAuth") {
-    await setRequireAuth(kv.value);
+    await updateRequireAuthSetting(kv.value);
   } else if (kv.key === "serveruri") {
     settings.setSync("all.serveruri", wcashProfile.endpoint);
   } else if (kv.key === "serverchain_name") {
@@ -939,7 +959,6 @@ function setWalletBaseDirInMainProcess(walletPath, wdLog) {
 const _NATIVE_NO_PARAM_METHODS = [
   "save_wallet_file",
   "check_save_error",
-  "get_seed",
   "get_ufvk",
   "get_latest_block_wallet",
   "get_value_transfers",
@@ -966,7 +985,6 @@ const _NATIVE_NO_PARAM_METHODS = [
   "get_config_wallet_performance",
   "get_wallet_version",
   "shield",
-  "confirm",
   "drain_orchard_to_ironwood",
   "drain_status",
   "get_ironwood_activation_height",
@@ -986,6 +1004,21 @@ const _NATIVE_NO_PARAM_METHODS = [
 
 for (const method of _NATIVE_NO_PARAM_METHODS) {
   ipcMain.handle(`native:${method}`, () => requireNative(method)[method]());
+}
+
+// Spending authority never crosses the renderer boundary without the trusted
+// main process enforcing the user's device-authentication setting. Renderer
+// arguments are intentionally ignored by the policy handler.
+for (const method of ["get_seed", "confirm"]) {
+  ipcMain.handle(
+    `native:${method}`,
+    createSensitiveNativeHandler({
+      method,
+      getRequireDeviceAuth: getRequireAuth,
+      verifyDeviceAuthentication,
+      invokeNative: () => requireNative(method)[method](),
+    }),
+  );
 }
 
 // Sync no-param methods (also routed to main — become async over IPC)

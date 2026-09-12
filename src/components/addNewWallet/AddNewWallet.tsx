@@ -67,6 +67,8 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
 
   const [servers, setServers] = useState<ServerClass[]>(serverUrisList().filter((s: ServerClass) => !s.obsolete));
   const [serverExpanded, setServerExpanded] = useState<boolean>(false);
+  const fixedLocalProfile = selectedChain === ServerChainNameEnum.regtestChainName;
+  const additionalLocalWalletUnavailable = fixedLocalProfile && mode === "addnew" && wallets.length > 0;
 
   const isSubmittingRef = useRef(false);
 
@@ -189,7 +191,7 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
     }
     let next = maxId + 1;
     // we need to check if this file already exists
-    let nextWalletName = `zingo-wallet-${next}.dat`;
+    let nextWalletName = `wcash-wallet-${next}.dat`;
 
     while (true) {
       console.log(next, nextWalletName);
@@ -203,7 +205,7 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
       console.log(walletExistsResult);
       if (walletExistsResult) {
         next = next + 1;
-        nextWalletName = `zingo-wallet-${next}.dat`;
+        nextWalletName = `wcash-wallet-${next}.dat`;
         console.log("NEXT", next, nextWalletName);
       } else {
         break;
@@ -216,7 +218,7 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
   const createNextWallet = async (id: number, wallet_name: string, alias: string) => {
     const currentWallet: WalletType = {
       id,
-      fileName: wallet_name, // by default: zingo-wallet.dat
+      fileName: wallet_name, // by default: wcash-wallet.dat
       alias, // by default: the first word of the seed phrase
       chain_name: selectedChain ? selectedChain : ServerChainNameEnum.mainChainName,
       creationType:
@@ -468,7 +470,7 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
       }
       const currentWalletSave: WalletType = {
         id: currentWallet.id,
-        fileName: currentWallet.fileName, // by default: zingo-wallet.dat
+        fileName: currentWallet.fileName, // by default: wcash-wallet.dat
         alias, // by default: the first word of the seed phrase
         chain_name: selectedChain ? selectedChain : ServerChainNameEnum.mainChainName,
         creationType: currentWallet.creationType,
@@ -512,47 +514,47 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
           currentWallet.fileName,
         );
         console.log(walletExistsResult);
-        if (walletExistsResult) {
-          // interrupt syncing, just in case.
-          // only if the App is going to delete the DAT file.
-          if (!currentWalletOpenError && currentWallet.creationType !== CreationTypeEnum.File) {
-            // doesn't matter if stop sync fails, let's delete it.
-            try {
-              const resultInterrupt: string = await native.stop_sync();
-              console.log("Stopping sync ...", resultInterrupt);
-            } catch (error) {
-              console.error(`Stopping sync Error ${error}`);
-            }
+        // interrupt syncing, just in case.
+        // only if the App is going to delete the wallet database.
+        if (walletExistsResult && !currentWalletOpenError && currentWallet.creationType !== CreationTypeEnum.File) {
+          // doesn't matter if stop sync fails, let's delete it.
+          try {
+            const resultInterrupt: string = await native.stop_sync();
+            console.log("Stopping sync ...", resultInterrupt);
+          } catch (error) {
+            console.error(`Stopping sync Error ${error}`);
           }
-          await RPC.deinitialize();
+        }
+        await RPC.deinitialize();
 
-          // remove the actual wallet
-          await ipcRenderer.invoke("wallets:remove", currentWallet.id);
-          await ipcRenderer.invoke("saveSettings", { key: "currentwalletid", value: null });
+        // Delete the fixed-profile database and its recovery credential first.
+        // Renderer metadata remains intact if native deletion fails, allowing a
+        // safe retry instead of leaving an orphaned wallet.
+        if (currentWallet.creationType !== CreationTypeEnum.File) {
+          const resultDelete: string = await native.delete_wallet(
+            currentWallet.uri,
+            currentWallet.chain_name,
+            currentWallet.performanceLevel,
+            3,
+            currentWallet.fileName ? currentWallet.fileName : "wcash-wallet.dat",
+          );
+          console.log("deleting ...", resultDelete);
+        }
 
-          // re-fetching wallets
-          const newWallets: WalletType[] = await ipcRenderer.invoke("wallets:all");
-          setWallets(newWallets);
+        await ipcRenderer.invoke("wallets:remove", currentWallet.id);
+        await ipcRenderer.invoke("saveSettings", { key: "currentwalletid", value: null });
 
-          // if the wallet was created by a file, don't delete the file.
-          if (currentWallet.creationType !== CreationTypeEnum.File) {
-            const resultDelete: string = await native.delete_wallet(
-              currentWallet.uri,
-              currentWallet.chain_name,
-              currentWallet.performanceLevel,
-              3,
-              currentWallet.fileName ? currentWallet.fileName : "zingo-wallet.dat",
-            );
-            console.log("deleting ...", resultDelete);
-          }
-          setCurrentWallet(null);
-          await delay(1000);
-          if (!!newWallets && newWallets.length > 0) {
-            navigateToLoadingScreenChangingWallet();
-          } else {
-            closeModal();
-            closeErrorModal();
-          }
+        // re-fetching wallets
+        const newWallets: WalletType[] = await ipcRenderer.invoke("wallets:all");
+        setWallets(newWallets);
+
+        setCurrentWallet(null);
+        await delay(1000);
+        if (!!newWallets && newWallets.length > 0) {
+          navigateToLoadingScreenChangingWallet();
+        } else {
+          closeModal();
+          closeErrorModal();
         }
       } catch (error) {
         console.error(`Critical Error delete wallet ${error}`);
@@ -571,6 +573,19 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
 
     if (!selectedChain) {
       openErrorModal("Create Wallet", "Please select a Network before creating a wallet.");
+      isSubmittingRef.current = false;
+      return;
+    }
+    if (additionalLocalWalletUnavailable) {
+      openErrorModal("Add New Wallet", "This Local Regtest QA build supports one fixed-profile wallet.");
+      isSubmittingRef.current = false;
+      return;
+    }
+    if (fixedLocalProfile && (newWalletType === "ufvk" || newWalletType === "file")) {
+      openErrorModal(
+        "Create Wallet",
+        "Local Regtest QA supports creating a wallet or restoring its 24-word seed phrase. UFVK and wallet-file import are unavailable.",
+      );
       isSubmittingRef.current = false;
       return;
     }
@@ -698,7 +713,7 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
               Network
               <select
                 aria-label="Network"
-                disabled={mode !== "addnew"}
+                disabled={mode !== "addnew" || fixedLocalProfile}
                 className={cstyles.inputbox}
                 style={{
                   marginLeft: "20px",
@@ -758,9 +773,18 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
                 </option>
                 <option value="new">{news["new"]}</option>
                 <option value="seed">{news["seed"]}</option>
-                <option value="ufvk">{news["ufvk"]}</option>
-                <option value="file">{news["file"]}</option>
+                <option value="ufvk" disabled={fixedLocalProfile}>
+                  {fixedLocalProfile ? `${news["ufvk"]} (unavailable in Local Regtest QA)` : news["ufvk"]}
+                </option>
+                <option value="file" disabled={fixedLocalProfile}>
+                  {fixedLocalProfile ? `${news["file"]} (unavailable in Local Regtest QA)` : news["file"]}
+                </option>
               </select>
+              {fixedLocalProfile && (
+                <div className={cstyles.sublight} style={{ marginLeft: 12 }}>
+                  Fixed Local Regtest profile; one wallet, seed restore only.
+                </div>
+              )}
             </div>
           )}
 
@@ -814,10 +838,12 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
 
           {newWalletType === "file" && mode === "addnew" && (
             <div style={{ margin: "5px 10px" }}>
-              <div className={cstyles.sublight}>Please enter your Wallet File Name stored in the Wcash Wallet folder</div>
+              <div className={cstyles.sublight}>
+                Please enter your Wallet File Name stored in the Wcash Wallet folder
+              </div>
               <input
                 aria-label="Wallet file name"
-                placeholder="Ex: zingo-wallet-renamed....dat"
+                placeholder="Ex: wcash-wallet-restored.dat"
                 type="text"
                 className={cstyles.inputbox}
                 style={{ width: "90%", marginLeft: "20px" }}
@@ -840,7 +866,7 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
                 className={cstyles.inputbox}
                 style={{ width: "85%", marginLeft: "20px" }}
                 value={
-                  currentWallet && currentWallet.creationType === CreationTypeEnum.Main ? "zingo-wallet.dat" : file
+                  currentWallet && currentWallet.creationType === CreationTypeEnum.Main ? "wcash-wallet.dat" : file
                 }
               />
             </div>
@@ -864,18 +890,21 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
                   <div className={cstyles.horizontalflex}>
                     <div
                       className={cstyles.sublight}
-                      style={{ marginRight: "25px", cursor: "pointer" }}
-                      onClick={() => setServerExpanded(!serverExpanded)}
+                      style={{ marginRight: "25px", cursor: fixedLocalProfile ? "default" : "pointer" }}
+                      onClick={fixedLocalProfile ? undefined : () => setServerExpanded(!serverExpanded)}
                     >
                       Selected Server
                     </div>
                     <div
-                      style={{ marginRight: 25, cursor: "pointer", opacity: 0.5 }}
-                      onClick={() => setServerExpanded(!serverExpanded)}
+                      style={{ marginRight: 25, cursor: fixedLocalProfile ? "default" : "pointer", opacity: 0.5 }}
+                      onClick={fixedLocalProfile ? undefined : () => setServerExpanded(!serverExpanded)}
                     >
                       <i className={`${"fas"} ${"fa-chevron-down"} ${"fa-1x"}`} />
                     </div>
-                    <div style={{ cursor: "pointer" }} onClick={() => setServerExpanded(!serverExpanded)}>
+                    <div
+                      style={{ cursor: fixedLocalProfile ? "default" : "pointer" }}
+                      onClick={fixedLocalProfile ? undefined : () => setServerExpanded(!serverExpanded)}
+                    >
                       {selectedServer}
                     </div>
                   </div>
@@ -899,6 +928,7 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
                     {mode === "settings" && (
                       <div className={cstyles.horizontalflex} style={{ margin: "5px 10px", alignItems: "center" }}>
                         <input
+                          disabled={fixedLocalProfile}
                           checked={selectedSelection === ServerSelectionEnum.auto}
                           style={{ accentColor: Utils.getCssVariable("--color-primary") }}
                           type="radio"
@@ -919,6 +949,7 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
                     {servers.filter((s) => s.chain_name === selectedChain).length > 0 && (
                       <div className={cstyles.horizontalflex} style={{ margin: "5px 10px", alignItems: "center" }}>
                         <input
+                          disabled={fixedLocalProfile}
                           checked={selectedSelection === ServerSelectionEnum.list}
                           style={{ accentColor: Utils.getCssVariable("--color-primary") }}
                           type="radio"
@@ -940,7 +971,7 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
                         List
                         <select
                           aria-label="Server list"
-                          disabled={selectedSelection !== "list"}
+                          disabled={fixedLocalProfile || selectedSelection !== "list"}
                           className={cstyles.inputbox}
                           style={{ marginLeft: "20px" }}
                           value={listServer}
@@ -965,6 +996,7 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
                     )}
                     <div style={{ margin: "5px 10px" }}>
                       <input
+                        disabled={fixedLocalProfile}
                         checked={selectedSelection === "custom"}
                         style={{ accentColor: Utils.getCssVariable("--color-primary") }}
                         type="radio"
@@ -986,7 +1018,7 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
                           <input
                             aria-label="Custom server URI"
                             placeholder="https://------.---:---"
-                            disabled={selectedSelection !== "custom"}
+                            disabled={fixedLocalProfile || selectedSelection !== "custom"}
                             type="text"
                             className={cstyles.inputbox}
                             style={{ marginLeft: "20px", width: "80%" }}
@@ -1046,7 +1078,13 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
           <button type="button" className={cstyles.primarybutton} onClick={() => closeModal()}>
             Cancel
           </button>
-          <button type="button" className={cstyles.primarybutton} onClick={async () => await submitAction()}>
+          <button
+            type="button"
+            className={cstyles.primarybutton}
+            disabled={additionalLocalWalletUnavailable}
+            title={additionalLocalWalletUnavailable ? "Local Regtest QA supports one fixed-profile wallet" : undefined}
+            onClick={async () => await submitAction()}
+          >
             {mode === "addnew"
               ? newWalletType === "new"
                 ? "Create Wallet"

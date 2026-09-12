@@ -1,11 +1,7 @@
 "use strict";
 
 const assert = require("assert/strict");
-const {
-  SEND_FEE_ZAT,
-  createWcashZingoNativeAdapter,
-  toCanonicalAmount,
-} = require("../public/wcashZingoNativeAdapter");
+const { SEND_FEE_ZAT, createWcashZingoNativeAdapter, toCanonicalAmount } = require("../public/wcashZingoNativeAdapter");
 const { LOCAL_REGTEST_RUNTIME_PROFILE } = require("../public/wcashRuntimeProfile");
 
 const phrase = `${"abandon ".repeat(23)}art`;
@@ -49,6 +45,8 @@ async function main() {
   };
   let database = null;
   let sendCalls = 0;
+  let failNativeDelete = false;
+  const deleteOrder = [];
   let sync = deferred();
 
   const native = {
@@ -111,8 +109,14 @@ async function main() {
       });
       return JSON.stringify({ outcome: "broadcast", txid: "b".repeat(64) });
     },
-    wcash_shield_coinbase_and_broadcast: async () =>
-      JSON.stringify({ outcome: "broadcast", txid: "c".repeat(64) }),
+    wcash_shield_coinbase_and_broadcast: async () => JSON.stringify({ outcome: "broadcast", txid: "c".repeat(64) }),
+    wcash_delete: async () => {
+      deleteOrder.push("native");
+      if (failNativeDelete) throw new Error("database busy");
+      const deleted = database !== null;
+      database = null;
+      return JSON.stringify({ deleted });
+    },
   };
 
   const credentials = new Map();
@@ -121,16 +125,17 @@ async function main() {
     setPassword: async (service, account, value) => {
       credentials.set(`${service}:${account}`, value);
     },
-    deletePassword: async (service, account) => credentials.delete(`${service}:${account}`),
+    deletePassword: async (service, account) => {
+      deleteOrder.push("credential");
+      return credentials.delete(`${service}:${account}`);
+    },
   };
   const adapter = createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe: async () => true });
 
   assert.equal(await adapter.invoke("wallet_exists", profile.endpoint, "regtest", "high", 1, "wallet.dat"), false);
   assert.equal(await adapter.invoke("wallet_exists", profile.endpoint, "test", "high", 1, "wallet.dat"), false);
 
-  const created = JSON.parse(
-    await adapter.invoke("init_new", profile.endpoint, "regtest", "high", 1, "wallet.dat"),
-  );
+  const created = JSON.parse(await adapter.invoke("init_new", profile.endpoint, "regtest", "high", 1, "wallet.dat"));
   assert.equal(created.seed_phrase, phrase);
   assert.equal(created.birthday, 1);
   assert.equal(await adapter.invoke("wallet_exists", profile.endpoint, "regtest", "high", 1, "wallet.dat"), true);
@@ -184,18 +189,24 @@ async function main() {
   const zeroAmountPreview = JSON.parse(
     await adapter.invoke("send", JSON.stringify([{ address: ironwoodAddress, amount: 0 }])),
   );
+  const multipleRecipientPreview = JSON.parse(
+    await adapter.invoke(
+      "send",
+      JSON.stringify([
+        { address: ironwoodAddress, amount: 1 },
+        { address: ironwoodAddress, amount: 1 },
+      ]),
+    ),
+  );
+  assert.match(multipleRecipientPreview.error, /exactly one recipient/);
   assert.match(zeroAmountPreview.error, /outside the accepted range/);
   assert.equal(
-    JSON.parse(await adapter.invoke("get_spendable_balance_with_address", ironwoodAddress, "false"))
-      .spendable_balance,
+    JSON.parse(await adapter.invoke("get_spendable_balance_with_address", ironwoodAddress, "false")).spendable_balance,
     300_000_000,
   );
 
   const proposal = JSON.parse(
-    await adapter.invoke(
-      "send",
-      JSON.stringify([{ address: ironwoodAddress, amount: 100_000_000, memo: "hello" }]),
-    ),
+    await adapter.invoke("send", JSON.stringify([{ address: ironwoodAddress, amount: 100_000_000, memo: "hello" }])),
   );
   assert.equal(proposal.fee, SEND_FEE_ZAT);
   assert.equal(proposal.amount, 100_000_000);
@@ -206,6 +217,24 @@ async function main() {
 
   assert.equal(await adapter.invoke("get_developer_donation_address"), "");
   assert.deepEqual(JSON.parse(await adapter.invoke("zec_price_over_mixnet")), { price: null });
+
+  const credentialKey = `${profile.keytarService}:${profile.keytarAccount}`;
+  failNativeDelete = true;
+  await assert.rejects(
+    adapter.invoke("delete_wallet", profile.endpoint, "regtest", "high", 1, "wallet.dat"),
+    /database busy/,
+  );
+  assert.equal(credentials.has(credentialKey), true, "native deletion failure must preserve the recovery credential");
+  assert.deepEqual(deleteOrder, ["native"]);
+
+  failNativeDelete = false;
+  assert.deepEqual(
+    JSON.parse(await adapter.invoke("delete_wallet", profile.endpoint, "regtest", "high", 1, "wallet.dat")),
+    { deleted: true },
+  );
+  assert.equal(credentials.has(credentialKey), false);
+  assert.deepEqual(deleteOrder, ["native", "native", "credential"]);
+  assert.equal(await adapter.invoke("wallet_exists", profile.endpoint, "regtest", "high", 1, "wallet.dat"), false);
 
   console.log("Wcash exact-Zingo native adapter tests passed");
 }

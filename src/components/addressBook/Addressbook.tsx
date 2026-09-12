@@ -168,7 +168,7 @@ const AddressBook: React.FC<AddressBookProps> = (props) => {
           <input
             type="text"
             aria-label="Address"
-            placeholder="Unified | Sapling | Transparent | TEX address | name.zcash"
+            placeholder="Unified | Sapling | Transparent | TEX address"
             value={currentAddress}
             className={`${cstyles.inputbox} ${cstyles.margintopsmall}`}
             onChange={(e) => updateAddress(e.target.value)}

@@ -87,6 +87,8 @@ pub enum ZingolibError {
     Sync(String),
     #[error("reading wallet: {0}")]
     Read(String),
+    #[error("deleting wallet: {0}")]
+    Delete(String),
 }
 
 pub fn with_panic_guard<T, F>(work: F) -> Result<T, ZingolibError>

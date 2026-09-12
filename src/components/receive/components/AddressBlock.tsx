@@ -53,6 +53,7 @@ const AddressBlock: React.FC<AddressBlockProps> = ({
     blockExplorerTestnetAddressCustom,
   } = context;
   const address_address = address.encoded_address;
+  const newAddressUnavailable = currentWallet?.chain_name === ServerChainNameEnum.regtestChainName;
 
   const { copied, copy } = useCopy(1500);
   const [creating, setCreating] = useState<boolean>(false);
@@ -224,6 +225,7 @@ const AddressBlock: React.FC<AddressBlockProps> = ({
                 {type === "u" && (
                   <select
                     aria-label="New address type"
+                    disabled={newAddressUnavailable}
                     className={cstyles.inputbox}
                     style={{ marginLeft: 10 }}
                     value={unifiedCreateType}
@@ -243,7 +245,10 @@ const AddressBlock: React.FC<AddressBlockProps> = ({
                   </select>
                 )}
                 <button
-                  disabled={creating}
+                  disabled={creating || newAddressUnavailable}
+                  title={
+                    newAddressUnavailable ? "This Local Regtest QA build uses its fixed account receiver" : undefined
+                  }
                   className={`${cstyles.primarybutton} ${cstyles.margintoplarge}`}
                   type="button"
                   onClick={async () => {
@@ -261,7 +266,13 @@ const AddressBlock: React.FC<AddressBlockProps> = ({
                     creatingTimerRef.current = setTimeout(() => setCreating(false), 5000);
                   }}
                 >
-                  {creating ? <span>Creating...</span> : <span>New Address</span>}
+                  {creating ? (
+                    <span>Creating...</span>
+                  ) : newAddressUnavailable ? (
+                    <span>Fixed Local Address</span>
+                  ) : (
+                    <span>New Address</span>
+                  )}
                 </button>
               </div>
             </div>

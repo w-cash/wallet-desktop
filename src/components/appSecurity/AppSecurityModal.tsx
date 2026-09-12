@@ -16,6 +16,7 @@ const AppSecurityModal: React.FC<Props> = ({ isOpen, onClose }) => {
     "checking" | "available" | "not_configured" | "not_installed_linux" | "not_supported"
   >("checking");
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   const hasChanges = requireAuth !== savedRequireAuth;
 
@@ -23,6 +24,7 @@ const AppSecurityModal: React.FC<Props> = ({ isOpen, onClose }) => {
     if (!isOpen) return;
     (async () => {
       setAvailability("checking");
+      setSaveError("");
       const [allSettings, avail] = await Promise.all([
         ipcRenderer.invoke("loadSettings"),
         ipcRenderer.invoke("auth:check"),
@@ -36,18 +38,24 @@ const AppSecurityModal: React.FC<Props> = ({ isOpen, onClose }) => {
 
   const handleSave = async () => {
     setSaving(true);
-    await ipcRenderer.invoke("saveSettings", { key: "requireDeviceAuth", value: requireAuth });
-    setSaving(false);
-    onClose();
+    setSaveError("");
+    try {
+      await ipcRenderer.invoke("saveSettings", { key: "requireDeviceAuth", value: requireAuth });
+      onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const unavailableMessage =
     availability === "not_configured"
-      ? "Windows Hello is not configured on this device. Go to Windows Settings → Accounts → Sign-in options to set it up."
+      ? "Windows Hello is not configured on this device. Set it up in Windows Settings → Accounts → Sign-in options. Until then, sensitive operations remain usable in this signed-in OS session."
       : availability === "not_installed_linux"
-        ? "Device authentication via polkit is not available. Install the Wcash Wallet .deb package to enable this feature."
+        ? "Device authentication via polkit is not available. Install the Wcash Wallet .deb package to enable it. Until then, sensitive operations remain usable in this signed-in OS session."
         : availability === "not_supported"
-          ? "Device authentication is not supported on this platform."
+          ? "Device authentication is not supported on this platform. Sensitive operations remain usable in this signed-in OS session."
           : null;
 
   const isAvailable = availability === "available";
@@ -82,7 +90,7 @@ const AppSecurityModal: React.FC<Props> = ({ isOpen, onClose }) => {
           <div>
             <div className={cstyles.small}>Require device authentication</div>
             <div className={cstyles.small} style={{ opacity: 0.6, marginTop: 4 }}>
-              Prompt for device authentication when opening the app and when sending funds.
+              When available, prompt when opening the app, showing the seed phrase, and sending funds.
             </div>
           </div>
           <label style={{ display: "contents" }}>
@@ -117,6 +125,11 @@ const AppSecurityModal: React.FC<Props> = ({ isOpen, onClose }) => {
       </div>
 
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, marginTop: 24 }}>
+        {saveError && (
+          <div className={cstyles.small} role="alert" style={{ color: "#ff6b6b", marginRight: "auto" }}>
+            {saveError}
+          </div>
+        )}
         <button type="button" className={cstyles.primarybutton} onClick={onClose}>
           Cancel
         </button>

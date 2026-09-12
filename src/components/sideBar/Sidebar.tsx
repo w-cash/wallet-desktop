@@ -12,13 +12,13 @@ import MixnetModal from "./components/MixnetModal";
 import { Logo } from "../logo";
 import APP_VERSION from "../../version";
 import SelectWallet from "./components/SelectWallet";
-import { WalletType } from "../appstate";
+import { ServerChainNameEnum, WalletType } from "../appstate";
 import BlockExplorerModal from "./components/BlockExplorerModal";
 import { useCopy } from "../common/useCopy";
 
 import { ipcRenderer, native } from "../../electronBridge";
 
-// Modal content for "Wallet Seed Phrase / Viewing Key" extracted to its own
+// Modal content for "Wallet Seed Phrase" extracted to its own
 // component because the inline copy feedback for UFVK / birthday relies on
 // useCopy() hooks, which cannot be called inside the event handler that opens
 // the modal. As a component, the content owns its hook state and re-renders
@@ -26,7 +26,7 @@ import { ipcRenderer, native } from "../../electronBridge";
 // copyable to the clipboard — see the note in the JSX.
 type SeedUfvkModalContentProps = {
   // null = the native call is still in flight; render a loading state instead
-  // of empty content so the user gets feedback while get_seed / get_ufvk run.
+  // of empty content so the user gets feedback while get_seed runs.
   seedStr: string | null;
   ufvkStr: string | null;
   birthday: number | undefined;
@@ -40,7 +40,7 @@ const SeedUfvkModalContent: React.FC<SeedUfvkModalContentProps> = ({ seedStr, uf
   if (seedStr === null || ufvkStr === null) {
     return (
       <div className={cstyles.verticalflex} style={{ alignItems: "center", padding: 24 }}>
-        <div style={{ marginBottom: 12 }}>Retrieving seed phrase / viewing key&hellip;</div>
+        <div style={{ marginBottom: 12 }}>Authenticating and retrieving seed phrase&hellip;</div>
         <i className={`${"fas"} ${"fa-sync"} ${"fa-spin"}`} />
       </div>
     );
@@ -128,6 +128,11 @@ const SeedUfvkModalContent: React.FC<SeedUfvkModalContentProps> = ({ seedStr, uf
           </div>
         </>
       )}
+      {!ufvkStr && !!seedStr && (
+        <div style={{ textAlign: "center", opacity: 0.75, marginBottom: 16 }}>
+          Unified viewing-key export is not available in this Wcash Wallet build.
+        </div>
+      )}
       <div
         style={{
           display: "flex",
@@ -204,6 +209,7 @@ const Sidebar: React.FC<SidebarProps> = ({ doRescan, navigateToLoadingScreenChan
     mixnetView,
   } = context;
   const mixnetInd = mixnetIndicator(mixnetView);
+  const localRegtest = currentWallet?.chain_name === ServerChainNameEnum.regtestChainName;
 
   const [payURIModalIsOpen, setPayURIModalIsOpen] = useState<boolean>(false);
   const [payURIModalInputValue, setPayURIModalInputValue] = useState<string | undefined>(undefined);
@@ -311,27 +317,9 @@ const Sidebar: React.FC<SidebarProps> = ({ doRescan, navigateToLoadingScreenChan
         "Wcash Wallet",
         <div className={cstyles.verticalflex}>
           <div className={cstyles.margintoplarge}>Wcash Wallet v{APP_VERSION}</div>
-          <div className={cstyles.margintoplarge}>Built with Electron. Copyright (c) 2026, ZingoLabs.</div>
+          <div className={cstyles.margintoplarge}>Built with Electron by Wcash Wallet contributors.</div>
           <div className={cstyles.margintoplarge}>
-            The MIT License (MIT) Copyright (c) 2026 ZingoLabs
-            <br />
-            <br />
-            Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-            documentation files (the &quot;Software&quot;), to deal in the Software without restriction, including
-            without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-            copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the
-            following conditions:
-            <br />
-            <br />
-            The above copyright notice and this permission notice shall be included in all copies or substantial
-            portions of the Software.
-            <br />
-            <br />
-            THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
-            NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-            NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-            IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-            USE OR OTHER DEALINGS IN THE SOFTWARE.
+            Open-source licenses and upstream attribution are included in LICENSE and THIRD_PARTY_NOTICES.md.
           </div>
         </div>,
       );
@@ -360,6 +348,10 @@ const Sidebar: React.FC<SidebarProps> = ({ doRescan, navigateToLoadingScreenChan
     // Block Explorer Selection
     const blockexplorer = (_event: any) => {
       if (!active) return;
+      if (currentWalletRef.current?.chain_name === ServerChainNameEnum.regtestChainName) {
+        openErrorModal("Block Explorer", "A block explorer is not available for Local Regtest QA.");
+        return;
+      }
       setBlockExplorerModalIsOpen(true);
     };
 
@@ -367,56 +359,40 @@ const Sidebar: React.FC<SidebarProps> = ({ doRescan, navigateToLoadingScreenChan
     const seed = async (_event: any) => {
       if (!active) return;
       if (!currentWalletRef.current || !!currentWalletOpenErrorRef.current) {
-        openErrorModal("Wallet Seed Phrase/Viewing Key", "There is not an active Wallet to perform the action.");
+        openErrorModal("Wallet Seed Phrase", "There is not an active Wallet to perform the action.");
+        return;
+      }
+      if (readOnlyRef.current) {
+        openErrorModal(
+          "Wallet Seed Phrase",
+          "This watch-only wallet has no seed phrase. Unified viewing-key export is not available in this build.",
+        );
         return;
       }
 
-      // Re-authenticate before exposing seed/UFVK, even mid-session. The
-      // startup lock screen gates app entry but a long-running session would
-      // otherwise let anyone with screen access reveal the spend authority
-      // (seed) or the viewing key (full tx history + balance). Matches the
-      // pattern in SendConfirmModal.sendButton.
-      const allSettings = await ipcRenderer.invoke("loadSettings");
-      if (allSettings?.requireDeviceAuth) {
-        const authResult: { success: boolean } = await ipcRenderer.invoke(
-          "auth:verify",
-          "Show seed phrase / viewing key",
-        );
-        if (!authResult.success) return;
-      }
-
       // Open the modal with a loading state before the native fetches so the
-      // user gets immediate feedback. get_seed / get_ufvk can each take a
-      // noticeable moment, and previously the UI sat silent between the auth
-      // prompt closing and the modal appearing.
+      // user gets immediate feedback. Trusted main process authentication and
+      // key retrieval can take a noticeable moment.
       openErrorModal(
-        "Wallet Seed Phrase / Viewing Key",
+        "Wallet Seed Phrase",
         <SeedUfvkModalContent seedStr={null} ufvkStr={null} birthday={birthdayRef.current} />,
       );
 
-      // Always fetch the UFVK — for seed wallets it's derived from the seed, and
-      // showing it alongside the seed lets the user share view-only access without
-      // exposing spend authority. Run both native calls in parallel.
       try {
-        // get_seed / get_ufvk reject (typed error on the throw channel) if the
-        // key material can't be read; surface that instead of leaving the modal
-        // in its loading state.
-        const [seedRaw, ufvkRaw] = await Promise.all([
-          readOnlyRef.current ? Promise.resolve("") : native.get_seed(),
-          native.get_ufvk(),
-        ]);
+        // get_seed is authenticated in the trusted Electron main process. UFVK
+        // export is intentionally unavailable at the current Wcash boundary.
+        const seedRaw = await native.get_seed();
         const seedStr: string = seedRaw ? (JSON.parse(seedRaw).seed_phrase ?? "") : "";
-        const ufvkStr: string = ufvkRaw ? (JSON.parse(ufvkRaw).ufvk ?? "") : "";
 
         if (!active) return;
         openErrorModal(
-          "Wallet Seed Phrase / Viewing Key",
-          <SeedUfvkModalContent seedStr={seedStr} ufvkStr={ufvkStr} birthday={birthdayRef.current} />,
+          "Wallet Seed Phrase",
+          <SeedUfvkModalContent seedStr={seedStr} ufvkStr="" birthday={birthdayRef.current} />,
         );
       } catch (error) {
         if (!active) return;
-        console.error(`Error reading seed/ufvk ${error}`);
-        openErrorModal("Wallet Seed Phrase / Viewing Key", `${error}`);
+        console.error(`Error reading seed ${error}`);
+        openErrorModal("Wallet Seed Phrase", `${error}`);
       }
     };
 
@@ -424,6 +400,8 @@ const Sidebar: React.FC<SidebarProps> = ({ doRescan, navigateToLoadingScreenChan
       if (!active) return;
       if (!currentWalletRef.current || !!currentWalletOpenErrorRef.current) {
         openErrorModal("Rescan Wallet", "There is not an active Wallet to perform the action.");
+      } else if (currentWalletRef.current.chain_name === ServerChainNameEnum.regtestChainName) {
+        openErrorModal("Rescan Wallet", "Rescan is not available in this Local Regtest QA build.");
       } else {
         doRescanRef.current();
       }
@@ -431,6 +409,13 @@ const Sidebar: React.FC<SidebarProps> = ({ doRescan, navigateToLoadingScreenChan
 
     const addnewwallet = (_event: any) => {
       if (!active) return;
+      if (
+        currentWalletRef.current?.chain_name === ServerChainNameEnum.regtestChainName ||
+        walletsRef.current.some((wallet) => wallet.chain_name === ServerChainNameEnum.regtestChainName)
+      ) {
+        openErrorModal("Add New Wallet", "This Local Regtest QA build supports one fixed-profile wallet.");
+        return;
+      }
       navigate(routes.ADDNEWWALLET, { state: { mode: "addnew" } });
     };
 
@@ -454,6 +439,10 @@ const Sidebar: React.FC<SidebarProps> = ({ doRescan, navigateToLoadingScreenChan
 
     const mixnetsettings = (_event: any) => {
       if (!active) return;
+      if (currentWalletRef.current?.chain_name === ServerChainNameEnum.regtestChainName) {
+        openErrorModal("Nym Mixnet", "Nym is not available in Local Regtest QA; this wallet uses its local endpoint.");
+        return;
+      }
       setMixnetModalIsOpen(true);
     };
 
@@ -648,9 +637,9 @@ const Sidebar: React.FC<SidebarProps> = ({ doRescan, navigateToLoadingScreenChan
         {currentWallet && (
           <div
             className={`${cstyles.padsmallall} ${cstyles.margintopsmall} ${cstyles.blackbg}`}
-            onClick={() => setMixnetModalIsOpen(true)}
-            style={{ cursor: "pointer" }}
-            title="Nym mixnet settings"
+            onClick={localRegtest ? undefined : () => setMixnetModalIsOpen(true)}
+            style={{ cursor: localRegtest ? "default" : "pointer" }}
+            title={localRegtest ? "Nym is unavailable in Local Regtest QA" : "Nym mixnet settings"}
           >
             <div>
               <i className={`${mixnetInd.colorClass} fas ${mixnetInd.iconClass}`} />

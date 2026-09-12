@@ -2,6 +2,12 @@ export const native = {
   parse_address: jest.fn(),
   get_seed: jest.fn(),
   get_ufvk: jest.fn(),
+  deinitialize: jest.fn(),
+  stop_sync: jest.fn(),
+  delete_wallet: jest.fn(),
+  init_new: jest.fn(),
+  init_from_seed: jest.fn(),
+  init_from_ufvk: jest.fn(),
   // LoadingScreen
   wallet_exists: jest.fn(),
   wallet_kind: jest.fn(),
