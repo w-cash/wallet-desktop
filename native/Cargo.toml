@@ -15,7 +15,7 @@ crate-type = ["cdylib"]
 # The Wcash facade is pinned to one immutable, reviewed wallet-core revision.
 # The inherited Zingo implementation remains in legacy_zcash.rs for future
 # reference but is neither linked nor exported by the Wcash native artifact.
-zingolib = { git = "https://github.com/w-cash/wallet-core.git", rev = "62d729a17fed2263eddac9a11731def20062293d" }
+zingolib = { git = "https://github.com/w-cash/wallet-core.git", rev = "14cdc78cea4d71bbd902bc60c057a72a6885f261" }
 wcash-wallet = { git = "https://github.com/w-cash/wolf.git", rev = "47c44cd2adab6e6aa911ac740450c62ab600b4f5" }
 
 bip0039 = { version = "0.14", features = ["rand"] }
