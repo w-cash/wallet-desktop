@@ -2,7 +2,9 @@
 
 ## Supported Versions
 
-Only the latest released version of Zingo PC receives security fixes. Older versions are not backported.
+Wcash Warden is currently an unsigned Testnet engineering build. Only the latest
+published Testnet build is eligible for security fixes; older builds are not
+backported.
 
 | Platform | Supported |
 | -------- | --------- |
@@ -11,9 +13,11 @@ Only the latest released version of Zingo PC receives security fixes. Older vers
 
 ## Reporting a Vulnerability
 
-If you believe you have found a security vulnerability in Zingo PC, please **do not open a public GitHub issue**. Instead, report it privately:
+If you believe you have found a security vulnerability in Wcash Warden, please
+**do not open a public GitHub issue**. Report it privately to the repository
+maintainer:
 
-**Email:** zingodisclosure@proton.me
+**Email:** placex.com@gmail.com
 
 Please include as much of the following as possible:
 
@@ -22,12 +26,9 @@ Please include as much of the following as possible:
 - Affected version(s) and operating system(s)
 - Any suggested mitigations
 
-## What to Expect
-
-- **Acknowledgement** within 72 hours of your report.
-- **Status update** within 7 days with an initial assessment.
-- **Coordinated disclosure** — we will work with you to agree on a disclosure timeline before any public announcement.
-- Credit in the release notes if you wish to be acknowledged.
+Never include a seed phrase, spending key, wallet database, authentication
+credential, or other secret in a report. Use an isolated Testnet wallet for any
+reproduction material.
 
 ## Scope
 
@@ -50,4 +51,6 @@ Out of scope:
 
 ## Disclosure Policy
 
-We follow a **90-day coordinated disclosure** timeline. If a fix cannot be delivered within that window we will communicate the reasons and agree on an extension with the reporter.
+Please allow time to reproduce, fix, and distribute a corrected build before
+public disclosure. A specific disclosure date will be agreed with the reporter
+after the initial assessment.

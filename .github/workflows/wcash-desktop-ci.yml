@@ -1,0 +1,182 @@
+name: Wcash Desktop CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - dev
+      - main
+      - wcash
+      - "feat/wcash-*"
+      - "fix/wcash-*"
+      - "ci/wcash-*"
+      - "codex/wcash-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wcash-desktop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  quality:
+    name: Source and native checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: yarn
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: latest
+
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+
+      - name: Install Linux build and Electron smoke dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            clang \
+            libclang-dev \
+            pkg-config \
+            libssl-dev \
+            libsecret-1-dev \
+            libgtk-3-0 \
+            libnss3 \
+            libgbm1 \
+            libasound2t64 \
+            xvfb \
+            xauth
+
+      - name: Install JavaScript dependencies
+        run: yarn install --frozen-lockfile --network-timeout 600000
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path native/Cargo.toml --all -- --check
+
+      - name: Check TypeScript
+        run: yarn tsc --noEmit --pretty false
+
+      - name: Run JavaScript tests
+        run: yarn test:run
+
+      - name: Run native Rust tests
+        run: yarn cargo:test
+
+      - name: Run native Rust lints
+        run: yarn cargo:clippy
+
+      - name: Run local Regtest native tests
+        run: yarn cargo:test:localnet
+
+      - name: Run local Regtest native lints
+        run: yarn cargo:clippy:localnet
+
+      - name: Check isolated package policy
+        run: yarn test:package:unsigned-local
+
+      - name: Check Local Regtest QA package policy
+        run: yarn test:package:local-regtest-qa
+
+      - name: Check sandboxed preload
+        run: xvfb-run -a yarn test:wcash-sandbox-preload
+
+  packages:
+    name: Package ${{ matrix.name }}
+    needs: quality
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            runner: ubuntu-24.04
+            script: package:unsigned-local:linux
+            linux: true
+
+          - name: macOS ARM64
+            runner: macos-15
+            script: package:unsigned-local:mac-arm64
+            linux: false
+
+          - name: macOS ARM64 Local Regtest QA
+            runner: macos-15
+            script: package:local-regtest-qa:mac-arm64
+            linux: false
+
+          - name: macOS Intel
+            runner: macos-15-intel
+            script: package:unsigned-local:mac-x64
+            linux: false
+
+          - name: Windows x64
+            runner: windows-2025
+            script: package:unsigned-local:win-x64
+            linux: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: yarn
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: latest
+
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+
+      - name: Install Linux packaging dependencies
+        if: matrix.linux
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            clang \
+            libclang-dev \
+            pkg-config \
+            libssl-dev \
+            libsecret-1-dev
+
+      - name: Install JavaScript dependencies
+        run: yarn install --frozen-lockfile --network-timeout 600000
+
+      - name: Build and verify unsigned Wcash package
+        run: yarn ${{ matrix.script }}
+
+      - name: Check small-window scrolling
+        if: matrix.name == 'macOS ARM64'
+        run: yarn test:wcash-small-window

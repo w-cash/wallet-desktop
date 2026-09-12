@@ -3,6 +3,60 @@
 // proxied to the main process via IPC (see ALLOWED_INVOKE below).
 const { contextBridge, ipcRenderer } = require("electron");
 
+// Sandboxed Electron preload scripts can only require Electron's allowlisted
+// built-ins. The main process selects a compile-time-compatible profile and
+// returns only this public identity. Validate the entire tuple before exposing
+// it so neither an arbitrary network nor an arbitrary endpoint reaches the UI.
+const WCASH_TESTNET_RUNTIME = Object.freeze({
+  profile: "testnet",
+  productName: "Wcash Warden Testnet",
+  network: "Wcash Testnet",
+  ticker: "TWC",
+  endpoint: "https://wallet-testnet.wcashexplorer.com:443",
+  storageNamespace: "wcashtestnet-v5",
+  branchId: "b3cfd27e",
+  runtimeReady: true,
+  coreRevision: "58bc22ec63bbe3eddab5f961c137836431589c95",
+});
+const WCASH_LOCAL_REGTEST_RUNTIME = Object.freeze({
+  profile: "local-regtest",
+  productName: "Wcash Warden Local Regtest",
+  network: "Wcash Regtest",
+  ticker: "TWC",
+  endpoint: "http://127.0.0.1:48234",
+  storageNamespace: "wcashregtest-v5",
+  branchId: "c3a6678a",
+  runtimeReady: true,
+  coreRevision: "58bc22ec63bbe3eddab5f961c137836431589c95",
+});
+const publicProfileKeys = Object.keys(WCASH_TESTNET_RUNTIME).sort();
+const selectedRuntime = ipcRenderer.sendSync("wcash:runtime-config");
+const expectedRuntime =
+  selectedRuntime?.profile === "testnet"
+    ? WCASH_TESTNET_RUNTIME
+    : selectedRuntime?.profile === "local-regtest"
+      ? WCASH_LOCAL_REGTEST_RUNTIME
+      : null;
+if (
+  expectedRuntime === null ||
+  selectedRuntime === null ||
+  typeof selectedRuntime !== "object" ||
+  Object.keys(selectedRuntime).sort().join("\0") !== publicProfileKeys.join("\0") ||
+  publicProfileKeys.some((key) => selectedRuntime[key] !== expectedRuntime[key])
+) {
+  throw new Error("Wcash main process returned an invalid runtime profile");
+}
+const WCASH_RUNTIME = expectedRuntime;
+const WCASH_RUNTIME_READY = WCASH_RUNTIME.runtimeReady;
+// The inherited bridge is intentionally never reopened. Wcash calls use the
+// fixed allowlist exposed as window.wcash below.
+const LEGACY_ZCASH_BRIDGE_ENABLED = false;
+const runtimeUnavailable = () =>
+  Promise.reject(new Error("Wallet runtime disabled until a reviewed Wcash wallet-core commit is pinned"));
+const legacyUnavailable = () => Promise.reject(new Error("Legacy Zcash renderer bridge is permanently disabled"));
+const invokeWcash = (channel, ...args) =>
+  WCASH_RUNTIME_READY ? ipcRenderer.invoke(channel, ...args) : runtimeUnavailable();
+
 // All native methods run in the main process — every call is an IPC round-trip.
 // This allows sandbox:true on BrowserWindow and correct security-scoped bookmark handling.
 const _ALL_NATIVE_METHODS = [
@@ -83,7 +137,7 @@ const _ALL_NATIVE_METHODS = [
 
 const nativeForRenderer = {};
 for (const method of _ALL_NATIVE_METHODS) {
-  nativeForRenderer[method] = (...args) => ipcRenderer.invoke(`native:${method}`, ...args);
+  nativeForRenderer[method] = legacyUnavailable;
 }
 
 // Allowed IPC channels that main → renderer can push.
@@ -139,12 +193,51 @@ const ALLOWED_INVOKE = new Set([
   "mixnet:attach-current",
 ]);
 
+if (!LEGACY_ZCASH_BRIDGE_ENABLED) {
+  ALLOWED_RECEIVE.clear();
+  ALLOWED_INVOKE.clear();
+}
+
+contextBridge.exposeInMainWorld(
+  "wcash",
+  Object.freeze({
+    config: Object.freeze({
+      productName: WCASH_RUNTIME.productName,
+      profile: WCASH_RUNTIME.profile,
+      network: WCASH_RUNTIME.network,
+      ticker: WCASH_RUNTIME.ticker,
+      endpoint: WCASH_RUNTIME.endpoint,
+      storageNamespace: WCASH_RUNTIME.storageNamespace,
+      branchId: WCASH_RUNTIME.branchId,
+      runtimeReady: WCASH_RUNTIME_READY,
+      coreRevision: WCASH_RUNTIME.coreRevision,
+    }),
+    status: () => invokeWcash("wcash:status"),
+    create: () => invokeWcash("wcash:create"),
+    restore: (seedPhrase, birthdayHeight) => invokeWcash("wcash:restore", seedPhrase, birthdayHeight),
+    resumePending: () => invokeWcash("wcash:resume-pending"),
+    revealBackup: () => invokeWcash("wcash:reveal-backup"),
+    acknowledgeBackup: () => invokeWcash("wcash:acknowledge-backup"),
+    open: () => invokeWcash("wcash:open"),
+    sync: () => invokeWcash("wcash:sync"),
+    stopSync: () => invokeWcash("wcash:stop-sync"),
+    balance: () => invokeWcash("wcash:balance"),
+    history: () => invokeWcash("wcash:history"),
+    receivers: () => invokeWcash("wcash:receivers"),
+    validateRecipient: (address) => invokeWcash("wcash:validate-recipient", address),
+    send: (request) => invokeWcash("wcash:send", request),
+    shieldCoinbase: () => invokeWcash("wcash:shield-coinbase"),
+    pendingTransactions: (afterCursor) => invokeWcash("wcash:pending-transactions", afterCursor),
+    rebroadcastPending: (txid) => invokeWcash("wcash:rebroadcast-pending", txid),
+  }),
+);
+
 contextBridge.exposeInMainWorld("electronAPI", {
   native: nativeForRenderer,
   isSandboxed: process.platform === "darwin" && process.mas === true,
 
   clipboard: {
-    writeText: (text) => ipcRenderer.invoke("clipboard:writeText", text),
+    writeText: legacyUnavailable,
   },
 
   shell: {
@@ -152,7 +245,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
       // Only allow https:// URLs to prevent protocol injection.
       // Main process re-validates as defense in depth.
       if (typeof url === "string" && url.startsWith("https://")) {
-        return ipcRenderer.invoke("shell:openExternal", url);
+        return legacyUnavailable();
       }
     },
   },
@@ -187,11 +280,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
 
   fs: {
-    existsSync: (p) => ipcRenderer.invoke("fs:existsSync", p),
+    existsSync: legacyUnavailable,
     promises: {
-      mkdir: (p, opts) => ipcRenderer.invoke("fs:mkdir", p, opts),
-      writeFile: (p, data) => ipcRenderer.invoke("fs:writeFile", p, data),
-      readFile: (p) => ipcRenderer.invoke("fs:readFile", p),
+      mkdir: legacyUnavailable,
+      writeFile: legacyUnavailable,
+      readFile: legacyUnavailable,
     },
   },
 });

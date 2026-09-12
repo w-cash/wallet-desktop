@@ -1,6 +1,7 @@
 #import <LocalAuthentication/LocalAuthentication.h>
 #import <Foundation/Foundation.h>
 #import <AppKit/AppKit.h>
+#include <stdint.h>
 
 int check_mac_auth_available(void) {
     @autoreleasepool {
@@ -11,7 +12,7 @@ int check_mac_auth_available(void) {
     }
 }
 
-int verify_mac_auth_sync(const char *reason_utf8) {
+int verify_mac_auth_sync(const char *reason_utf8, uint64_t timeout_millis) {
     @autoreleasepool {
         LAContext *ctx = [[LAContext alloc] init];
         NSString *reason = [NSString stringWithUTF8String:reason_utf8 ? reason_utf8 : "Authenticate"];
@@ -26,7 +27,14 @@ int verify_mac_auth_sync(const char *reason_utf8) {
             dispatch_semaphore_signal(sema);
         }];
 
-        dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+        dispatch_time_t deadline = dispatch_time(
+            DISPATCH_TIME_NOW,
+            (int64_t)timeout_millis * (int64_t)NSEC_PER_MSEC
+        );
+        if (dispatch_semaphore_wait(sema, deadline) != 0) {
+            [ctx invalidate];
+            return 0;
+        }
         return result ? 1 : 0;
     }
 }

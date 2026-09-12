@@ -1,0 +1,28 @@
+{
+  "appId": "com.wcashwallet.warden.local-regtest",
+  "productName": "Wcash Warden Local Regtest",
+  "buildVersion": "1",
+  "artifactName": "Wcash-Warden-LOCAL-REGTEST-QA-UNSIGNED-${version}-${buildVersion}-${arch}.${ext}",
+  "forceCodeSigning": false,
+  "npmRebuild": false,
+  "extraMetadata": {
+    "name": "wcash-warden-local-regtest-qa",
+    "productName": "Wcash Warden Local Regtest",
+    "description": "Unsigned Wcash Local Regtest QA wallet; funds have no monetary value",
+    "homepage": "https://github.com/w-cash/wallet-desktop",
+    "wcashPackagedProfile": "local-regtest-qa"
+  },
+  "afterPack": "./scripts/verify-wcash-local-regtest-qa-after-pack.js",
+  "files": ["build/**/*", "config/wcash-runtime.json", "node_modules/**/*"],
+  "asarUnpack": ["build/native.node", "node_modules/keytar/**/*.node"],
+  "directories": {
+    "buildResources": "public",
+    "output": "dist/local-regtest-qa"
+  },
+  "mac": {
+    "category": "public.app-category.finance",
+    "identity": null,
+    "target": ["zip"],
+    "icon": "./resources/icon.icns"
+  }
+}

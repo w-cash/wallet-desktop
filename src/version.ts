@@ -1,3 +1,3 @@
-const APP_VERSION = "2.0.25 (180)";
+const APP_VERSION = "0.1.0-alpha.0 (pre-core shell)";
 
 export default APP_VERSION;

@@ -12,6 +12,43 @@ type RendererNativeAPI = {
 
 declare global {
   interface Window {
+    wcash: {
+      readonly config: {
+        readonly profile: "testnet" | "local-regtest";
+        readonly productName: string;
+        readonly network: "Wcash Testnet" | "Wcash Regtest";
+        readonly ticker: "TWC";
+        readonly endpoint: "https://wallet-testnet.wcashexplorer.com:443" | "http://127.0.0.1:48234";
+        readonly storageNamespace: "wcashtestnet-v5" | "wcashregtest-v5";
+        readonly branchId: "b3cfd27e" | "c3a6678a";
+        readonly runtimeReady: boolean;
+        readonly coreRevision: string | null;
+      };
+      status: () => Promise<unknown>;
+      create: () => Promise<unknown>;
+      restore: (seedPhrase: string, birthdayHeight: number) => Promise<unknown>;
+      resumePending: () => Promise<unknown>;
+      revealBackup: () => Promise<unknown>;
+      acknowledgeBackup: () => Promise<unknown>;
+      open: () => Promise<unknown>;
+      sync: () => Promise<unknown>;
+      stopSync: () => Promise<boolean>;
+      balance: () => Promise<unknown>;
+      history: () => Promise<unknown>;
+      receivers: () => Promise<unknown>;
+      validateRecipient: (address: string) => Promise<unknown>;
+      send: (request: unknown) => Promise<unknown>;
+      shieldCoinbase: () => Promise<unknown>;
+      pendingTransactions: (afterCursor?: string) => Promise<unknown>;
+      rebroadcastPending: (txid: string) => Promise<unknown>;
+    };
+    wcashShell: {
+      readonly productName: "Wcash Warden Testnet";
+      readonly network: "Wcash Testnet";
+      readonly ticker: "TWC";
+      readonly runtimeReady: false;
+      readonly coreRevision: null;
+    };
     electronAPI: {
       native: RendererNativeAPI;
       isSandboxed: boolean;

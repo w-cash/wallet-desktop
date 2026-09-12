@@ -1,11 +1,6 @@
 import React from "react";
-import { MemoryRouter as Router } from "react-router-dom";
-import Routes from "./Routes";
+import WcashWallet from "../wcash/WcashWallet";
 
-const Root = () => (
-  <Router initialEntries={["/"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-    <Routes />
-  </Router>
-);
+const Root = () => <WcashWallet />;
 
 export default Root;
