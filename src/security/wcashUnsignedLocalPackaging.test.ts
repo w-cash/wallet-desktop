@@ -46,6 +46,40 @@ describe("unsigned local Wcash Testnet packaging", () => {
     expect(serialized).not.toContain("protocols");
   });
 
+  it("quarantines inherited store and signing identities", () => {
+    const packageJson = readJson("package.json");
+    const build = packageJson.build;
+
+    expect(build).not.toHaveProperty("mas");
+    expect(build).not.toHaveProperty("appx");
+    expect(build).not.toHaveProperty("afterSign");
+    expect(build).not.toHaveProperty("afterAllArtifactBuild");
+    expect(build.win).not.toHaveProperty("azureSignOptions");
+    expect(build.win).not.toHaveProperty("signExts");
+
+    for (const relativePath of [
+      "afterMasSign.js",
+      "afterSignHook.js",
+      "configs/entitlements.mas.plist",
+      "configs/entitlements.mas.inherit.plist",
+      "scripts/sign-nym-proxy.ps1",
+      "scripts/stage-nym-proxy.js",
+    ]) {
+      expect(existsSync(path.join(repositoryRoot, relativePath))).toBe(false);
+    }
+  });
+
+  it("ships the canonical Wcash mark on desktop packages", () => {
+    const mark = read("resources/wcash-mark.svg");
+    const canonicalPng = readFileSync(path.join(repositoryRoot, "resources/icon.png"));
+    const linuxPng = readFileSync(path.join(repositoryRoot, "resources/icons/512x512.png"));
+
+    expect(mark).toContain("#7CFF6B");
+    expect(mark).toContain("#08210D");
+    expect(mark).not.toMatch(/zingo|zcash/i);
+    expect(canonicalPng.equals(linuxPng)).toBe(true);
+  });
+
   it("installs and removes only Wcash-owned Linux resources", () => {
     const postinstall = read("scripts/postinstall.sh");
     const postremove = read("scripts/postremove.sh");

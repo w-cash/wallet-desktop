@@ -10,17 +10,18 @@ checks fail.
 
 ## Current scope
 
-| Area                                                           | Status                     |
-| -------------------------------------------------------------- | -------------------------- |
-| Wcash Testnet wallet runtime                                   | Enabled                    |
-| Create and restore a 24-word wallet                            | Enabled                    |
-| Ironwood and transparent coinbase receivers                    | Enabled                    |
-| Synchronize, display balances, send, and shield coinbase funds | Enabled                    |
-| Crash-safe signed transaction recovery                         | Enabled                    |
-| macOS ARM64 unsigned package                                   | Locally built and launched |
-| macOS Intel, Linux x64, and Windows x64 packages               | Native CI matrix prepared  |
-| Signed public desktop release                                  | Deliberately blocked       |
-| Wcash mainnet                                                  | Not enabled                |
+| Area                                                           | Status                                |
+| -------------------------------------------------------------- | ------------------------------------- |
+| Wcash Testnet wallet runtime                                   | Enabled                               |
+| Create and restore a 24-word wallet                            | Enabled                               |
+| Ironwood and transparent coinbase receivers                    | Enabled                               |
+| Synchronize, display balances, send, and shield coinbase funds | Enabled                               |
+| Crash-safe signed transaction recovery                         | Enabled                               |
+| macOS ARM64 and Intel unsigned packages                        | Locally built and launched            |
+| Linux x64 AppImage and Debian packages                         | Natively built and launched           |
+| Windows x64 unsigned package                                   | Native CI prepared; not yet validated |
+| Signed public desktop release                                  | Deliberately blocked                  |
+| Wcash mainnet                                                  | Not enabled                           |
 
 Mobile wallets are a separate milestone. Desktop correctness and native package
 validation come first.
@@ -43,7 +44,7 @@ validation come first.
 
 ## Build requirements
 
-- Node.js 22 (Node.js 18 or newer is supported)
+- Node.js 22.13 or newer
 - Yarn 1.x
 - Stable Rust with `rustfmt` and `clippy`
 - CMake

@@ -1822,7 +1822,7 @@ function createWindow() {
         title: "Security Warning",
         message: "Chromium sandbox is disabled",
         detail:
-          "Zingo PC is running without the Chromium process sandbox because your system " +
+          `${WCASH_PRODUCT_NAME} is running without the Chromium process sandbox because your system ` +
           "has user namespaces disabled (unprivileged_userns_clone=0).\n\n" +
           "This reduces the security isolation of the application. " +
           "For full security, install the .deb package instead of the AppImage — " +

@@ -22,7 +22,7 @@ const packageJson = readJson("package.json");
 const runtime = readJson("config/wcash-runtime.json");
 const localConfig = readJson("config/electron-builder.unsigned-local.json");
 const serializedLocalConfig = JSON.stringify(localConfig);
-const platforms = [packageJson.build.mac, packageJson.build.mas, packageJson.build.win, packageJson.build.linux];
+const platforms = [packageJson.build.mac, packageJson.build.win, packageJson.build.linux];
 const localScripts = Object.entries(packageJson.scripts).filter(([name]) => name.startsWith("package:unsigned-local:"));
 
 assert(
@@ -31,6 +31,12 @@ assert(
 );
 assert(runtime.runtimeReady === true, "the reviewed Wcash runtime is not enabled");
 assert(runtime.releaseReady === false, "this target must never enable public release readiness");
+assert(packageJson.build.mas === undefined, "an inherited Mac App Store identity remains configured");
+assert(packageJson.build.appx === undefined, "an inherited Microsoft Store identity remains configured");
+assert(packageJson.build.afterSign === undefined, "an inherited signing hook remains configured");
+assert(packageJson.build.afterAllArtifactBuild === undefined, "an inherited release hook remains configured");
+assert(packageJson.build.win.azureSignOptions === undefined, "an inherited Windows signer remains configured");
+assert(packageJson.build.win.signExts === undefined, "an inherited Windows signing extension list remains configured");
 assert(localConfig.extends === undefined, "the local config must not inherit release packaging metadata");
 assert(localConfig.appId === runtime.appId, "appId must match the isolated Wcash Testnet runtime");
 assert(localConfig.productName === runtime.productName, "productName must match the Wcash Testnet runtime");
@@ -98,6 +104,27 @@ for (const relativePath of [
 ]) {
   assert(!fs.existsSync(path.join(root, relativePath)), relativePath + " must not remain in the Wcash package tree");
 }
+
+for (const relativePath of [
+  "afterMasSign.js",
+  "afterSignHook.js",
+  "configs/entitlements.mas.plist",
+  "configs/entitlements.mas.inherit.plist",
+  "scripts/sign-nym-proxy.ps1",
+  "scripts/stage-nym-proxy.js",
+]) {
+  assert(!fs.existsSync(path.join(root, relativePath)), relativePath + " carries an inherited release identity");
+}
+
+const iconSource = read("resources/wcash-mark.svg");
+assert(iconSource.includes("#7CFF6B") && iconSource.includes("#08210D"), "the canonical Wcash mark is missing");
+assert(!/(?:zingo|zcash)/i.test(iconSource), "the canonical icon contains an inherited product identity");
+assert(
+  fs
+    .readFileSync(path.join(root, "resources/icon.png"))
+    .equals(fs.readFileSync(path.join(root, "resources/icons/512x512.png"))),
+  "Linux and canonical Wcash icons have diverged",
+);
 assert(
   read("resources/linux/com.wcashwallet.warden.testnet.policy").includes(
     '<action id="com.wcashwallet.warden.testnet.authenticate">',
