@@ -8,8 +8,8 @@ const net = require("net");
 
 const CREDENTIAL_VERSION = 1;
 const SEED_SCHEME = "bip39-english-24-empty-passphrase-v1";
-const SEND_FEE_ZAT = 10_000;
 const MAX_MONEY_ZAT = 2_100_000_000_000_000;
+const MAX_TRANSFER_RECIPIENTS = 100;
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -72,6 +72,7 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
   let lastBalance = null;
   let syncState = { phase: "idle", result: null, error: null, promise: null };
   let pendingProposal = null;
+  let proposalOperations = Promise.resolve();
 
   function requireNative(method) {
     if (typeof native[method] !== "function") throw new Error(`Wcash native method is unavailable: ${method}`);
@@ -80,6 +81,48 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
 
   async function nativeJson(method, ...args) {
     return parseJson(method, await requireNative(method)(...args));
+  }
+
+  function serializeProposalOperation(work) {
+    const result = proposalOperations.then(work, work);
+    proposalOperations = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  function proposalPreview(result, operation, expectedValueZat) {
+    const keys = Object.keys(result).sort();
+    const expectedKeys = ["fee_zat", "operation", "proposal_id", "schema_version", "value_zat"].sort();
+    if (
+      keys.length !== expectedKeys.length ||
+      keys.some((key, index) => key !== expectedKeys[index]) ||
+      result.schema_version !== 1 ||
+      result.operation !== operation ||
+      typeof result.proposal_id !== "string" ||
+      !/^[1-9][0-9]*$/.test(result.proposal_id)
+    ) {
+      throw new TypeError("Wcash core returned an invalid transaction proposal");
+    }
+    const feeZat = safeInteger(result.fee_zat, "proposal fee");
+    const valueZat = safeInteger(result.value_zat, "proposal value");
+    if (feeZat < 1 || valueZat < 1 || (expectedValueZat !== undefined && valueZat !== expectedValueZat)) {
+      throw new TypeError("Wcash core returned inconsistent transaction proposal values");
+    }
+    return { id: result.proposal_id, operation, feeZat, valueZat };
+  }
+
+  async function discardPendingProposalUnlocked() {
+    const proposal = pendingProposal;
+    const result = proposal
+      ? await nativeJson("wcash_cancel_proposal", proposal.id)
+      : await nativeJson("wcash_cancel_proposal");
+    if (typeof result.cancelled !== "boolean" || (proposal && result.cancelled !== true)) {
+      pendingProposal = null;
+      throw new Error("Wcash native proposal state did not match the trusted main process");
+    }
+    pendingProposal = null;
   }
 
   function assertRuntime(status) {
@@ -220,6 +263,8 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
       throw new Error("The selected wallet name does not match the Wcash wallet database");
     }
 
+    await serializeProposalOperation(discardPendingProposalUnlocked);
+
     // Native closes the fixed-profile runtime and removes only its compiled
     // SQLite path. Keep the recovery credential until that succeeds so a failed
     // delete cannot strand an undeletable wallet without its seed.
@@ -231,7 +276,6 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
     if (!removed && (await readCredential()) !== null) {
       throw new Error("Wcash wallet database was deleted, but its recovery credential could not be removed");
     }
-    pendingProposal = null;
     syncState = { phase: "idle", result: null, error: null, promise: null };
     lastBalance = null;
     return JSON.stringify({ deleted: result.deleted === true });
@@ -349,8 +393,9 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
     }
     return history.transactions.map((tx) => {
       const direction = tx.direction;
-      const kind =
-        tx.kind === "shielding"
+      const valueKnown = tx.value_zat !== null && tx.value_zat !== undefined;
+      const kind = valueKnown
+        ? tx.kind === "shielding"
           ? "shield"
           : tx.kind === "migration"
             ? "migration"
@@ -358,8 +403,16 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
               ? "received"
               : direction === "internal"
                 ? "send-to-self"
-                : "sent";
+                : "sent"
+        : "";
       const pool = tx.kind === "coinbase" ? "Transparent" : "Ironwood";
+      const poolsSentFrom = !valueKnown
+        ? []
+        : tx.kind === "shielding"
+          ? ["Transparent"]
+          : direction === "incoming"
+            ? []
+            : [pool];
       return {
         txid: tx.txid,
         datetime: tx.timestamp === null ? 0 : safeInteger(tx.timestamp, "transaction timestamp"),
@@ -367,25 +420,25 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
         transaction_fee: tx.fee_zat === null ? 0 : safeInteger(tx.fee_zat, "transaction fee"),
         status: "confirmed",
         blockheight: safeInteger(tx.mined_height, "transaction height"),
-        value: Math.abs(safeInteger(tx.amount_delta_zat, "transaction value", { signed: true })),
-        pools_sent_from: direction === "incoming" ? [] : [pool],
-        pools_received: direction === "outgoing" ? [] : [pool],
+        value: valueKnown ? safeInteger(tx.value_zat, "transaction value") : 0,
+        pools_sent_from: poolsSentFrom,
+        pools_received: !valueKnown || direction === "outgoing" ? [] : [pool],
       };
     });
   }
 
-  async function stageSend(sendJson) {
+  async function stageSendUnlocked(sendJson) {
+    await discardPendingProposalUnlocked();
     let transfers;
     try {
       transfers = JSON.parse(sendJson);
     } catch (cause) {
       throw new Error("Wcash send request is invalid", { cause });
     }
-    // This compatibility slice has validated the upstream single-recipient
-    // screen and its one-Ironwood-output 10,000-zat fee. Reject wider shapes
-    // until the backend exposes proposal-derived fees to the renderer.
-    if (!Array.isArray(transfers) || transfers.length !== 1) {
-      return JSON.stringify({ error: "Wcash Wallet currently supports exactly one recipient per transaction" });
+    if (!Array.isArray(transfers) || transfers.length < 1 || transfers.length > MAX_TRANSFER_RECIPIENTS) {
+      return JSON.stringify({
+        error: `Wcash payment list must contain 1 through ${MAX_TRANSFER_RECIPIENTS} recipients`,
+      });
     }
     let totalZat = 0;
     const payments = [];
@@ -424,12 +477,49 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
         ...(transfer.memo ? { memo: transfer.memo } : {}),
       });
     }
-    const balances = await getBalance();
-    if (totalZat + SEND_FEE_ZAT > balances.spendable_balance) {
-      return JSON.stringify({ error: "Insufficient Wcash spendable balance" });
+    try {
+      const preview = proposalPreview(
+        await nativeJson("wcash_propose_send", JSON.stringify({ payments })),
+        "send",
+        totalZat,
+      );
+      pendingProposal = preview;
+      return JSON.stringify({ fee: preview.feeZat, amount: totalZat });
+    } catch (error) {
+      try {
+        await discardPendingProposalUnlocked();
+      } catch (_cancellationError) {
+        // A later proposal or deinitialization will retry the native cleanup.
+      }
+      return JSON.stringify({
+        error: error instanceof Error ? error.message : "Wcash transaction proposal failed",
+      });
     }
-    pendingProposal = { kind: "send", requestJson: JSON.stringify({ payments }) };
-    return JSON.stringify({ fee: SEND_FEE_ZAT, amount: totalZat });
+  }
+
+  function stageSend(sendJson) {
+    return serializeProposalOperation(() => stageSendUnlocked(sendJson));
+  }
+
+  async function stageShieldUnlocked() {
+    await discardPendingProposalUnlocked();
+    try {
+      const preview = proposalPreview(
+        await nativeJson("wcash_propose_shield_coinbase"),
+        "shield_coinbase",
+      );
+      pendingProposal = preview;
+      return JSON.stringify({ fee: preview.feeZat });
+    } catch (error) {
+      try {
+        await discardPendingProposalUnlocked();
+      } catch (_cancellationError) {
+        // A later proposal or deinitialization will retry the native cleanup.
+      }
+      return JSON.stringify({
+        error: error instanceof Error ? error.message : "Wcash coinbase shielding proposal failed",
+      });
+    }
   }
 
   function operationError(result) {
@@ -438,22 +528,62 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
     return `Wcash transaction did not broadcast (${String(result.outcome || "unknown")})`;
   }
 
-  async function confirm() {
+  async function confirmUnlocked() {
     const proposal = pendingProposal;
-    pendingProposal = null;
     if (!proposal) return JSON.stringify({ error: "No Wcash transaction proposal is pending" });
     const credential = await readCredential();
     if (!credential || (await requireNative("wcash_verify_mnemonic")(credential.phrase)) !== true) {
+      await discardPendingProposalUnlocked();
       return JSON.stringify({ error: "The Wcash wallet credential does not control this wallet" });
     }
-    const result =
-      proposal.kind === "send"
-        ? await nativeJson("wcash_send_and_broadcast", credential.phrase, proposal.requestJson)
-        : await nativeJson("wcash_shield_coinbase_and_broadcast", credential.phrase);
-    if (result.outcome === "broadcast" && typeof result.txid === "string") {
+    let result;
+    try {
+      result = await nativeJson(
+        "wcash_confirm_proposal",
+        credential.phrase,
+        proposal.id,
+        proposal.operation,
+      );
+    } catch (error) {
+      try {
+        // Pre-signing failures leave a cancellable staged proposal. A signing
+        // failure is already unlocked and removed by native, which reports
+        // `cancelled: false`. Either response lets trusted main discard its
+        // preview. If cancellation itself fails, native may be retaining a
+        // calculated transaction and the exact proposal must remain retryable.
+        const cancellation = await nativeJson("wcash_cancel_proposal", proposal.id);
+        if (typeof cancellation.cancelled !== "boolean") {
+          throw new TypeError("Wcash core returned invalid proposal cancellation state");
+        }
+        pendingProposal = null;
+      } catch (_cancellationError) {
+        // Keep the opaque proposal binding for an exact confirmation retry.
+      }
+      throw error;
+    }
+    if (result.operation !== proposal.operation) {
+      throw new Error("Wcash confirmation did not match the reviewed proposal");
+    }
+    if (result.fee_zat === null && result.outcome === "recovery_required") {
+      // Calculation persisted signed bytes but could not return their exact
+      // public metadata. Native has intentionally discarded the replaceable
+      // preview; the durable pending-transaction recovery path is authoritative.
+      pendingProposal = null;
+      return JSON.stringify({ error: operationError(result) });
+    }
+    if (safeInteger(result.fee_zat, "confirmed proposal fee") !== proposal.feeZat) {
+      throw new Error("Wcash confirmation did not match the reviewed proposal");
+    }
+    if (result.outcome === "broadcast" && typeof result.txid === "string" && /^[0-9a-f]{64}$/.test(result.txid)) {
+      pendingProposal = null;
       return JSON.stringify({ txids: [result.txid] });
     }
+    if (result.outcome === "rejected") pendingProposal = null;
     return JSON.stringify({ error: operationError(result) });
+  }
+
+  function confirm() {
+    return serializeProposalOperation(confirmUnlocked);
   }
 
   async function invoke(method, ...args) {
@@ -472,6 +602,18 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
         const credential = await readCredential();
         if (!credential) throw new Error("Wcash recovery phrase is unavailable");
         return JSON.stringify({ seed_phrase: credential.phrase });
+      }
+      case "get_ufvk": {
+        const credential = await readCredential();
+        if (!credential) throw new Error("Wcash viewing key is unavailable");
+        if ((await requireNative("wcash_verify_mnemonic")(credential.phrase)) !== true) {
+          throw new Error("The Wcash wallet credential does not control this wallet");
+        }
+        const ufvk = await requireNative("wcash_export_ufvk")(credential.phrase);
+        if (typeof ufvk !== "string" || ufvk.length === 0) {
+          throw new Error("Wcash core returned an invalid viewing key");
+        }
+        return JSON.stringify({ ufvk });
       }
       case "wallet_kind": {
         const credential = await readCredential();
@@ -550,8 +692,7 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
       case "send":
         return stageSend(args[0]);
       case "shield":
-        pendingProposal = { kind: "shield" };
-        return JSON.stringify({ fee: SEND_FEE_ZAT });
+        return serializeProposalOperation(stageShieldUnlocked);
       case "confirm":
         return confirm();
       case "get_latest_block_wallet": {
@@ -639,13 +780,12 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
       case "zec_price_over_mixnet":
         return JSON.stringify({ price: null });
       case "deinitialize":
-        pendingProposal = null;
+        await serializeProposalOperation(discardPendingProposalUnlocked);
         syncState = { phase: "idle", result: null, error: null, promise: null };
         lastBalance = null;
         return "Wcash adapter state cleared.";
       case "pause_sync":
       case "run_rescan":
-      case "get_ufvk":
       case "parse_ufvk":
       case "init_from_ufvk":
       case "remove_transaction":
@@ -671,7 +811,6 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
 module.exports = {
   CREDENTIAL_VERSION,
   SEED_SCHEME,
-  SEND_FEE_ZAT,
   createWcashZingoNativeAdapter,
   defaultEndpointProbe,
   toCanonicalAmount,

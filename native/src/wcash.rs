@@ -21,17 +21,21 @@ use wcash_wallet::{
     MAX_TRANSFER_RECIPIENTS,
 };
 use zeroize::Zeroizing;
+#[cfg(test)]
+use zingolib::wcash::SignedTransaction;
 #[cfg(feature = "wcash-regtest")]
 use zingolib::wcash::{
-    BroadcastResult, SignedTransaction, StoredSignedTransaction, WalletBalanceSummary,
-    WalletSyncCancellation, WcashRegtest as WcashProfile, WcashRegtestPayment as WcashPayment,
-    WcashRegtestRuntime as WcashRuntime, WcashRegtestRuntimeError as WcashRuntimeError,
+    BroadcastResult, CalculatedTransaction, StagedTransactionProposal, StoredSignedTransaction,
+    WalletBalanceSummary, WalletSyncCancellation, WcashRegtest as WcashProfile,
+    WcashRegtestPayment as WcashPayment, WcashRegtestRuntime as WcashRuntime,
+    WcashRegtestRuntimeError as WcashRuntimeError,
 };
 #[cfg(feature = "wcash-testnet")]
 use zingolib::wcash::{
-    BroadcastResult, SignedTransaction, StoredSignedTransaction, WalletBalanceSummary,
-    WalletSyncCancellation, WcashTestnet as WcashProfile, WcashTestnetPayment as WcashPayment,
-    WcashTestnetRuntime as WcashRuntime, WcashTestnetRuntimeError as WcashRuntimeError,
+    BroadcastResult, CalculatedTransaction, StagedTransactionProposal, StoredSignedTransaction,
+    WalletBalanceSummary, WalletSyncCancellation, WcashTestnet as WcashProfile,
+    WcashTestnetPayment as WcashPayment, WcashTestnetRuntime as WcashRuntime,
+    WcashTestnetRuntimeError as WcashRuntimeError,
 };
 
 use super::{with_panic_guard, ZingolibError, RT, WALLET_BASE_DIR};
@@ -73,12 +77,15 @@ const RECOVERY_STATUS_UNKNOWN_MESSAGE: &str =
 static WCASH_RUNTIME: Lazy<Mutex<Option<WcashRuntime>>> = Lazy::new(|| Mutex::new(None));
 static ACTIVE_SYNC: Lazy<Mutex<ActiveSyncRegistry>> =
     Lazy::new(|| Mutex::new(ActiveSyncRegistry::default()));
+static TRANSACTION_PROPOSALS: Lazy<Mutex<TransactionProposalRegistry>> =
+    Lazy::new(|| Mutex::new(TransactionProposalRegistry::default()));
 
 pub(super) fn export(cx: &mut ModuleContext) -> NeonResult<()> {
     cx.export_function("wcash_status", status)?;
     cx.export_function("wcash_generate_mnemonic", generate_mnemonic)?;
     cx.export_function("wcash_validate_mnemonic", validate_mnemonic)?;
     cx.export_function("wcash_verify_mnemonic", verify_mnemonic)?;
+    cx.export_function("wcash_export_ufvk", export_ufvk)?;
     cx.export_function("wcash_create", create)?;
     cx.export_function("wcash_restore", restore)?;
     cx.export_function("wcash_open", open)?;
@@ -89,11 +96,10 @@ pub(super) fn export(cx: &mut ModuleContext) -> NeonResult<()> {
     cx.export_function("wcash_confirmed_transactions", confirmed_transactions)?;
     cx.export_function("wcash_receivers", receivers)?;
     cx.export_function("wcash_validate_recipient", validate_recipient)?;
-    cx.export_function("wcash_send_and_broadcast", send_and_broadcast)?;
-    cx.export_function(
-        "wcash_shield_coinbase_and_broadcast",
-        shield_coinbase_and_broadcast,
-    )?;
+    cx.export_function("wcash_propose_send", propose_send)?;
+    cx.export_function("wcash_propose_shield_coinbase", propose_shield_coinbase)?;
+    cx.export_function("wcash_confirm_proposal", confirm_proposal)?;
+    cx.export_function("wcash_cancel_proposal", cancel_proposal)?;
     cx.export_function("wcash_pending_transactions", pending_transactions)?;
     cx.export_function("wcash_rebroadcast_pending", rebroadcast_pending)?;
     Ok(())
@@ -380,6 +386,112 @@ fn parse_send_request(request_json: &str) -> Result<Vec<WcashPayment>, String> {
             })
         })
         .collect()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransactionProposalKind {
+    Send,
+    ShieldCoinbase,
+}
+
+impl TransactionProposalKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Send => "send",
+            Self::ShieldCoinbase => "shield_coinbase",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, ZingolibError> {
+        match value {
+            "send" => Ok(Self::Send),
+            "shield_coinbase" => Ok(Self::ShieldCoinbase),
+            _ => Err(ZingolibError::Init(
+                "Wcash proposal operation is invalid".to_owned(),
+            )),
+        }
+    }
+}
+
+enum TransactionProposalState {
+    Staged(StagedTransactionProposal),
+    Calculated(CalculatedTransaction),
+}
+
+struct ActiveTransactionProposal {
+    generation: u64,
+    kind: TransactionProposalKind,
+    fee_zat: u64,
+    state: TransactionProposalState,
+}
+
+#[derive(Default)]
+struct TransactionProposalRegistry {
+    next_generation: u64,
+    active: Option<ActiveTransactionProposal>,
+}
+
+fn parse_proposal_generation(value: &str) -> Result<u64, ZingolibError> {
+    if value.is_empty()
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+        || value.starts_with('0')
+    {
+        return Err(ZingolibError::Init(
+            "Wcash proposal identifier is invalid".to_owned(),
+        ));
+    }
+    value.parse::<u64>().map_err(|_| {
+        ZingolibError::Init("Wcash proposal identifier is outside the accepted range".to_owned())
+    })
+}
+
+fn proposal_preview_json(
+    generation: u64,
+    kind: TransactionProposalKind,
+    fee_zat: u64,
+    value_zat: u64,
+) -> String {
+    serde_json::json!({
+        "schema_version": TRANSACTION_SCHEMA_VERSION,
+        "proposal_id": generation.to_string(),
+        "operation": kind.as_str(),
+        "fee_zat": fee_zat.to_string(),
+        "value_zat": value_zat.to_string(),
+    })
+    .to_string()
+}
+
+fn payment_total_zat(payments: &[WcashPayment]) -> Result<u64, ZingolibError> {
+    payments.iter().try_fold(0_u64, |total, payment| {
+        total.checked_add(payment.amount_zat).ok_or_else(|| {
+            ZingolibError::Init("Wcash payment total is outside the accepted range".to_owned())
+        })
+    })
+}
+
+fn cancel_replaceable_proposal(
+    registry: &mut TransactionProposalRegistry,
+    wallet: &Path,
+    expected_generation: Option<u64>,
+) -> Result<bool, ZingolibError> {
+    let Some(active) = registry.active.as_ref() else {
+        return Ok(false);
+    };
+    if expected_generation.is_some_and(|expected| expected != active.generation) {
+        return Err(ZingolibError::Init(
+            "Wcash proposal changed before cancellation".to_owned(),
+        ));
+    }
+    let TransactionProposalState::Staged(staged) = &active.state else {
+        return Err(ZingolibError::Init(
+            "the calculated Wcash transaction requires review and cannot be replaced".to_owned(),
+        ));
+    };
+    WcashRuntime::cancel(wallet, staged).map_err(|error| {
+        ZingolibError::Init(format!("cancel {} proposal: {error}", active.kind.as_str()))
+    })?;
+    registry.active = None;
+    Ok(true)
 }
 
 fn is_canonical_cursor(cursor: &str) -> bool {
@@ -734,6 +846,7 @@ fn active_pending_review_result_json(
     persisted_transactions_review_result_json(operation, &[txid.to_owned()], exact_tip_height)
 }
 
+#[cfg(test)]
 fn signed_transaction_result_json(
     operation: &str,
     signed: &SignedTransaction,
@@ -892,6 +1005,26 @@ fn verify_mnemonic(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     }
 }
 
+/// Encodes the unified full viewing key for the selected Wcash network. The
+/// recovery phrase is supplied only by the trusted main process and is never
+/// returned through this boundary.
+fn export_ufvk(mut cx: FunctionContext) -> JsResult<JsString> {
+    let seed_phrase = Zeroizing::new(cx.argument::<JsString>(0)?.value(&mut cx));
+    match with_panic_guard(|| {
+        let mnemonic = parse_mnemonic(seed_phrase.as_str())?;
+        let master_seed = mnemonic_master_seed(&mnemonic);
+        let ufvk = derive_wallet_spending_key(&master_seed, WCASH_NETWORK, 0)
+            .map_err(|error| {
+                ZingolibError::Read(format!("derive Wcash account viewing key: {error}"))
+            })?
+            .to_unified_full_viewing_key();
+        Ok(ufvk.encode(&WCASH_NETWORK.parameters()))
+    }) {
+        Ok(encoded) => Ok(cx.string(encoded)),
+        Err(error) => cx.throw_error(error.to_string()),
+    }
+}
+
 fn status(cx: FunctionContext) -> JsResult<JsPromise> {
     json_promise(cx, || {
         with_panic_guard(|| {
@@ -1002,13 +1135,22 @@ fn delete_wallet(mut cx: FunctionContext) -> JsResult<JsPromise> {
             // The path is compiled/profile scoped and supplied by trusted main
             // process setup; no renderer-controlled path reaches deletion.
             cancel_active_sync(&ACTIVE_SYNC);
+            let path = wallet_path()?;
+            let mut proposals = TRANSACTION_PROPOSALS.lock().map_err(|_| {
+                ZingolibError::Delete("Wcash transaction proposal lock poisoned".to_owned())
+            })?;
+            cancel_replaceable_proposal(&mut proposals, &path, None).map_err(|error| {
+                ZingolibError::Delete(format!(
+                    "release Wcash transaction proposal before deletion: {error}"
+                ))
+            })?;
             let mut slot = WCASH_RUNTIME
                 .lock()
                 .map_err(|_| ZingolibError::Delete("Wcash runtime lock poisoned".to_owned()))?;
             *slot = None;
             drop(slot);
 
-            let deleted = delete_wallet_database_files(&wallet_path()?)?;
+            let deleted = delete_wallet_database_files(&path)?;
             Ok(serde_json::json!({ "deleted": deleted }).to_string())
         })
     })
@@ -1154,7 +1296,7 @@ fn confirmed_transactions(mut cx: FunctionContext) -> JsResult<JsPromise> {
                 .as_ref()
                 .ok_or_else(|| ZingolibError::Read("Wcash wallet is not open".to_owned()))?;
             let history = runtime
-                .confirmed_transactions(MAX_CONFIRMED_TRANSACTION_HISTORY_SIZE)
+                .confirmed_transaction_summaries(MAX_CONFIRMED_TRANSACTION_HISTORY_SIZE)
                 .map_err(|error| {
                     ZingolibError::Read(format!(
                         "{} confirmed transaction history: {error}",
@@ -1229,134 +1371,321 @@ fn validate_recipient(mut cx: FunctionContext) -> JsResult<JsString> {
     Ok(cx.string(result.to_string()))
 }
 
-fn send_and_broadcast(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    if cx.len() != 2 {
-        return cx.throw_type_error(
-            "wcash_send_and_broadcast expects a recovery phrase and one strict request JSON string",
-        );
+fn propose_send(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    if cx.len() != 1 {
+        return cx.throw_type_error("wcash_propose_send expects one strict request JSON string");
     }
-    let seed_phrase = Zeroizing::new(cx.argument::<JsString>(0)?.value(&mut cx));
-    let request_json = cx.argument::<JsString>(1)?.value(&mut cx);
+    let request_json = cx.argument::<JsString>(0)?.value(&mut cx);
     json_promise(cx, move || {
         with_panic_guard(|| {
             let payments = parse_send_request(&request_json).map_err(|error| {
                 ZingolibError::Init(format!("invalid Wcash send request: {error}"))
             })?;
-            let mnemonic = parse_mnemonic(seed_phrase.as_str())?;
-            require_mnemonic_owns_wallet(&mnemonic)?;
-            let master_seed = mnemonic_master_seed(&mnemonic);
-            let mut slot = WCASH_RUNTIME
-                .lock()
-                .map_err(|_| ZingolibError::Init("Wcash runtime lock poisoned".to_owned()))?;
-            let runtime = slot
-                .as_mut()
-                .ok_or_else(|| ZingolibError::Init("Wcash wallet is not open".to_owned()))?;
-            let exact_tip_height = require_exact_wallet_tip(runtime)?;
-            let (_, active_txid) = active_pending_transaction(runtime, Some(exact_tip_height))?;
-            if let Some(txid) = active_txid {
-                return active_pending_review_result_json("send", &txid, exact_tip_height);
+            let value_zat = payment_total_zat(&payments)?;
+            let wallet = wallet_path()?;
+            let mut proposals = TRANSACTION_PROPOSALS.lock().map_err(|_| {
+                ZingolibError::Init("Wcash transaction proposal lock poisoned".to_owned())
+            })?;
+            let generation = proposals.next_generation.checked_add(1).ok_or_else(|| {
+                ZingolibError::Init("Wcash proposal generation exhausted".to_owned())
+            })?;
+            cancel_replaceable_proposal(&mut proposals, &wallet, None)?;
+            {
+                let runtime = WCASH_RUNTIME
+                    .lock()
+                    .map_err(|_| ZingolibError::Init("Wcash runtime lock poisoned".to_owned()))?;
+                if runtime.is_none() {
+                    return Err(ZingolibError::Init("Wcash wallet is not open".to_owned()));
+                }
             }
-
-            let signed = match RT.block_on(runtime.send(&master_seed, payments)) {
-                Ok(signed) => signed,
-                Err(WcashRuntimeError::Wallet(
-                    WalletServiceError::PersistedTransactionsRequireReview { txids, .. },
-                )) => {
-                    return persisted_transactions_review_result_json(
-                        "send",
-                        &txids,
-                        exact_tip_height,
-                    );
-                }
-                Err(WcashRuntimeError::Wallet(WalletServiceError::ActivePendingTransaction {
-                    txid,
-                    ..
-                })) => {
-                    let recovery_tip_height = attest_backend_active_transaction(runtime, &txid)?;
-                    return active_pending_review_result_json("send", &txid, recovery_tip_height);
-                }
-                Err(error) => {
-                    return Err(ZingolibError::Init(format!(
-                        "{} send: {error}",
-                        WCASH_NETWORK_LABEL
-                    )));
-                }
-            };
-            let broadcast = RT.block_on(runtime.broadcast(&signed));
-            Ok(signed_transaction_result_json(
-                "send",
-                &signed,
-                exact_tip_height,
-                broadcast,
+            let staged = WcashRuntime::propose_send(&wallet, payments).map_err(|error| {
+                ZingolibError::Init(format!("{} send proposal: {error}", WCASH_NETWORK_LABEL))
+            })?;
+            let fee_zat = staged.fee_zat();
+            proposals.next_generation = generation;
+            proposals.active = Some(ActiveTransactionProposal {
+                generation,
+                kind: TransactionProposalKind::Send,
+                fee_zat,
+                state: TransactionProposalState::Staged(staged),
+            });
+            Ok(proposal_preview_json(
+                generation,
+                TransactionProposalKind::Send,
+                fee_zat,
+                value_zat,
             ))
         })
     })
 }
 
-fn shield_coinbase_and_broadcast(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    if cx.len() != 1 {
+fn propose_shield_coinbase(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    if !cx.is_empty() {
+        return cx.throw_type_error("wcash_propose_shield_coinbase expects no arguments");
+    }
+    json_promise(cx, || {
+        with_panic_guard(|| {
+            let wallet = wallet_path()?;
+            let mut proposals = TRANSACTION_PROPOSALS.lock().map_err(|_| {
+                ZingolibError::Init("Wcash transaction proposal lock poisoned".to_owned())
+            })?;
+            let generation = proposals.next_generation.checked_add(1).ok_or_else(|| {
+                ZingolibError::Init("Wcash proposal generation exhausted".to_owned())
+            })?;
+            cancel_replaceable_proposal(&mut proposals, &wallet, None)?;
+            {
+                let runtime = WCASH_RUNTIME
+                    .lock()
+                    .map_err(|_| ZingolibError::Init("Wcash runtime lock poisoned".to_owned()))?;
+                if runtime.is_none() {
+                    return Err(ZingolibError::Init("Wcash wallet is not open".to_owned()));
+                }
+            }
+            let staged = WcashRuntime::propose_shield_coinbase(&wallet).map_err(|error| {
+                ZingolibError::Init(format!(
+                    "{} coinbase shielding proposal: {error}",
+                    WCASH_NETWORK_LABEL
+                ))
+            })?;
+            let fee_zat = staged.fee_zat();
+            let value_zat = staged.value_to_shield_zat();
+            proposals.next_generation = generation;
+            proposals.active = Some(ActiveTransactionProposal {
+                generation,
+                kind: TransactionProposalKind::ShieldCoinbase,
+                fee_zat,
+                state: TransactionProposalState::Staged(staged),
+            });
+            let value_zat = match value_zat {
+                Some(value_zat) => value_zat,
+                None => {
+                    cancel_replaceable_proposal(&mut proposals, &wallet, Some(generation))?;
+                    return Err(ZingolibError::Init(
+                        "Wcash coinbase shielding proposal omitted its exact value".to_owned(),
+                    ));
+                }
+            };
+            Ok(proposal_preview_json(
+                generation,
+                TransactionProposalKind::ShieldCoinbase,
+                fee_zat,
+                value_zat,
+            ))
+        })
+    })
+}
+
+fn confirm_proposal(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    if cx.len() != 3 {
         return cx.throw_type_error(
-            "wcash_shield_coinbase_and_broadcast expects exactly one recovery phrase",
+            "wcash_confirm_proposal expects a recovery phrase, proposal identifier, and operation",
         );
     }
     let seed_phrase = Zeroizing::new(cx.argument::<JsString>(0)?.value(&mut cx));
+    let proposal_id = cx.argument::<JsString>(1)?.value(&mut cx);
+    let operation = cx.argument::<JsString>(2)?.value(&mut cx);
+    let generation = match parse_proposal_generation(&proposal_id) {
+        Ok(generation) => generation,
+        Err(error) => return cx.throw_type_error(error.to_string()),
+    };
+    let expected_kind = match TransactionProposalKind::parse(&operation) {
+        Ok(kind) => kind,
+        Err(error) => return cx.throw_type_error(error.to_string()),
+    };
+
     json_promise(cx, move || {
         with_panic_guard(|| {
             let mnemonic = parse_mnemonic(seed_phrase.as_str())?;
             require_mnemonic_owns_wallet(&mnemonic)?;
             let master_seed = mnemonic_master_seed(&mnemonic);
-            let mut slot = WCASH_RUNTIME
+            let wallet = wallet_path()?;
+            let mut proposals = TRANSACTION_PROPOSALS.lock().map_err(|_| {
+                ZingolibError::Init("Wcash transaction proposal lock poisoned".to_owned())
+            })?;
+            let active = proposals.active.as_ref().ok_or_else(|| {
+                ZingolibError::Init("no Wcash transaction proposal is pending".to_owned())
+            })?;
+            if active.generation != generation || active.kind != expected_kind {
+                return Err(ZingolibError::Init(
+                    "Wcash proposal changed before confirmation".to_owned(),
+                ));
+            }
+
+            let mut runtime_slot = WCASH_RUNTIME
                 .lock()
                 .map_err(|_| ZingolibError::Init("Wcash runtime lock poisoned".to_owned()))?;
-            let runtime = slot
+            let runtime = runtime_slot
                 .as_mut()
                 .ok_or_else(|| ZingolibError::Init("Wcash wallet is not open".to_owned()))?;
             let exact_tip_height = require_exact_wallet_tip(runtime)?;
-            let (_, active_txid) = active_pending_transaction(runtime, Some(exact_tip_height))?;
-            if let Some(txid) = active_txid {
-                return active_pending_review_result_json(
-                    "shield_coinbase",
-                    &txid,
-                    exact_tip_height,
-                );
+
+            let calculation = match &active.state {
+                TransactionProposalState::Staged(staged) => {
+                    Some(WcashRuntime::calculate(&wallet, &master_seed, staged))
+                }
+                TransactionProposalState::Calculated(_) => None,
+            };
+            if let Some(calculation) = calculation {
+                match calculation {
+                    Ok(calculated) => {
+                        let active = proposals.active.as_mut().ok_or_else(|| {
+                            ZingolibError::Init(
+                                "Wcash proposal disappeared during calculation".to_owned(),
+                            )
+                        })?;
+                        let fee_matches = calculated.signed().fee_zat == active.fee_zat;
+                        // Once calculation succeeds, signed bytes are durable.
+                        // Move the registry out of its replaceable state before
+                        // checking any returned metadata so no later preview can
+                        // unlock or replace a transaction that may be broadcast.
+                        active.state = TransactionProposalState::Calculated(calculated);
+                        if !fee_matches {
+                            return Err(ZingolibError::Init(
+                                "calculated Wcash fee differs from the reviewed proposal"
+                                    .to_owned(),
+                            ));
+                        }
+                    }
+                    Err(WcashRuntimeError::Wallet(
+                        WalletServiceError::PersistedTransactionsRequireReview { txids, .. },
+                    )) => {
+                        proposals.active = None;
+                        return persisted_transactions_review_result_json(
+                            expected_kind.as_str(),
+                            &txids,
+                            exact_tip_height,
+                        );
+                    }
+                    Err(WcashRuntimeError::Wallet(
+                        WalletServiceError::ActivePendingTransaction { txid, .. },
+                    )) => {
+                        let recovery_tip_height =
+                            attest_backend_active_transaction(runtime, &txid)?;
+                        let staged = match proposals.active.as_ref().map(|active| &active.state) {
+                            Some(TransactionProposalState::Staged(staged)) => staged,
+                            _ => {
+                                return Err(ZingolibError::Read(
+                                    RECOVERY_STATUS_UNKNOWN_MESSAGE.to_owned(),
+                                ));
+                            }
+                        };
+                        WcashRuntime::cancel(&wallet, staged).map_err(|error| {
+                            ZingolibError::Read(format!(
+                                "signed transaction exists and the obsolete proposal lock could not be released: {error}"
+                            ))
+                        })?;
+                        proposals.active = None;
+                        return active_pending_review_result_json(
+                            expected_kind.as_str(),
+                            &txid,
+                            recovery_tip_height,
+                        );
+                    }
+                    Err(WcashRuntimeError::Wallet(WalletServiceError::Signing(message))) => {
+                        // The core releases the staged input locks when transaction
+                        // construction fails before it persists signed bytes. Drop
+                        // the now-unlocked proposal so a later cancellation cannot
+                        // act on an obsolete lock owner.
+                        proposals.active = None;
+                        return Err(ZingolibError::Init(format!(
+                            "{} {} calculation: {message}",
+                            WCASH_NETWORK_LABEL,
+                            expected_kind.as_str()
+                        )));
+                    }
+                    Err(error) => {
+                        return Err(ZingolibError::Init(format!(
+                            "{} {} calculation: {error}",
+                            WCASH_NETWORK_LABEL,
+                            expected_kind.as_str()
+                        )));
+                    }
+                }
             }
 
-            let signed = match RT.block_on(runtime.shield_coinbase(&master_seed)) {
-                Ok(signed) => signed,
-                Err(WcashRuntimeError::Wallet(
-                    WalletServiceError::PersistedTransactionsRequireReview { txids, .. },
-                )) => {
-                    return persisted_transactions_review_result_json(
-                        "shield_coinbase",
-                        &txids,
-                        exact_tip_height,
-                    );
+            let (rendered, clear_proposal) = {
+                let active = proposals.active.as_ref().ok_or_else(|| {
+                    ZingolibError::Init("Wcash proposal disappeared before broadcast".to_owned())
+                })?;
+                if active.generation != generation || active.kind != expected_kind {
+                    return Err(ZingolibError::Init(
+                        "Wcash proposal changed before broadcast".to_owned(),
+                    ));
                 }
-                Err(WcashRuntimeError::Wallet(WalletServiceError::ActivePendingTransaction {
-                    txid,
-                    ..
-                })) => {
-                    let recovery_tip_height = attest_backend_active_transaction(runtime, &txid)?;
-                    return active_pending_review_result_json(
-                        "shield_coinbase",
-                        &txid,
-                        recovery_tip_height,
-                    );
+                let TransactionProposalState::Calculated(calculated) = &active.state else {
+                    return Err(ZingolibError::Init(
+                        "Wcash proposal was not calculated".to_owned(),
+                    ));
+                };
+                if calculated.signed().fee_zat != active.fee_zat {
+                    return Err(ZingolibError::Init(
+                        "calculated Wcash fee differs from the reviewed proposal".to_owned(),
+                    ));
                 }
-                Err(error) => {
-                    return Err(ZingolibError::Init(format!(
-                        "{} coinbase shielding: {error}",
-                        WCASH_NETWORK_LABEL
-                    )));
-                }
+                let broadcast = RT.block_on(runtime.broadcast_calculated(calculated));
+                let outcome = classify_broadcast_result(broadcast);
+                let clear = match &outcome {
+                    NativeBroadcastOutcome::Broadcast(result) => {
+                        result.txid == calculated.signed().txid
+                    }
+                    NativeBroadcastOutcome::Rejected { .. } => true,
+                    NativeBroadcastOutcome::RecoveryRequired { .. }
+                    | NativeBroadcastOutcome::Expired => false,
+                };
+                (
+                    transaction_result_json(
+                        expected_kind.as_str(),
+                        PublicTransactionMetadata {
+                            txid: &calculated.signed().txid,
+                            branch_id: &calculated.signed().branch_id,
+                            expiry_height: calculated.signed().expiry_height,
+                            target_height: Some(calculated.signed().target_height),
+                            fee_zat: Some(calculated.signed().fee_zat),
+                            internal_change_receiver_verified: Some(
+                                calculated.signed().internal_change_receiver_verified,
+                            ),
+                            exact_tip_height,
+                        },
+                        outcome,
+                    ),
+                    clear,
+                )
             };
-            let broadcast = RT.block_on(runtime.broadcast(&signed));
-            Ok(signed_transaction_result_json(
-                "shield_coinbase",
-                &signed,
-                exact_tip_height,
-                broadcast,
-            ))
+            if clear_proposal {
+                proposals.active = None;
+            }
+            Ok(rendered)
+        })
+    })
+}
+
+fn cancel_proposal(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    if cx.len() > 1 {
+        return cx.throw_type_error(
+            "wcash_cancel_proposal expects zero arguments or one proposal identifier",
+        );
+    }
+    let expected_generation = match cx.argument_opt(0) {
+        None => None,
+        Some(value) => {
+            let value = value
+                .downcast_or_throw::<JsString, _>(&mut cx)?
+                .value(&mut cx);
+            match parse_proposal_generation(&value) {
+                Ok(generation) => Some(generation),
+                Err(error) => return cx.throw_type_error(error.to_string()),
+            }
+        }
+    };
+    json_promise(cx, move || {
+        with_panic_guard(|| {
+            let wallet = wallet_path()?;
+            let mut proposals = TRANSACTION_PROPOSALS.lock().map_err(|_| {
+                ZingolibError::Init("Wcash transaction proposal lock poisoned".to_owned())
+            })?;
+            let cancelled =
+                cancel_replaceable_proposal(&mut proposals, &wallet, expected_generation)?;
+            Ok(serde_json::json!({ "cancelled": cancelled }).to_string())
         })
     })
 }
@@ -1790,6 +2119,49 @@ mod tests {
         assert!(!is_canonical_txid(&"A".repeat(64)));
         assert!(!is_canonical_txid(&"a".repeat(63)));
         assert!(!is_canonical_txid(&"g".repeat(64)));
+    }
+
+    #[test]
+    fn proposal_identity_and_operation_are_strictly_bound() {
+        assert_eq!(parse_proposal_generation("1").unwrap(), 1);
+        assert_eq!(
+            parse_proposal_generation(&u64::MAX.to_string()).unwrap(),
+            u64::MAX
+        );
+        for proposal_id in ["", "0", "01", "+1", "-1", "1.0", " 1"] {
+            assert!(
+                parse_proposal_generation(proposal_id).is_err(),
+                "unexpectedly accepted {proposal_id:?}"
+            );
+        }
+        assert_eq!(
+            TransactionProposalKind::parse("send").unwrap(),
+            TransactionProposalKind::Send
+        );
+        assert_eq!(
+            TransactionProposalKind::parse("shield_coinbase").unwrap(),
+            TransactionProposalKind::ShieldCoinbase
+        );
+        assert!(TransactionProposalKind::parse("shield").is_err());
+    }
+
+    #[test]
+    fn proposal_preview_contains_exact_public_values_and_no_signing_material() {
+        let output = proposal_preview_json(
+            7,
+            TransactionProposalKind::ShieldCoinbase,
+            25_000,
+            1_249_975_000,
+        );
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["proposal_id"], "7");
+        assert_eq!(parsed["operation"], "shield_coinbase");
+        assert_eq!(parsed["fee_zat"], "25000");
+        assert_eq!(parsed["value_zat"], "1249975000");
+        assert!(parsed.get("raw_transaction_hex").is_none());
+        assert!(parsed.get("seed").is_none());
     }
 
     #[test]
