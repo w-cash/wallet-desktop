@@ -32,6 +32,7 @@ describe("unsigned local Wcash Testnet packaging", () => {
       productName: "Wcash Warden Testnet",
       forceCodeSigning: false,
       npmRebuild: false,
+      extraMetadata: { homepage: "https://github.com/w-cash/wallet-desktop" },
       afterPack: "./scripts/verify-wcash-unsigned-local-after-pack.js",
       mac: { identity: null },
       win: { signAndEditExecutable: false },
@@ -56,6 +57,7 @@ describe("unsigned local Wcash Testnet packaging", () => {
     expect(build).not.toHaveProperty("afterAllArtifactBuild");
     expect(build.win).not.toHaveProperty("azureSignOptions");
     expect(build.win).not.toHaveProperty("signExts");
+    expect(build.extraMetadata).toEqual({ homepage: "https://github.com/w-cash/wallet-desktop" });
 
     for (const relativePath of [
       "afterMasSign.js",

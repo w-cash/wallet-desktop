@@ -5,6 +5,9 @@
   "artifactName": "${productName}-UNSIGNED-LOCAL-${version}-${buildVersion}-${arch}.${ext}",
   "forceCodeSigning": false,
   "npmRebuild": false,
+  "extraMetadata": {
+    "homepage": "https://github.com/w-cash/wallet-desktop"
+  },
   "afterPack": "./scripts/verify-wcash-unsigned-local-after-pack.js",
   "files": ["build/**/*", "config/wcash-runtime.json", "node_modules/**/*"],
   "asarUnpack": ["build/native.node", "node_modules/keytar/**/*.node"],

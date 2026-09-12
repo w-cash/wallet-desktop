@@ -42,6 +42,15 @@ assert(localConfig.appId === runtime.appId, "appId must match the isolated Wcash
 assert(localConfig.productName === runtime.productName, "productName must match the Wcash Testnet runtime");
 assert(localConfig.forceCodeSigning === false, "forceCodeSigning must remain disabled");
 assert(localConfig.npmRebuild === false, "native dependency rebuilding must stay in the explicit build step");
+assert(
+  localConfig.extraMetadata && localConfig.extraMetadata.homepage === "https://github.com/w-cash/wallet-desktop",
+  "package metadata must use the canonical Wcash desktop project URL",
+);
+assert(
+  packageJson.build.extraMetadata &&
+    packageJson.build.extraMetadata.homepage === "https://github.com/w-cash/wallet-desktop",
+  "release package metadata must use the canonical Wcash desktop project URL",
+);
 assert(localConfig.mac && localConfig.mac.identity === null, "macOS signing identity must be explicitly null");
 assert(
   localConfig.win && localConfig.win.signAndEditExecutable === false,

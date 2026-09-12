@@ -209,6 +209,9 @@
     "productName": "Wcash Warden Testnet",
     "appId": "com.wcashwallet.warden.testnet",
     "buildVersion": "1",
+    "extraMetadata": {
+      "homepage": "https://github.com/w-cash/wallet-desktop"
+    },
     "artifactName": "${productName}-${version}-${buildVersion}-${arch}.${ext}",
     "files": [
       "build/**/*",
