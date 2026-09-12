@@ -2,10 +2,10 @@
 //
 //   node scripts/check-win-arch.js --arch x64        (or arm64)
 //
-// build/native.node, src/native.node and resources/nym-proxy.exe are shared
-// paths rewritten by `yarn build-win-<arch>` and stage-nym-proxy. Nothing about
-// them records which architecture they hold, so any electron-builder run that
-// does not regenerate them packages whatever the previous build left behind.
+// build/native.node and src/native.node are shared paths rewritten by the
+// target build. Nothing about the filenames records which architecture they
+// hold, so an electron-builder run that does not regenerate them can package
+// whatever the previous build left behind.
 //
 // That is not hypothetical: an x64 package once shipped with an arm64
 // native.node after an arm64 build in the same tree. It installed, launched, and
@@ -30,7 +30,6 @@ const root = path.resolve(__dirname, "..");
 const required = [
   path.join(root, "src", "native.node"),
   path.join(root, "build", "native.node"),
-  path.join(root, "resources", "nym-proxy.exe"),
 ];
 // Staged by stage-vcruntime.js; also architecture-specific, and shipping the
 // wrong one would fail the same way it would with no runtime at all.
@@ -61,8 +60,8 @@ if (problems.length > 0) {
   for (const p of problems) console.error(`  - ${p}`);
   console.error(
     `\nA package built now would install and then fail on every native call.\n` +
-      `Run "yarn dist:win-${expected}" (or dist:win-msix-${expected}) from the top, so the\n` +
-      `native module and nym-proxy are rebuilt for ${expected} rather than reused.\n`,
+      `Run "yarn package:local-regtest-qa:windows-${expected}" from the top, so the\n` +
+      `native module and Visual C++ runtime are rebuilt for ${expected} rather than reused.\n`,
   );
   process.exit(1);
 }

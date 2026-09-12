@@ -1,0 +1,64 @@
+{
+  "appId": "com.wcashwallet.wallet.local-regtest-qa",
+  "productName": "Wcash Wallet",
+  "copyright": "Copyright © 2026 Wcash Wallet contributors",
+  "buildVersion": "180.1",
+  "artifactName": "Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-${version}-${buildVersion}-linux-${arch}.${ext}",
+  "forceCodeSigning": false,
+  "npmRebuild": false,
+  "extraMetadata": {
+    "name": "wcash-wallet-local-regtest-qa",
+    "productName": "Wcash Wallet",
+    "description": "Unsigned Wcash Wallet local Regtest QA build; funds have no monetary value",
+    "homepage": "https://github.com/w-cash/wallet-desktop",
+    "wcashPackagedProfile": "local-regtest-qa"
+  },
+  "afterPack": "./scripts/verify-wcash-cross-platform-candidate-after-pack.js",
+  "files": ["build/**/*", "node_modules/**/*"],
+  "asarUnpack": ["build/native.node", "node_modules/keytar/**/*.node"],
+  "extraResources": [
+    {
+      "from": "LICENSE",
+      "to": "LICENSE"
+    },
+    {
+      "from": "THIRD_PARTY_NOTICES.md",
+      "to": "THIRD_PARTY_NOTICES.md"
+    },
+    {
+      "from": "resources/linux/com.wcashwallet.wallet.policy",
+      "to": "com.wcashwallet.wallet.policy"
+    },
+    {
+      "from": "resources/linux/apparmor/wcash-wallet",
+      "to": "apparmor-wcash-wallet"
+    }
+  ],
+  "directories": {
+    "buildResources": "public",
+    "output": "dist/local-regtest-qa/linux-x64"
+  },
+  "linux": {
+    "category": "Finance",
+    "executableName": "wcash-wallet",
+    "icon": "./resources/icons",
+    "target": ["AppImage", "deb"],
+    "desktop": {
+      "entry": {
+        "Name": "Wcash Wallet",
+        "Comment": "Unsigned local Regtest QA wallet; funds have no monetary value",
+        "GenericName": "Wallet",
+        "Type": "Application",
+        "StartupNotify": "true",
+        "StartupWMClass": "wcash-wallet-local-regtest-qa",
+        "Categories": "Finance;Utility;",
+        "Keywords": "wcash;wallet;regtest;qa;"
+      }
+    }
+  },
+  "deb": {
+    "afterInstall": "scripts/postinstall.sh",
+    "afterRemove": "scripts/postremove.sh",
+    "artifactName": "Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-${version}-${buildVersion}-linux-${arch}.${ext}"
+  }
+}

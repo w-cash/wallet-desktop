@@ -1,0 +1,13 @@
+# AppArmor profile for Wcash Wallet.
+#
+# Ubuntu 24.04+ and Debian 13+ restrict unprivileged user namespaces by
+# default. Electron's Chromium zygote needs `userns` to start. This profile
+# follows the unconfined user-namespace pattern used by other Electron apps.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile wcash-wallet "/opt/Wcash Wallet/wcash-wallet" flags=(unconfined) {
+  userns,
+  include if exists <local/wcash-wallet>
+}

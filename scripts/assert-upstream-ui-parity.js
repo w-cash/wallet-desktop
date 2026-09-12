@@ -52,8 +52,9 @@ for (const relativePath of protectedFiles) {
 
 const failures = [];
 const taggedCommit = git(["rev-parse", `refs/tags/${manifest.baseline.tag}^{commit}`]);
-if (taggedCommit !== manifest.baseline.commit) {
-  failures.push(`upstream tag resolves to ${taggedCommit}, expected ${manifest.baseline.commit}`);
+const expectedTagCommit = manifest.baseline.tagCommit || manifest.baseline.commit;
+if (taggedCommit !== expectedTagCommit) {
+  failures.push(`upstream tag resolves to ${taggedCommit}, expected ${expectedTagCommit}`);
 }
 
 // Anchor the allowlist to the actual upstream Git tree. This catches removed,

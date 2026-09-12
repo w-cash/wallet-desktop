@@ -1,0 +1,45 @@
+{
+  "appId": "com.wcashwallet.wallet.local-regtest-qa",
+  "productName": "Wcash Wallet",
+  "copyright": "Copyright © 2026 Wcash Wallet contributors",
+  "buildVersion": "180.1",
+  "artifactName": "Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-${version}-${buildVersion}-windows-${arch}.${ext}",
+  "forceCodeSigning": false,
+  "npmRebuild": false,
+  "extraMetadata": {
+    "name": "wcash-wallet-local-regtest-qa",
+    "productName": "Wcash Wallet",
+    "description": "Unsigned Wcash Wallet local Regtest QA build; funds have no monetary value",
+    "homepage": "https://github.com/w-cash/wallet-desktop",
+    "wcashPackagedProfile": "local-regtest-qa"
+  },
+  "afterPack": "./scripts/verify-wcash-cross-platform-candidate-after-pack.js",
+  "files": ["build/**/*", "node_modules/**/*"],
+  "asarUnpack": ["build/native.node", "node_modules/keytar/**/*.node"],
+  "extraResources": [
+    {
+      "from": "LICENSE",
+      "to": "LICENSE"
+    },
+    {
+      "from": "THIRD_PARTY_NOTICES.md",
+      "to": "THIRD_PARTY_NOTICES.md"
+    }
+  ],
+  "directories": {
+    "buildResources": "public",
+    "output": "dist/local-regtest-qa/windows-x64"
+  },
+  "win": {
+    "executableName": "wcash-wallet",
+    "icon": "./resources/icon.ico",
+    "signAndEditExecutable": false,
+    "target": ["zip"],
+    "extraFiles": [
+      {
+        "from": "resources/vcruntime",
+        "to": "."
+      }
+    ]
+  }
+}

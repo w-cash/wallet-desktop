@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.wcashwallet.wallet</id>
+
+  <name>Wcash Wallet</name>
+  <summary>Private light client wallet for Wcash</summary>
+
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+
+  <description>
+    <p>
+      Wcash Wallet is a private light client wallet for the Wcash network. It
+      keeps the upstream desktop interaction model while using the reviewed
+      Wcash wallet core and Wcash network profiles.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Create and restore a recovery phrase wallet</li>
+      <li>Send and receive private Wcash transactions</li>
+      <li>Unified and transparent Wcash address support</li>
+      <li>Transaction history and synchronization status</li>
+      <li>wcash: payment-link handling</li>
+    </ul>
+  </description>
+
+  <url type="homepage">https://github.com/w-cash/wallet-desktop</url>
+  <url type="bugtracker">https://github.com/w-cash/wallet-desktop/issues</url>
+  <url type="vcs-browser">https://github.com/w-cash/wallet-desktop</url>
+
+  <launchable type="desktop-id">com.wcashwallet.wallet.desktop</launchable>
+  <icon type="stock">com.wcashwallet.wallet</icon>
+
+  <categories>
+    <category>Finance</category>
+    <category>Utility</category>
+  </categories>
+
+  <keywords>
+    <keyword>wcash</keyword>
+    <keyword>wallet</keyword>
+    <keyword>privacy</keyword>
+    <keyword>shielded</keyword>
+    <keyword>blockchain</keyword>
+  </keywords>
+
+  <content_rating type="oars-1.1">
+    <content_attribute id="money-purchasing">mild</content_attribute>
+  </content_rating>
+
+  <releases>
+    <release version="2.0.25" date="2026-09-12"/>
+  </releases>
+
+  <provides>
+    <binary>wcash-wallet</binary>
+  </provides>
+</component>

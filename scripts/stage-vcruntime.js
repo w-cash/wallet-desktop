@@ -1,10 +1,10 @@
 // Stages the Visual C++ runtime DLLs into resources/vcruntime/ so electron-builder
-// can place them next to Zingo PC.exe via extraFiles.
+// can place them next to wcash-wallet.exe via extraFiles.
 //
 //   node scripts/stage-vcruntime.js --arch x64        (or arm64)
 //
-// Why this exists: native.node and nym-proxy.exe are built with MSVC and import
-// VCRUNTIME140.dll. Electron itself does not, so on a machine without the Visual
+// Why this exists: native.node is built with MSVC and imports VCRUNTIME140.dll.
+// Electron itself does not, so on a machine without the Visual
 // C++ Redistributable the window opens normally and then every native call fails
 // — require() of the module returns "the specified module could not be found".
 // Development machines and CI runners have the runtime because Visual Studio
@@ -96,8 +96,8 @@ for (const name of WANTED) {
   copied++;
 }
 
-// vcruntime140.dll is the one both native.node and nym-proxy.exe import; ending
-// up with nothing means the redist is not the one this build needs.
+// vcruntime140.dll is the binding's baseline runtime; ending up with nothing
+// means the redistributable is not the one this build needs.
 if (copied === 0) {
   console.error(`stage-vcruntime: found ${source} but no ${arch} copy of ${WANTED.join(" or ")} in it.`);
   process.exit(1);

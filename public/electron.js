@@ -598,8 +598,8 @@ ipcMain.handle("auth:check", async () => {
           const { execFile } = require("child_process");
           // polkit 0.105 (Linux Mint / Ubuntu) exits with code 1 even when the
           // action exists, so check stdout instead of the exit code.
-          execFile("pkaction", ["--action-id", "co.zingo.pc.authenticate"], (_err, stdout) => {
-            resolve(stdout && stdout.includes("co.zingo.pc.authenticate") ? "available" : "not_installed_linux");
+          execFile("pkaction", ["--action-id", "com.wcashwallet.wallet.authenticate"], (_err, stdout) => {
+            resolve(stdout && stdout.includes("com.wcashwallet.wallet.authenticate") ? "available" : "not_installed_linux");
           });
         }),
       "not_installed_linux",
@@ -662,15 +662,15 @@ async function verifyDeviceAuthentication(reason, { requireAvailable = false } =
       // Probe the polkit action first; if it's not registered (dev mode,
       // AppImage, missing .deb post-install) skip verification rather than
       // failing the entire send flow.
-      execFile("pkaction", ["--action-id", "co.zingo.pc.authenticate"], (_err, stdout) => {
-        const available = stdout && stdout.includes("co.zingo.pc.authenticate");
+      execFile("pkaction", ["--action-id", "com.wcashwallet.wallet.authenticate"], (_err, stdout) => {
+        const available = stdout && stdout.includes("com.wcashwallet.wallet.authenticate");
         if (!available) {
           resolve(requireAvailable ? { success: false, unavailable: true } : { success: true });
           return;
         }
         execFile(
           "pkcheck",
-          ["--action-id", "co.zingo.pc.authenticate", "--process", String(process.pid), "--allow-user-interaction"],
+          ["--action-id", "com.wcashwallet.wallet.authenticate", "--process", String(process.pid), "--allow-user-interaction"],
           (err) => resolve({ success: !err }),
         );
       });
@@ -829,7 +829,7 @@ ipcMain.handle("wallets:clear", async () => clearWallets());
 ipcMain.handle("get-app-data-path", () => app.getPath("appData"));
 
 // Lazy: app.getPath() requires app.ready — IPC handlers only fire after ready so this is safe.
-// In MAS the containerized path (~/Library/Containers/co.zingo.pc/...) is resolved at runtime.
+// In a future MAS build, the containerized Wcash path is resolved at runtime.
 let _fsAllowedBases = null;
 function getFsAllowedBases() {
   if (!_fsAllowedBases) {
@@ -1849,7 +1849,7 @@ function createWindow() {
   mainWindow.loadURL(isDev ? "http://localhost:3000" : `file://${path.join(__dirname, "../build/index.html")}`);
 
   // Diagnostic logging for MAS/sandbox builds — writes to userData so we can
-  // read it from ~/Library/Containers/co.zingo.pc/Data/Library/Application Support/Wcash Wallet/startup.log
+  // read it from the Wcash Wallet application container's Library/Application Support folder.
   if (!isDev) {
     appendStartupLog(`=== renderer startup bundleVersion=${app.getVersion()} ===`);
     mainWindow.webContents.on("did-start-loading", () => appendStartupLog("did-start-loading"));
@@ -1937,7 +1937,7 @@ function createWindow() {
 // app.commandLine.appendSwitch("in-process-gpu");
 
 // Windows/Linux cold start: the wcash: URI arrives via env var (set by the
-// zingo-pc-uri.sh wrapper on Linux, which avoids passing it as a positional
+// wcash-wallet-uri.sh wrapper on Linux, which avoids passing it as a positional
 // argv that Electron's runtime misinterprets as the app-module path) or as a
 // direct argv entry on Windows.
 if (process.platform !== "darwin") {
@@ -2105,7 +2105,7 @@ async function maybeRunDmgToMasMigration() {
 
 // One-shot migration for a Flatpak install that follows a previous
 // deb/AppImage (non-sandboxed) install. Flatpak redirects userData into its
-// per-app sandbox (~/.var/app/co.zingo.pc/config/Wcash Wallet), so a fresh Flatpak
+// per-app sandbox (~/.var/app/com.wcashwallet.wallet/config/Wcash Wallet), so a fresh Flatpak
 // starts with an EMPTY wallets.json even though the old ~/.config/Wcash Wallet data
 // (and the .dat wallet files it points at) are intact. Unlike MAS, the manifest
 // grants --filesystem=home, so we read the old folder directly (a confirm, not a
@@ -2258,10 +2258,10 @@ app.whenReady().then(async () => {
       // On Linux, the packaged Electron binary treats any positional argument
       // as the app-module path (defaultApp mode), so passing the wcash: URI
       // directly as argv causes a crash.  Register the wrapper script instead;
-      // it forwards the URI via the ZINGO_PC_URI env var and starts the binary
+      // it forwards the URI via WCASH_WALLET_URI and starts the binary
       // with no positional arguments.
       if (process.platform === "linux") {
-        const wrapperPath = path.join(path.dirname(process.execPath), "resources", "zingo-pc-uri.sh");
+        const wrapperPath = path.join(path.dirname(process.execPath), "resources", "wcash-wallet-uri.sh");
         if (fs.existsSync(wrapperPath)) {
           app.setAsDefaultProtocolClient("wcash", wrapperPath);
         } else {

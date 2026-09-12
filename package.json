@@ -47,33 +47,31 @@
   },
   "scripts": {
     "postinstall": "node set-resolutions-macos.js && (electron-builder install-app-deps || true) && patch-package",
-    "release:prep": "node bin/prep-release.js",
+    "release:prep": "node scripts/reject-unconfigured-release-target.js public-release",
     "lint": "cross-env NODE_ENV=production eslint . --fix --ext .js,.jsx,.ts,.tsx",
     "prettier": "prettier './**/*.{js,jsx,ts,tsx}' -w",
     "verify:upstream-ui-parity": "node scripts/assert-upstream-ui-parity.js",
     "start": "cross-env RUST_BACKTRACE=1 ELECTRON_ENABLE_LOGGING=1 NODE_OPTIONS=--trace-uncaught concurrently -k \"cross-env NODE_ENV=production BROWSER=none yarn react-start\" \"wait-on http-get://localhost:3000/static/js/bundle.js && electronmon .\"",
     "script:build": "cross-env node scripts/build.js",
-    "mixnet": "node scripts/stage-nym-proxy.js --host",
     "cargo:clean": "cd native && cargo clean && cd ..",
     "cargo:check": "cd native && cargo check && cd ..",
     "cargo:update": "cd native && cargo update && cd ..",
-    "build": "yarn cargo:clean && yarn neon && yarn mixnet && cross-env node scripts/build.js",
-    "build-linux": "yarn cargo:clean && yarn neon && cross-env node scripts/build.js",
+    "build": "yarn cargo:clean && yarn neon && cross-env node scripts/build.js",
     "build-mac-x64": "yarn cargo:clean && yarn neon-mac-x64 && cross-env node scripts/build.js",
     "build-mac-arm64": "yarn cargo:clean && yarn neon-mac-arm64 && cross-env node scripts/build.js",
     "build-win-x64": "yarn cargo:clean && yarn neon-win-x64 && cross-env node scripts/build.js",
     "build-win-arm64": "yarn cargo:clean && yarn neon-win-arm64 && cross-env node scripts/build.js",
     "test": "yarn neon && cross-env node scripts/test.js",
     "test:run": "yarn neon && cross-env CI=true node scripts/test.js --watchAll=false",
-    "dist:linux": "rimraf dist && yarn build-linux && node scripts/stage-nym-proxy.js --clean --strict-rev --target x86_64-unknown-linux-gnu && electron-builder -l -c.extraMetadata.main=build/electron.js --publish never",
-    "dist:linux-only-build": "electron-builder -l -c.extraMetadata.main=build/electron.js --publish never",
-    "dist:mac-arm64": "rimraf dist && yarn build-mac-arm64 && node scripts/stage-nym-proxy.js --clean --strict-rev --target aarch64-apple-darwin && electron-builder -m --arm64 -c.extraMetadata.main=build/electron.js --publish never",
-    "dist:mac-mas": "rimraf dist && yarn cargo:clean && yarn neon-mac-x64 && cp src/native.node src/native-x64.node && yarn neon-mac-arm64 && lipo -create -output src/native.node src/native-x64.node src/native.node && rm src/native-x64.node && node scripts/stage-nym-proxy.js --clean --strict-rev && cross-env node scripts/build.js && electron-builder --mac mas --universal -c.extraMetadata.main=build/electron.js --publish never",
-    "dist:mac-x64": "rimraf dist && yarn build-mac-x64 && node scripts/stage-nym-proxy.js --clean --strict-rev --target x86_64-apple-darwin && electron-builder -m --x64 -c.extraMetadata.main=build/electron.js --publish never",
-    "dist:win-arm64": "rimraf dist && yarn build-win-arm64 && node scripts/stage-nym-proxy.js --clean --strict-rev --target aarch64-pc-windows-msvc && node scripts/stage-vcruntime.js --arch arm64 && node scripts/check-win-arch.js --arch arm64 && pwsh -ExecutionPolicy Bypass -File scripts/sign-nym-proxy.ps1 && electron-builder -w --arm64 -c.extraMetadata.main=build/electron.js --publish never",
-    "dist:win-x64": "rimraf dist && yarn build-win-x64 && node scripts/stage-nym-proxy.js --clean --strict-rev --target x86_64-pc-windows-msvc && node scripts/stage-vcruntime.js --arch x64 && node scripts/check-win-arch.js --arch x64 && pwsh -ExecutionPolicy Bypass -File scripts/sign-nym-proxy.ps1 && electron-builder -w --x64 -c.extraMetadata.main=build/electron.js --publish never",
-    "dist:win-msix-arm64": "rimraf dist && yarn build-win-arm64 && node scripts/stage-nym-proxy.js --clean --strict-rev --target aarch64-pc-windows-msvc && node scripts/stage-vcruntime.js --arch arm64 && node scripts/check-win-arch.js --arch arm64 && electron-builder -w appx --arm64 -c.extraMetadata.main=build/electron.js -c.win.signAndEditExecutable=false -c.win.azureSignOptions= --publish never",
-    "dist:win-msix-x64": "rimraf dist && yarn build-win-x64 && node scripts/stage-nym-proxy.js --clean --strict-rev --target x86_64-pc-windows-msvc && node scripts/stage-vcruntime.js --arch x64 && node scripts/check-win-arch.js --arch x64 && electron-builder -w appx --x64 -c.extraMetadata.main=build/electron.js -c.win.signAndEditExecutable=false -c.win.azureSignOptions= --publish never",
+    "dist:linux": "node scripts/reject-unconfigured-release-target.js linux-release",
+    "dist:linux-only-build": "node scripts/reject-unconfigured-release-target.js linux-release",
+    "dist:mac-arm64": "node scripts/reject-unconfigured-release-target.js macos-release",
+    "dist:mac-mas": "node scripts/reject-unconfigured-release-target.js mac-app-store-release",
+    "dist:mac-x64": "node scripts/reject-unconfigured-release-target.js macos-release",
+    "dist:win-arm64": "node scripts/reject-unconfigured-release-target.js windows-release",
+    "dist:win-x64": "node scripts/reject-unconfigured-release-target.js windows-release",
+    "dist:win-msix-arm64": "node scripts/reject-unconfigured-release-target.js microsoft-store-release",
+    "dist:win-msix-x64": "node scripts/reject-unconfigured-release-target.js microsoft-store-release",
     "react-start": "cross-env node scripts/start.js",
     "neon": "rimraf src/native.node && cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --release --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
     "neon-mac-x64": "rimraf src/native.node && cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --release --target x86_64-apple-darwin --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
@@ -86,7 +84,21 @@
     "neon:wcash-regtest": "rimraf src/native.node && cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --release --no-default-features --features wcash-regtest --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
     "neon:wcash-regtest:mac-arm64": "rimraf src/native.node && LZMA_API_STATIC=1 cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --locked --release --target aarch64-apple-darwin --no-default-features --features wcash-regtest --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
     "build:local-regtest-qa:mac-arm64": "yarn verify:upstream-ui-parity && yarn neon:wcash-regtest:mac-arm64 && cross-env node scripts/build.js",
-    "package:local-regtest-qa:mac-arm64": "node scripts/assert-wcash-local-regtest-qa-package.js && rimraf dist/local-regtest-qa && yarn rebuild:keytar:local-regtest-qa:mac-arm64 && yarn build:local-regtest-qa:mac-arm64 && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config config/electron-builder.local-regtest-qa.json --mac zip --arm64 -c.extraMetadata.main=build/electron.js --publish never"
+    "package:local-regtest-qa:mac-arm64": "yarn verify:wcash-candidate-policy && node scripts/assert-wcash-local-regtest-qa-package.js && rimraf dist/local-regtest-qa && yarn rebuild:keytar:local-regtest-qa:mac-arm64 && yarn build:local-regtest-qa:mac-arm64 && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config config/electron-builder.local-regtest-qa.json --mac zip --arm64 -c.extraMetadata.main=build/electron.js --publish never",
+    "verify:wcash-candidate-policy": "node scripts/assert-wcash-desktop-candidate-packages.js && node scripts/test-wcash-cross-platform-package-verifier.js",
+    "rebuild:keytar:local-regtest-qa:linux-x64": "electron-rebuild --version 40.10.0 --arch x64 --force --only keytar",
+    "neon:wcash-regtest:linux-x64": "rimraf src/native.node && cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --locked --release --target x86_64-unknown-linux-gnu --no-default-features --features wcash-regtest --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
+    "build:local-regtest-qa:linux-x64": "yarn verify:upstream-ui-parity && yarn neon:wcash-regtest:linux-x64 && cross-env node scripts/build.js",
+    "package:local-regtest-qa:linux-x64": "yarn verify:wcash-candidate-policy && rimraf dist/local-regtest-qa/linux-x64 && yarn rebuild:keytar:local-regtest-qa:linux-x64 && yarn build:local-regtest-qa:linux-x64 && electron-builder --config config/electron-builder.local-regtest-qa.linux-x64.json --linux AppImage deb --x64 -c.extraMetadata.main=build/electron.js --publish never",
+    "rebuild:keytar:local-regtest-qa:windows-x64": "electron-rebuild --version 40.10.0 --arch x64 --force --only keytar",
+    "neon:wcash-regtest:windows-x64": "rimraf src/native.node && cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --locked --release --target x86_64-pc-windows-msvc --no-default-features --features wcash-regtest --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
+    "build:local-regtest-qa:windows-x64": "yarn verify:upstream-ui-parity && yarn neon:wcash-regtest:windows-x64 && cross-env node scripts/build.js",
+    "package:local-regtest-qa:windows-x64": "yarn verify:wcash-candidate-policy && rimraf dist/local-regtest-qa/windows-x64 && yarn rebuild:keytar:local-regtest-qa:windows-x64 && yarn build:local-regtest-qa:windows-x64 && node scripts/stage-vcruntime.js --arch x64 && node scripts/check-win-arch.js --arch x64 && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config config/electron-builder.local-regtest-qa.windows-x64.json --win zip --x64 -c.extraMetadata.main=build/electron.js --publish never",
+    "rebuild:keytar:local-regtest-qa:windows-arm64": "electron-rebuild --version 40.10.0 --arch arm64 --force --only keytar",
+    "neon:wcash-regtest:windows-arm64": "rimraf src/native.node && cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --locked --release --target aarch64-pc-windows-msvc --no-default-features --features wcash-regtest --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
+    "build:local-regtest-qa:windows-arm64": "yarn verify:upstream-ui-parity && yarn neon:wcash-regtest:windows-arm64 && cross-env node scripts/build.js",
+    "package:local-regtest-qa:windows-arm64": "yarn verify:wcash-candidate-policy && rimraf dist/local-regtest-qa/windows-arm64 && yarn rebuild:keytar:local-regtest-qa:windows-arm64 && yarn build:local-regtest-qa:windows-arm64 && node scripts/stage-vcruntime.js --arch arm64 && node scripts/check-win-arch.js --arch arm64 && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config config/electron-builder.local-regtest-qa.windows-arm64.json --win zip --arm64 -c.extraMetadata.main=build/electron.js --publish never",
+    "test:wcash-package-boundary": "node scripts/test-wcash-cross-platform-package-verifier.js"
   },
   "electronmon": {
     "patterns": [
@@ -122,7 +134,6 @@
     "@babel/plugin-transform-private-methods": "^7.27.1",
     "@babel/plugin-transform-private-property-in-object": "^7.27.1",
     "@babel/preset-env": "^7.28.0",
-    "@electron/notarize": "^3.0.1",
     "@pmmmwh/react-refresh-webpack-plugin": "^0.5.15",
     "@testing-library/jest-dom": "6.6.3",
     "@testing-library/react": "14.3.1",
@@ -212,14 +223,11 @@
   "main": "./public/electron.js",
   "build": {
     "productName": "Wcash Wallet",
-    "appId": "com.wcashwallet.wallet",
+    "appId": "com.wcashwallet.wallet.candidate",
     "buildVersion": "180",
-    "artifactName": "${productName}-${version}-${buildVersion}-${arch}.${ext}",
-    "zip": {
-      "artifactName": "${productName}-${version}-${buildVersion}-${arch}-${os}.${ext}"
-    },
-    "afterSign": "./afterMasSign.js",
-    "afterAllArtifactBuild": "./afterSignHook.js",
+    "artifactName": "Wcash-Wallet-UNSIGNED-CANDIDATE-${version}-${buildVersion}-${os}-${arch}.${ext}",
+    "forceCodeSigning": false,
+    "npmRebuild": false,
     "files": [
       "build/**/*",
       "node_modules/**/*"
@@ -228,96 +236,33 @@
       "build/native.node",
       "node_modules/keytar/**/*.node"
     ],
+    "extraResources": [
+      {
+        "from": "LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "THIRD_PARTY_NOTICES.md",
+        "to": "THIRD_PARTY_NOTICES.md"
+      }
+    ],
     "directories": {
       "buildResources": "public"
     },
     "mac": {
       "category": "public.app-category.finance",
-      "type": "distribution",
-      "extraResources": [
-        {
-          "from": "resources/nym-proxy",
-          "to": "nym-proxy"
-        }
-      ],
-      "hardenedRuntime": true,
-      "gatekeeperAssess": false,
-      "entitlements": "./configs/entitlements.mac.inherit.plist",
-      "bundleVersion": "180",
-      "extendInfo": {
-        "ITSAppUsesNonExemptEncryption": false
-      },
-      "protocols": [
-        {
-          "name": "Wcash",
-          "schemes": [
-            "wcash"
-          ]
-        }
-      ],
+      "identity": null,
       "target": [
-        "dmg"
+        "zip"
       ],
       "icon": "./resources/icon.icns"
     },
-    "mas": {
-      "category": "public.app-category.finance",
-      "extraResources": [
-        {
-          "from": "resources/nym-proxy",
-          "to": "nym-proxy"
-        }
-      ],
-      "entitlements": "./configs/entitlements.mas.plist",
-      "entitlementsInherit": "./configs/entitlements.mas.inherit.plist",
-      "provisioningProfile": "./configs/Zingo_PC_Profile.provisionprofile",
-      "bundleVersion": "180",
-      "extendInfo": {
-        "ITSAppUsesNonExemptEncryption": false
-      },
-      "protocols": [
-        {
-          "name": "Wcash",
-          "schemes": [
-            "wcash"
-          ]
-        }
-      ],
-      "icon": "./resources/icon.icns",
-      "target": [
-        "mas"
-      ]
-    },
     "win": {
+      "executableName": "wcash-wallet",
       "icon": "./resources/icon.ico",
+      "signAndEditExecutable": false,
       "target": [
-        "zip",
-        "msi"
-      ],
-      "azureSignOptions": {
-        "publisherName": "Juan Carlos Carmona Calvo",
-        "endpoint": "https://eus.codesigning.azure.net",
-        "codeSigningAccountName": "zingo-pc-signing",
-        "certificateProfileName": "Zingo-PC"
-      },
-      "signExts": [
-        ".node",
-        ".dll",
-        "!.appx"
-      ],
-      "protocols": [
-        {
-          "name": "Wcash",
-          "schemes": [
-            "wcash"
-          ]
-        }
-      ],
-      "extraResources": [
-        {
-          "from": "resources/nym-proxy.exe",
-          "to": "nym-proxy.exe"
-        }
+        "zip"
       ],
       "extraFiles": [
         {
@@ -326,25 +271,14 @@
         }
       ]
     },
-    "appx": {
-      "applicationId": "ZingoPC",
-      "identityName": "JuanCarlosCarmonaCalvo.ZingoPC",
-      "publisher": "CN=96EC5B6E-FB9F-4DEA-9C02-05C6CAF8DDF8",
-      "publisherDisplayName": "Juan Carlos Carmona Calvo",
-      "displayName": "Wcash Wallet",
-      "backgroundColor": "#06172d",
-      "showNameOnTiles": true,
-      "languages": [
-        "en-US"
-      ]
-    },
     "deb": {
       "afterInstall": "scripts/postinstall.sh",
       "afterRemove": "scripts/postremove.sh",
-      "artifactName": "${name}_${version}-${buildVersion}_${arch}.${ext}"
+      "artifactName": "Wcash-Wallet-UNSIGNED-CANDIDATE-${version}-${buildVersion}-linux-${arch}.${ext}"
     },
     "linux": {
-      "category": "Development",
+      "category": "Finance",
+      "executableName": "wcash-wallet",
       "icon": "./resources/icons",
       "target": [
         "AppImage",
@@ -352,20 +286,16 @@
       ],
       "extraResources": [
         {
-          "from": "resources/linux/co.zingo.pc.policy",
-          "to": "co.zingo.pc.policy"
+          "from": "resources/linux/com.wcashwallet.wallet.policy",
+          "to": "com.wcashwallet.wallet.policy"
         },
         {
-          "from": "resources/linux/zingo-pc-uri.sh",
-          "to": "zingo-pc-uri.sh"
+          "from": "resources/linux/wcash-wallet-uri.sh",
+          "to": "wcash-wallet-uri.sh"
         },
         {
-          "from": "resources/linux/apparmor/zingo-pc",
-          "to": "apparmor-zingo-pc"
-        },
-        {
-          "from": "resources/nym-proxy",
-          "to": "nym-proxy"
+          "from": "resources/linux/apparmor/wcash-wallet",
+          "to": "apparmor-wcash-wallet"
         }
       ],
       "mimeTypes": [
@@ -377,9 +307,9 @@
           "Comment": "Private wallet for Wcash",
           "GenericName": "Wallet",
           "Type": "Application",
-          "StartupNotify": true,
+          "StartupNotify": "true",
           "StartupWMClass": "wcash-wallet",
-          "Categories": "Utility;",
+          "Categories": "Finance;Utility;",
           "Keywords": "wcash;wallet;",
           "MimeType": "x-scheme-handler/wcash"
         }
@@ -441,5 +371,9 @@
     "presets": [
       "react-app"
     ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/w-cash/wallet-desktop.git"
   }
 }

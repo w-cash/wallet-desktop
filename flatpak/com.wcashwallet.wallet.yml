@@ -1,0 +1,55 @@
+app-id: com.wcashwallet.wallet
+runtime: org.freedesktop.Platform
+runtime-version: "24.08"
+sdk: org.freedesktop.Sdk
+base: org.electronjs.Electron2.BaseApp
+base-version: "24.08"
+command: wcash-wallet
+separate-locales: false
+
+finish-args:
+  - --share=ipc
+  - --socket=x11
+  - --socket=wayland
+  - --socket=pulseaudio
+  - --share=network
+  - --device=dri
+  - --filesystem=home
+  - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.kde.kwalletd5
+  - --talk-name=org.freedesktop.Notifications
+  - --env=ELECTRON_IS_DEV=0
+  - --env=ELECTRON_FORCE_IS_PACKAGED=true
+
+modules:
+  - name: wcash-wallet
+    buildsystem: simple
+    build-commands:
+      - chmod +x Wcash-Wallet.AppImage
+      - ./Wcash-Wallet.AppImage --appimage-extract
+
+      - install -d /app/lib/wcash-wallet
+      - cp -a squashfs-root/. /app/lib/wcash-wallet/
+      - rm -f /app/lib/wcash-wallet/AppRun
+      - chmod u-s /app/lib/wcash-wallet/chrome-sandbox || true
+
+      - install -Dm755 wcash-wallet-wrapper.sh /app/bin/wcash-wallet
+      - install -Dm644 squashfs-root/wcash-wallet.desktop /app/share/applications/com.wcashwallet.wallet.desktop
+      - desktop-file-edit --set-key=Exec --set-value='wcash-wallet %U' /app/share/applications/com.wcashwallet.wallet.desktop
+      - desktop-file-edit --set-icon=com.wcashwallet.wallet /app/share/applications/com.wcashwallet.wallet.desktop
+      - desktop-file-edit --add-mime-type=x-scheme-handler/wcash /app/share/applications/com.wcashwallet.wallet.desktop
+      - install -Dm644 squashfs-root/wcash-wallet.png /app/share/icons/hicolor/512x512/apps/com.wcashwallet.wallet.png
+      - install -Dm644 com.wcashwallet.wallet.metainfo.xml /app/share/metainfo/com.wcashwallet.wallet.metainfo.xml
+
+    sources:
+      # CI patches this source with a reviewed Wcash AppImage URL and SHA-256.
+      - type: file
+        url: ""
+        sha256: ""
+        dest-filename: Wcash-Wallet.AppImage
+
+      - type: file
+        path: wcash-wallet-wrapper.sh
+
+      - type: file
+        path: com.wcashwallet.wallet.metainfo.xml

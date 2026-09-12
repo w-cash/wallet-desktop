@@ -1,7 +1,7 @@
-name: Wcash Wallet Local Regtest QA Candidate
+name: Wcash Wallet Local Regtest QA Candidates
 
-# Local Regtest QA artifacts are created only by an explicit maintainer action.
-# It only uploads an unsigned review artifact and has no signing credentials.
+# Explicit maintainer runs only. Every job uploads a short-lived, unsigned
+# review artifact; no job can publish a release or access signing credentials.
 on:
   workflow_dispatch:
 
@@ -33,7 +33,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22.x
-          cache: yarn
+
+      - name: Use Yarn 1
+        run: |
+          corepack enable
+          corepack prepare yarn@1.22.22 --activate
 
       - name: Install protoc
         uses: arduino/setup-protoc@v3
@@ -46,7 +50,7 @@ jobs:
       - name: Install locked JavaScript dependencies
         run: yarn install --frozen-lockfile
 
-      - name: Verify the candidate policy and build the unsigned ZIP
+      - name: Verify policy and build the unsigned candidate
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
           LZMA_API_STATIC: "1"
@@ -57,5 +61,120 @@ jobs:
         with:
           name: wcash-wallet-local-regtest-qa-macos-arm64-unsigned
           path: dist/local-regtest-qa/Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-*-arm64.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-x64-local-regtest-qa:
+    name: Unsigned Linux x64 Local Regtest QA
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out the reviewed source and upstream parity tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential clang cmake libsecret-1-dev libssl-dev pkg-config
+
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@1.91.0
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Use Yarn 1
+        run: |
+          corepack enable
+          corepack prepare yarn@1.22.22 --activate
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "36.1"
+
+      - name: Install locked JavaScript dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Verify policy and build the unsigned candidate
+        run: yarn package:local-regtest-qa:linux-x64
+
+      - name: Upload the unsigned Local Regtest QA candidates
+        uses: actions/upload-artifact@v4
+        with:
+          name: wcash-wallet-local-regtest-qa-linux-x64-unsigned
+          path: |
+            dist/local-regtest-qa/linux-x64/Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-*-linux-*.AppImage
+            dist/local-regtest-qa/linux-x64/Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-*-linux-*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-local-regtest-qa:
+    name: Unsigned Windows ${{ matrix.electron_arch }} Local Regtest QA
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            node_arch: x64
+            electron_arch: x64
+            rust_target: x86_64-pc-windows-msvc
+            package_script: package:local-regtest-qa:windows-x64
+          - runner: windows-11-vs2026-arm
+            node_arch: arm64
+            electron_arch: arm64
+            rust_target: aarch64-pc-windows-msvc
+            package_script: package:local-regtest-qa:windows-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out the reviewed source and upstream parity tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@1.91.0
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          architecture: ${{ matrix.node_arch }}
+
+      - name: Use Yarn 1
+        run: |
+          corepack enable
+          corepack prepare yarn@1.22.22 --activate
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "36.1"
+
+      - name: Install locked JavaScript dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Verify policy and build the unsigned candidate
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          LZMA_API_STATIC: "1"
+        run: yarn ${{ matrix.package_script }}
+
+      - name: Upload the unsigned Local Regtest QA candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: wcash-wallet-local-regtest-qa-windows-${{ matrix.electron_arch }}-unsigned
+          path: dist/local-regtest-qa/windows-${{ matrix.electron_arch }}/Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-*-windows-${{ matrix.electron_arch }}.zip
           if-no-files-found: error
           retention-days: 14

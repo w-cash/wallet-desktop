@@ -9,7 +9,8 @@ const plist = require("plist");
 const EXPECTED_APP_ID = "com.wcashwallet.wallet.local-regtest-qa";
 const EXPECTED_PRODUCT = "Wcash Wallet";
 const EXPECTED_MARKER = "local-regtest-qa";
-const forbiddenResource = /(?:nym-proxy|zingo-pc-uri|co\.zingo\.pc\.policy|apparmor-zingo)/i;
+const forbiddenResource =
+  /(?:nym-proxy|(?:zingo-pc|wcash-wallet)-uri|(?:co\.zingo\.pc|com\.wcashwallet\.wallet)\.policy|apparmor-(?:zingo|wcash))/i;
 
 function assert(condition, message) {
   if (!condition) throw new Error(`Local Regtest QA package verification failed: ${message}`);
@@ -99,6 +100,15 @@ function verifyPackagedApplication(context) {
   );
   assert(packagedMetadata.wcashPackagedProfile === EXPECTED_MARKER, "the immutable Local Regtest QA marker is missing");
   assert(packagedMetadata.main === "build/electron.js", "packaged entry point is unexpected");
+  const packagedBuild = JSON.stringify(packagedMetadata.build || {});
+  assert(
+    !/(?:co\.zingo\.pc|Juan\s*Carlos|zingo-pc-signing|ZingoPC|Zingo-PC|nym-proxy)/i.test(packagedBuild),
+    "packaged source metadata contains inherited platform or signing identity",
+  );
+  assert(
+    packagedMetadata.build?.mas === undefined && packagedMetadata.build?.appx === undefined,
+    "packaged source metadata contains a store package configuration",
+  );
 
   // Exercise the actual ASAR dependency resolver with the packaged Electron
   // runtime. A shared/symlinked development node_modules can look complete to

@@ -37,7 +37,6 @@ const nativeManifest = read("native/Cargo.toml");
 const nativeLock = read("native/Cargo.lock");
 const main = read("public/electron.js");
 const sensitivePolicy = read("public/sensitiveNativePolicy.js");
-const candidateWorkflow = read(".github/workflows/electron.yml");
 const commonStyles = read("src/components/common/Common.module.css");
 const scrollPane = read("src/components/scrollPane/ScrollPane.tsx");
 const sendScreen = read("src/components/send/Send.tsx");
@@ -143,6 +142,7 @@ requireCondition(
   "the Keychain binding is not deterministically rebuilt for the packaged Electron arm64 ABI",
 );
 for (const required of [
+  "yarn verify:wcash-candidate-policy",
   "node scripts/assert-wcash-local-regtest-qa-package.js",
   "rimraf dist/local-regtest-qa",
   "yarn rebuild:keytar:local-regtest-qa:mac-arm64",
@@ -177,40 +177,15 @@ for (const [repository, revision] of [
     `the reviewed Wcash core pin ${repository}@${revision} is missing from the manifest or lockfile`,
   );
 }
-requireCondition(
-  /^\s*workflow_dispatch:\s*$/m.test(candidateWorkflow) &&
-    !/^\s*(?:push|pull_request|schedule):\s*$/m.test(candidateWorkflow),
-  "the candidate workflow must be manual-only",
+const desktopCandidatePolicy = spawnSync(
+  process.execPath,
+  [path.join(root, "scripts", "assert-wcash-desktop-candidate-packages.js")],
+  { cwd: root, encoding: "utf8" },
 );
 requireCondition(
-  /^permissions:\s*\n\s+contents:\s+read\s*$/m.test(candidateWorkflow),
-  "the candidate workflow must have read-only repository permission",
+  desktopCandidatePolicy.status === 0,
+  (desktopCandidatePolicy.stderr || desktopCandidatePolicy.stdout || "desktop candidate policy failed").trim(),
 );
-for (const required of [
-  "runs-on: macos-14",
-  'test "$(uname -m)" = arm64',
-  "yarn install --frozen-lockfile",
-  "yarn package:local-regtest-qa:mac-arm64",
-  "wcash-wallet-local-regtest-qa-macos-arm64-unsigned",
-]) {
-  requireCondition(candidateWorkflow.includes(required), `the candidate workflow is missing ${required}`);
-}
-for (const forbidden of [
-  /contents:\s*write/i,
-  /secrets\./i,
-  /(?:create|publish)[-_ ]release/i,
-  /zingo-pc/i,
-  /zingolabs/i,
-  /nym/i,
-  /dist:(?:linux|win|mac-(?:mas|x64))/i,
-  /(?:codesign|notari|provision|certificate|azure)/i,
-  /runs-on:\s*(?:ubuntu|windows)/i,
-]) {
-  requireCondition(
-    !forbidden.test(candidateWorkflow),
-    `the candidate workflow contains forbidden release wiring: ${forbidden}`,
-  );
-}
 requireCondition(
   main.includes('intent: wcashProfile.runtimeReady ? "off" : "on"') &&
     main.includes('phase: wcashProfile.runtimeReady ? "switched_off" : "unattached"'),
