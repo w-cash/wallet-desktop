@@ -1,4 +1,4 @@
-//! Narrow Neon boundary for the Wcash Testnet wallet.
+//! Narrow Neon boundary for one compile-time-selected Wcash wallet profile.
 //!
 //! This module deliberately does not reuse the Zingo `LightClient` global in
 //! `lib.rs`. The database path, endpoint, network and key derivation contract
@@ -20,15 +20,37 @@ use wcash_wallet::{
     MAX_PENDING_TRANSACTION_PAGE_SIZE, MAX_TRANSFER_RECIPIENTS,
 };
 use zeroize::Zeroizing;
+#[cfg(feature = "wcash-regtest")]
 use zingolib::wcash::{
     BroadcastResult, SignedTransaction, StoredSignedTransaction, WalletBalanceSummary,
-    WalletSyncCancellation, WcashTestnet, WcashTestnetPayment, WcashTestnetRuntime,
-    WcashTestnetRuntimeError,
+    WalletSyncCancellation, WcashRegtest as WcashProfile, WcashRegtestPayment as WcashPayment,
+    WcashRegtestRuntime as WcashRuntime, WcashRegtestRuntimeError as WcashRuntimeError,
+};
+#[cfg(feature = "wcash-testnet")]
+use zingolib::wcash::{
+    BroadcastResult, SignedTransaction, StoredSignedTransaction, WalletBalanceSummary,
+    WalletSyncCancellation, WcashTestnet as WcashProfile, WcashTestnetPayment as WcashPayment,
+    WcashTestnetRuntime as WcashRuntime, WcashTestnetRuntimeError as WcashRuntimeError,
 };
 
 use super::{with_panic_guard, ZingolibError, RT, WALLET_BASE_DIR};
 
-const WCASH_TESTNET_ENDPOINT: &str = "https://wallet-testnet.wcashexplorer.com:443";
+#[cfg(feature = "wcash-testnet")]
+const WCASH_PROFILE_ID: &str = "testnet";
+#[cfg(feature = "wcash-testnet")]
+const WCASH_ENDPOINT: &str = "https://wallet-testnet.wcashexplorer.com:443";
+#[cfg(feature = "wcash-testnet")]
+const WCASH_NETWORK: WalletNetwork = WalletNetwork::Testnet;
+#[cfg(feature = "wcash-testnet")]
+const WCASH_NETWORK_LABEL: &str = "Wcash Testnet";
+#[cfg(feature = "wcash-regtest")]
+const WCASH_PROFILE_ID: &str = "local-regtest";
+#[cfg(feature = "wcash-regtest")]
+const WCASH_ENDPOINT: &str = "http://127.0.0.1:48234";
+#[cfg(feature = "wcash-regtest")]
+const WCASH_NETWORK: WalletNetwork = WalletNetwork::Regtest;
+#[cfg(feature = "wcash-regtest")]
+const WCASH_NETWORK_LABEL: &str = "Wcash Regtest";
 const WCASH_WALLET_DATABASE: &str = "wallet.db";
 const WCASH_SEED_SCHEME: &str = "bip39-english-24-empty-passphrase-v1";
 const TRANSACTION_SCHEMA_VERSION: u8 = 1;
@@ -47,7 +69,7 @@ const MAX_PUBLIC_RECOVERY_TXIDS: usize = MAX_PENDING_TRANSACTION_PAGE_SIZE;
 const RECOVERY_STATUS_UNKNOWN_MESSAGE: &str =
     "signed transaction recovery status is unknown; inspect pending transactions and do not sign a replacement";
 
-static WCASH_RUNTIME: Lazy<Mutex<Option<WcashTestnetRuntime>>> = Lazy::new(|| Mutex::new(None));
+static WCASH_RUNTIME: Lazy<Mutex<Option<WcashRuntime>>> = Lazy::new(|| Mutex::new(None));
 static ACTIVE_SYNC: Lazy<Mutex<ActiveSyncRegistry>> =
     Lazy::new(|| Mutex::new(ActiveSyncRegistry::default()));
 
@@ -82,7 +104,7 @@ fn wallet_path() -> Result<PathBuf, ZingolibError> {
 }
 
 fn wallet_path_under(base: &Path) -> Result<PathBuf, ZingolibError> {
-    let wallet_directory = base.join(WcashTestnet.storage_namespace());
+    let wallet_directory = base.join(WcashProfile.storage_namespace());
     fs::create_dir_all(&wallet_directory)
         .map_err(|error| ZingolibError::Init(format!("create Wcash wallet directory: {error}")))?;
 
@@ -98,7 +120,7 @@ fn wallet_path_under(base: &Path) -> Result<PathBuf, ZingolibError> {
     Ok(wallet_directory.join(WCASH_WALLET_DATABASE))
 }
 
-fn store_runtime(runtime: WcashTestnetRuntime) -> Result<(), ZingolibError> {
+fn store_runtime(runtime: WcashRuntime) -> Result<(), ZingolibError> {
     let mut slot = WCASH_RUNTIME
         .lock()
         .map_err(|_| ZingolibError::Init("Wcash runtime lock poisoned".to_owned()))?;
@@ -138,13 +160,13 @@ fn parse_mnemonic(seed_phrase: &str) -> Result<Mnemonic<English>, ZingolibError>
 
 fn mnemonic_receivers(mnemonic: &Mnemonic<English>) -> Result<(String, String), ZingolibError> {
     let master_seed = mnemonic_master_seed(mnemonic);
-    let ufvk = derive_wallet_spending_key(&master_seed, WalletNetwork::Testnet, 0)
+    let ufvk = derive_wallet_spending_key(&master_seed, WCASH_NETWORK, 0)
         .map_err(|error| ZingolibError::Read(format!("derive Wcash account identity: {error}")))?
         .to_unified_full_viewing_key();
-    let ironwood = encode_orchard_receiver(&ufvk, WalletNetwork::Testnet)
+    let ironwood = encode_orchard_receiver(&ufvk, WCASH_NETWORK)
         .map_err(|error| ZingolibError::Read(format!("derive Wcash Ironwood receiver: {error}")))?;
     let transparent =
-        encode_transparent_coinbase_receiver(&ufvk, WalletNetwork::Testnet).map_err(|error| {
+        encode_transparent_coinbase_receiver(&ufvk, WCASH_NETWORK).map_err(|error| {
             ZingolibError::Read(format!("derive Wcash transparent receiver: {error}"))
         })?;
     Ok((ironwood, transparent))
@@ -238,7 +260,7 @@ fn parse_canonical_wcash_amount(amount: &str) -> Result<u64, String> {
     Ok(amount_zat)
 }
 
-fn parse_send_request(request_json: &str) -> Result<Vec<WcashTestnetPayment>, String> {
+fn parse_send_request(request_json: &str) -> Result<Vec<WcashPayment>, String> {
     if request_json.len() > MAX_SEND_REQUEST_BYTES {
         return Err(format!(
             "send request exceeds the {MAX_SEND_REQUEST_BYTES}-byte limit"
@@ -284,8 +306,11 @@ fn parse_send_request(request_json: &str) -> Result<Vec<WcashTestnetPayment>, St
                     "{context}.address must contain 1 through {MAX_RECIPIENT_ADDRESS_BYTES} bytes"
                 ));
             }
-            decode_recipient(address, WalletNetwork::Testnet).map_err(|error| {
-                format!("{context}.address is not a Wcash Testnet Ironwood recipient: {error}")
+            decode_recipient(address, WCASH_NETWORK).map_err(|error| {
+                format!(
+                    "{context}.address is not a {} Ironwood recipient: {error}",
+                    WCASH_NETWORK_LABEL
+                )
             })?;
 
             let amount = payment["amount"]
@@ -315,7 +340,7 @@ fn parse_send_request(request_json: &str) -> Result<Vec<WcashTestnetPayment>, St
                 }
             };
 
-            Ok(WcashTestnetPayment {
+            Ok(WcashPayment {
                 address: address.to_owned(),
                 amount_zat,
                 memo,
@@ -350,17 +375,19 @@ fn is_canonical_txid(txid: &str) -> bool {
 
 fn require_mnemonic_owns_wallet(mnemonic: &Mnemonic<English>) -> Result<(), ZingolibError> {
     let (ironwood, transparent) = mnemonic_receivers(mnemonic)?;
-    let wallet = WcashTestnetRuntime::inspect(wallet_path()?)
-        .map_err(|error| ZingolibError::Read(format!("inspect Wcash Testnet wallet: {error}")))?;
+    let wallet = WcashRuntime::inspect(wallet_path()?).map_err(|error| {
+        ZingolibError::Read(format!("inspect {} wallet: {error}", WCASH_NETWORK_LABEL))
+    })?;
     if !receiver_pair_matches(
         &ironwood,
         &transparent,
         &wallet.address,
         &wallet.transparent_coinbase_address,
     ) {
-        return Err(ZingolibError::Init(
-            "recovery phrase does not control this Wcash Testnet wallet".to_owned(),
-        ));
+        return Err(ZingolibError::Init(format!(
+            "recovery phrase does not control this {} wallet",
+            WCASH_NETWORK_LABEL
+        )));
     }
     Ok(())
 }
@@ -370,7 +397,7 @@ fn exact_tip_from_summary(summary: &WalletBalanceSummary) -> Option<u32> {
         .then_some(summary.chain_tip_height)
 }
 
-fn require_exact_wallet_tip(runtime: &WcashTestnetRuntime) -> Result<u32, ZingolibError> {
+fn require_exact_wallet_tip(runtime: &WcashRuntime) -> Result<u32, ZingolibError> {
     let summary = runtime
         .balance()
         .map_err(|error| ZingolibError::Read(format!("read Wcash exact tip: {error}")))?;
@@ -429,7 +456,7 @@ fn next_pending_cursor(
 }
 
 fn active_pending_transaction(
-    runtime: &WcashTestnetRuntime,
+    runtime: &WcashRuntime,
     expected_tip_height: Option<u32>,
 ) -> Result<(u32, Option<String>), ZingolibError> {
     // This snapshot improves recovery UX. The backend independently repeats
@@ -464,7 +491,7 @@ fn active_pending_transaction(
 }
 
 fn attest_backend_active_transaction(
-    runtime: &WcashTestnetRuntime,
+    runtime: &WcashRuntime,
     rejected_txid: &str,
 ) -> Result<u32, ZingolibError> {
     let (exact_tip_height, active_txid) = active_pending_transaction(runtime, None)?;
@@ -497,22 +524,22 @@ enum NativeBroadcastOutcome {
 }
 
 fn classify_broadcast_result(
-    result: Result<BroadcastResult, WcashTestnetRuntimeError>,
+    result: Result<BroadcastResult, WcashRuntimeError>,
 ) -> NativeBroadcastOutcome {
     match result {
         Ok(broadcast) => NativeBroadcastOutcome::Broadcast(broadcast),
-        Err(WcashTestnetRuntimeError::Rpc(WalletRpcError::Rejected { code, message })) => {
+        Err(WcashRuntimeError::Rpc(WalletRpcError::Rejected { code, message })) => {
             NativeBroadcastOutcome::Rejected {
                 node_code: code,
                 message: bounded_public_message(message),
             }
         }
-        Err(WcashTestnetRuntimeError::Rpc(WalletRpcError::AmbiguousBroadcast {
-            reason, ..
-        })) => NativeBroadcastOutcome::RecoveryRequired {
-            code: RECOVERY_REQUIRED_CODE,
-            message: bounded_public_message(reason),
-        },
+        Err(WcashRuntimeError::Rpc(WalletRpcError::AmbiguousBroadcast { reason, .. })) => {
+            NativeBroadcastOutcome::RecoveryRequired {
+                code: RECOVERY_REQUIRED_CODE,
+                message: bounded_public_message(reason),
+            }
+        }
         Err(error) => NativeBroadcastOutcome::RecoveryRequired {
             code: REVIEW_REQUIRED_CODE,
             message: bounded_public_message(error.to_string()),
@@ -649,7 +676,7 @@ fn persisted_transactions_review_result_json(
         "operation": operation,
         "outcome": "recovery_required",
         "txid": primary_txid,
-        "branch_id": WalletNetwork::Testnet.branch_id_hex(),
+        "branch_id": WCASH_NETWORK.branch_id_hex(),
         "expiry_height": null,
         "target_height": null,
         "fee_zat": null,
@@ -678,7 +705,7 @@ fn signed_transaction_result_json(
     operation: &str,
     signed: &SignedTransaction,
     exact_tip_height: u32,
-    broadcast: Result<BroadcastResult, WcashTestnetRuntimeError>,
+    broadcast: Result<BroadcastResult, WcashRuntimeError>,
 ) -> String {
     transaction_result_json(
         operation,
@@ -698,7 +725,7 @@ fn signed_transaction_result_json(
 fn stored_transaction_result_json(
     signed: &StoredSignedTransaction,
     exact_tip_height: u32,
-    broadcast: Result<BroadcastResult, WcashTestnetRuntimeError>,
+    broadcast: Result<BroadcastResult, WcashRuntimeError>,
 ) -> String {
     transaction_result_json(
         "rebroadcast_pending",
@@ -763,7 +790,7 @@ fn public_pending_page_json(
 }
 
 fn find_pending_transaction(
-    runtime: &WcashTestnetRuntime,
+    runtime: &WcashRuntime,
     txid: &str,
 ) -> Result<StoredSignedTransaction, ZingolibError> {
     let mut after_row_id = None;
@@ -810,15 +837,15 @@ fn validate_mnemonic(mut cx: FunctionContext) -> JsResult<JsString> {
 }
 
 /// Proves that one main-process-only recovery phrase owns the account stored
-/// in the fixed Wcash Testnet database. Only the boolean comparison result
+/// in the fixed compile-time profile database. Only the boolean comparison result
 /// crosses the Neon boundary; neither keys nor derived addresses are exposed.
 fn verify_mnemonic(mut cx: FunctionContext) -> JsResult<JsBoolean> {
     let seed_phrase = Zeroizing::new(cx.argument::<JsString>(0)?.value(&mut cx));
     match with_panic_guard(|| {
         let mnemonic = parse_mnemonic(seed_phrase.as_str())?;
         let (ironwood, transparent) = mnemonic_receivers(&mnemonic)?;
-        let wallet = WcashTestnetRuntime::inspect(wallet_path()?).map_err(|error| {
-            ZingolibError::Read(format!("inspect Wcash Testnet wallet: {error}"))
+        let wallet = WcashRuntime::inspect(wallet_path()?).map_err(|error| {
+            ZingolibError::Read(format!("inspect {} wallet: {error}", WCASH_NETWORK_LABEL))
         })?;
         Ok(receiver_pair_matches(
             &ironwood,
@@ -837,16 +864,19 @@ fn status(cx: FunctionContext) -> JsResult<JsPromise> {
         with_panic_guard(|| {
             let path = wallet_path()?;
             let wallet = if path.exists() {
-                Some(WcashTestnetRuntime::inspect(&path).map_err(|error| {
-                    ZingolibError::Read(format!("Wcash Testnet wallet: {error}"))
+                Some(WcashRuntime::inspect(&path).map_err(|error| {
+                    ZingolibError::Read(format!("{} wallet: {error}", WCASH_NETWORK_LABEL))
                 })?)
             } else {
                 None
             };
             Ok(serde_json::json!({
-                "network": "Wcash Testnet",
-                "ticker": WcashTestnet.ticker(),
-                "storage_namespace": WcashTestnet.storage_namespace(),
+                "profile": WCASH_PROFILE_ID,
+                "network": WCASH_NETWORK_LABEL,
+                "ticker": WcashProfile.ticker(),
+                "endpoint": WCASH_ENDPOINT,
+                "storage_namespace": WcashProfile.storage_namespace(),
+                "branch_id": WCASH_NETWORK.branch_id_hex(),
                 "wallet": wallet,
             })
             .to_string())
@@ -862,12 +892,10 @@ fn create(mut cx: FunctionContext) -> JsResult<JsPromise> {
             let master_seed = mnemonic_master_seed(&mnemonic);
             let path = wallet_path()?;
             let (runtime, wallet) = RT
-                .block_on(WcashTestnetRuntime::create(
-                    WCASH_TESTNET_ENDPOINT,
-                    &path,
-                    &master_seed,
-                ))
-                .map_err(|error| ZingolibError::Init(format!("Wcash Testnet create: {error}")))?;
+                .block_on(WcashRuntime::create(WCASH_ENDPOINT, &path, &master_seed))
+                .map_err(|error| {
+                    ZingolibError::Init(format!("{} create: {error}", WCASH_NETWORK_LABEL))
+                })?;
             store_runtime(runtime)?;
             Ok(serde_json::json!({
                 "wallet": wallet,
@@ -887,7 +915,7 @@ fn restore(mut cx: FunctionContext) -> JsResult<JsPromise> {
         || birthday > u32::MAX as f64
     {
         return cx.throw_range_error(
-            "Wcash Testnet birthday must be an integer from 1 through 4294967295",
+            "Wcash wallet birthday must be an integer from 1 through 4294967295",
         );
     }
     let birthday = birthday as u32;
@@ -898,13 +926,15 @@ fn restore(mut cx: FunctionContext) -> JsResult<JsPromise> {
             let master_seed = mnemonic_master_seed(&mnemonic);
             let path = wallet_path()?;
             let (runtime, wallet) = RT
-                .block_on(WcashTestnetRuntime::restore(
-                    WCASH_TESTNET_ENDPOINT,
+                .block_on(WcashRuntime::restore(
+                    WCASH_ENDPOINT,
                     &path,
                     &master_seed,
                     birthday,
                 ))
-                .map_err(|error| ZingolibError::Init(format!("Wcash Testnet restore: {error}")))?;
+                .map_err(|error| {
+                    ZingolibError::Init(format!("{} restore: {error}", WCASH_NETWORK_LABEL))
+                })?;
             store_runtime(runtime)?;
             Ok(serde_json::json!({
                 "wallet": wallet,
@@ -920,8 +950,10 @@ fn open(cx: FunctionContext) -> JsResult<JsPromise> {
         with_panic_guard(|| {
             let path = wallet_path()?;
             let (runtime, wallet) = RT
-                .block_on(WcashTestnetRuntime::open(WCASH_TESTNET_ENDPOINT, &path))
-                .map_err(|error| ZingolibError::Init(format!("Wcash Testnet open: {error}")))?;
+                .block_on(WcashRuntime::open(WCASH_ENDPOINT, &path))
+                .map_err(|error| {
+                    ZingolibError::Init(format!("{} open: {error}", WCASH_NETWORK_LABEL))
+                })?;
             store_runtime(runtime)?;
             Ok(serde_json::json!({ "wallet": wallet }).to_string())
         })
@@ -1021,7 +1053,9 @@ fn sync(mut cx: FunctionContext) -> JsResult<JsPromise> {
                 .ok_or_else(|| ZingolibError::Sync("Wcash wallet is not open".to_owned()))?;
             let summary = RT
                 .block_on(runtime.sync(&reservation.cancellation))
-                .map_err(|error| ZingolibError::Sync(format!("Wcash Testnet sync: {error}")))?;
+                .map_err(|error| {
+                    ZingolibError::Sync(format!("{} sync: {error}", WCASH_NETWORK_LABEL))
+                })?;
             serde_json::to_string(&summary)
                 .map_err(|error| ZingolibError::Sync(format!("serialize Wcash balance: {error}")))
         });
@@ -1044,9 +1078,9 @@ fn balance(cx: FunctionContext) -> JsResult<JsPromise> {
             let runtime = slot
                 .as_ref()
                 .ok_or_else(|| ZingolibError::Read("Wcash wallet is not open".to_owned()))?;
-            let summary = runtime
-                .balance()
-                .map_err(|error| ZingolibError::Read(format!("Wcash Testnet balance: {error}")))?;
+            let summary = runtime.balance().map_err(|error| {
+                ZingolibError::Read(format!("{} balance: {error}", WCASH_NETWORK_LABEL))
+            })?;
             serde_json::to_string(&summary)
                 .map_err(|error| ZingolibError::Read(format!("serialize Wcash balance: {error}")))
         })
@@ -1063,7 +1097,7 @@ fn receivers(cx: FunctionContext) -> JsResult<JsPromise> {
                 .as_ref()
                 .ok_or_else(|| ZingolibError::Read("Wcash wallet is not open".to_owned()))?;
             let addresses = runtime.receive().map_err(|error| {
-                ZingolibError::Read(format!("Wcash Testnet receivers: {error}"))
+                ZingolibError::Read(format!("{} receivers: {error}", WCASH_NETWORK_LABEL))
             })?;
             serde_json::to_string(&addresses)
                 .map_err(|error| ZingolibError::Read(format!("serialize Wcash receivers: {error}")))
@@ -1077,11 +1111,11 @@ fn validate_recipient(mut cx: FunctionContext) -> JsResult<JsString> {
     }
     let address = cx.argument::<JsString>(0)?.value(&mut cx);
     let result = if !address.is_empty() && address.len() <= MAX_RECIPIENT_ADDRESS_BYTES {
-        match decode_recipient(&address, WalletNetwork::Testnet) {
+        match decode_recipient(&address, WCASH_NETWORK) {
             Ok(_) => serde_json::json!({
                 "schema_version": TRANSACTION_SCHEMA_VERSION,
                 "valid": true,
-                "network": "Wcash Testnet",
+                "network": WCASH_NETWORK_LABEL,
                 "recipient_kind": "ironwood",
                 "canonical_address": address,
                 "error": null,
@@ -1089,7 +1123,7 @@ fn validate_recipient(mut cx: FunctionContext) -> JsResult<JsString> {
             Err(error) => serde_json::json!({
                 "schema_version": TRANSACTION_SCHEMA_VERSION,
                 "valid": false,
-                "network": "Wcash Testnet",
+                "network": WCASH_NETWORK_LABEL,
                 "recipient_kind": null,
                 "canonical_address": null,
                 "error": {
@@ -1102,7 +1136,7 @@ fn validate_recipient(mut cx: FunctionContext) -> JsResult<JsString> {
         serde_json::json!({
             "schema_version": TRANSACTION_SCHEMA_VERSION,
             "valid": false,
-            "network": "Wcash Testnet",
+            "network": WCASH_NETWORK_LABEL,
             "recipient_kind": null,
             "canonical_address": null,
             "error": {
@@ -1144,7 +1178,7 @@ fn send_and_broadcast(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
             let signed = match RT.block_on(runtime.send(&master_seed, payments)) {
                 Ok(signed) => signed,
-                Err(WcashTestnetRuntimeError::Wallet(
+                Err(WcashRuntimeError::Wallet(
                     WalletServiceError::PersistedTransactionsRequireReview { txids, .. },
                 )) => {
                     return persisted_transactions_review_result_json(
@@ -1153,14 +1187,18 @@ fn send_and_broadcast(mut cx: FunctionContext) -> JsResult<JsPromise> {
                         exact_tip_height,
                     );
                 }
-                Err(WcashTestnetRuntimeError::Wallet(
-                    WalletServiceError::ActivePendingTransaction { txid, .. },
-                )) => {
+                Err(WcashRuntimeError::Wallet(WalletServiceError::ActivePendingTransaction {
+                    txid,
+                    ..
+                })) => {
                     let recovery_tip_height = attest_backend_active_transaction(runtime, &txid)?;
                     return active_pending_review_result_json("send", &txid, recovery_tip_height);
                 }
                 Err(error) => {
-                    return Err(ZingolibError::Init(format!("Wcash Testnet send: {error}")));
+                    return Err(ZingolibError::Init(format!(
+                        "{} send: {error}",
+                        WCASH_NETWORK_LABEL
+                    )));
                 }
             };
             let broadcast = RT.block_on(runtime.broadcast(&signed));
@@ -1204,7 +1242,7 @@ fn shield_coinbase_and_broadcast(mut cx: FunctionContext) -> JsResult<JsPromise>
 
             let signed = match RT.block_on(runtime.shield_coinbase(&master_seed)) {
                 Ok(signed) => signed,
-                Err(WcashTestnetRuntimeError::Wallet(
+                Err(WcashRuntimeError::Wallet(
                     WalletServiceError::PersistedTransactionsRequireReview { txids, .. },
                 )) => {
                     return persisted_transactions_review_result_json(
@@ -1213,9 +1251,10 @@ fn shield_coinbase_and_broadcast(mut cx: FunctionContext) -> JsResult<JsPromise>
                         exact_tip_height,
                     );
                 }
-                Err(WcashTestnetRuntimeError::Wallet(
-                    WalletServiceError::ActivePendingTransaction { txid, .. },
-                )) => {
+                Err(WcashRuntimeError::Wallet(WalletServiceError::ActivePendingTransaction {
+                    txid,
+                    ..
+                })) => {
                     let recovery_tip_height = attest_backend_active_transaction(runtime, &txid)?;
                     return active_pending_review_result_json(
                         "shield_coinbase",
@@ -1225,7 +1264,8 @@ fn shield_coinbase_and_broadcast(mut cx: FunctionContext) -> JsResult<JsPromise>
                 }
                 Err(error) => {
                     return Err(ZingolibError::Init(format!(
-                        "Wcash Testnet coinbase shielding: {error}"
+                        "{} coinbase shielding: {error}",
+                        WCASH_NETWORK_LABEL
                     )));
                 }
             };
@@ -1332,7 +1372,18 @@ mod tests {
     use super::*;
     use wcash_wallet::{BroadcastDisposition, TransactionStatus};
 
-    const TEST_IRONWOOD_RECIPIENT: &str = "wutest18rmpm4xcm2d54xg5mg00lac9pg4txaladyp6pacqhm355n5scpn5gja6hy43uqassvr63g6xuephu8r0qju92778lg4v5nkxfu7j3la6";
+    #[cfg(feature = "wcash-testnet")]
+    const PROFILE_IRONWOOD_RECIPIENT: &str = "wutest18rmpm4xcm2d54xg5mg00lac9pg4txaladyp6pacqhm355n5scpn5gja6hy43uqassvr63g6xuephu8r0qju92778lg4v5nkxfu7j3la6";
+    #[cfg(feature = "wcash-regtest")]
+    const PROFILE_IRONWOOD_RECIPIENT: &str = "wuregtest12gdmq9xlu6er8vxzvfk27kmvrpn3h7jvw5euywhkf0wusdn85qgwm0evx5cj63yc8pe8cyy3rajjl2chwlgm94ecs7jtkdlaz5a67rd6";
+    #[cfg(feature = "wcash-testnet")]
+    const PROFILE_TRANSPARENT_RECEIVER: &str = "WTMMWgVvepdG58zdNjePbtyoh4aSwb4kP3E";
+    #[cfg(feature = "wcash-regtest")]
+    const PROFILE_TRANSPARENT_RECEIVER: &str = "WRSJjaJAZ75QkqbJoa244F21QmkPHEqhYu8";
+    #[cfg(feature = "wcash-testnet")]
+    const WRONG_NETWORK: WalletNetwork = WalletNetwork::Regtest;
+    #[cfg(feature = "wcash-regtest")]
+    const WRONG_NETWORK: WalletNetwork = WalletNetwork::Testnet;
 
     fn send_request(payments: Value) -> String {
         serde_json::json!({ "payments": payments }).to_string()
@@ -1396,7 +1447,7 @@ mod tests {
             path,
             temporary
                 .path()
-                .join(WcashTestnet.storage_namespace())
+                .join(WcashProfile.storage_namespace())
                 .join(WCASH_WALLET_DATABASE)
         );
     }
@@ -1413,15 +1464,12 @@ mod tests {
 
         assert_eq!(seed.expose_secret().len(), 64);
         assert_eq!(WCASH_SEED_SCHEME, "bip39-english-24-empty-passphrase-v1");
-        assert_eq!(
-            ironwood,
-            "wutest18rmpm4xcm2d54xg5mg00lac9pg4txaladyp6pacqhm355n5scpn5gja6hy43uqassvr63g6xuephu8r0qju92778lg4v5nkxfu7j3la6"
-        );
-        assert_eq!(transparent, "WTMMWgVvepdG58zdNjePbtyoh4aSwb4kP3E");
+        assert_eq!(ironwood, PROFILE_IRONWOOD_RECIPIENT);
+        assert_eq!(transparent, PROFILE_TRANSPARENT_RECEIVER);
     }
 
     #[test]
-    fn mnemonic_identity_comparison_requires_both_fixed_testnet_receivers() {
+    fn mnemonic_identity_comparison_requires_both_fixed_profile_receivers() {
         const ZERO_ENTROPY_PHRASE: &str =
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";
         let mnemonic = parse_mnemonic(ZERO_ENTROPY_PHRASE).unwrap();
@@ -1489,16 +1537,16 @@ mod tests {
     }
 
     #[test]
-    fn strict_send_request_accepts_only_wcash_testnet_ironwood_payments() {
+    fn strict_send_request_accepts_only_selected_wcash_profile_payments() {
         let request = send_request(serde_json::json!([{
-            "address": TEST_IRONWOOD_RECIPIENT,
+            "address": PROFILE_IRONWOOD_RECIPIENT,
             "amount": "1.25",
             "memo": "private memo",
         }]));
         let payments = parse_send_request(&request).unwrap();
 
         assert_eq!(payments.len(), 1);
-        assert_eq!(payments[0].address, TEST_IRONWOOD_RECIPIENT);
+        assert_eq!(payments[0].address, PROFILE_IRONWOOD_RECIPIENT);
         assert_eq!(payments[0].amount_zat, 125_000_000);
         assert_eq!(payments[0].memo, b"private memo");
 
@@ -1519,12 +1567,11 @@ mod tests {
         )
         .unwrap();
         let master_seed = mnemonic_master_seed(&mnemonic);
-        let wrong_network_ufvk =
-            derive_wallet_spending_key(&master_seed, WalletNetwork::Regtest, 0)
-                .unwrap()
-                .to_unified_full_viewing_key();
+        let wrong_network_ufvk = derive_wallet_spending_key(&master_seed, WRONG_NETWORK, 0)
+            .unwrap()
+            .to_unified_full_viewing_key();
         let wrong_network_address =
-            encode_orchard_receiver(&wrong_network_ufvk, WalletNetwork::Regtest).unwrap();
+            encode_orchard_receiver(&wrong_network_ufvk, WRONG_NETWORK).unwrap();
         let wrong_network = send_request(serde_json::json!([{
             "address": wrong_network_address,
             "amount": "1",
@@ -1542,19 +1589,19 @@ mod tests {
             serde_json::json!({ "payments": "not-an-array" }).to_string(),
             send_request(serde_json::json!([null])),
             send_request(serde_json::json!([{
-                "address": TEST_IRONWOOD_RECIPIENT,
+                "address": PROFILE_IRONWOOD_RECIPIENT,
             }])),
             send_request(serde_json::json!([{
-                "address": TEST_IRONWOOD_RECIPIENT,
+                "address": PROFILE_IRONWOOD_RECIPIENT,
                 "amount": 1,
             }])),
             send_request(serde_json::json!([{
-                "address": TEST_IRONWOOD_RECIPIENT,
+                "address": PROFILE_IRONWOOD_RECIPIENT,
                 "amount": "1",
                 "memo": 7,
             }])),
             send_request(serde_json::json!([{
-                "address": TEST_IRONWOOD_RECIPIENT,
+                "address": PROFILE_IRONWOOD_RECIPIENT,
                 "amount": "1",
                 "extra": true,
             }])),
@@ -1570,7 +1617,7 @@ mod tests {
     fn strict_send_request_enforces_count_total_and_utf8_memo_byte_limits() {
         let one_payment = || {
             serde_json::json!({
-                "address": TEST_IRONWOOD_RECIPIENT,
+                "address": PROFILE_IRONWOOD_RECIPIENT,
                 "amount": "0.00000001",
             })
         };
@@ -1589,20 +1636,20 @@ mod tests {
         .is_ok());
 
         let over_supply = send_request(serde_json::json!([
-            { "address": TEST_IRONWOOD_RECIPIENT, "amount": "21000000" },
-            { "address": TEST_IRONWOOD_RECIPIENT, "amount": "0.00000001" },
+            { "address": PROFILE_IRONWOOD_RECIPIENT, "amount": "21000000" },
+            { "address": PROFILE_IRONWOOD_RECIPIENT, "amount": "0.00000001" },
         ]));
         assert!(parse_send_request(&over_supply).is_err());
 
         let exactly_512_utf8_bytes = "é".repeat(256);
         let too_many_utf8_bytes = "é".repeat(257);
         let accepted = send_request(serde_json::json!([{
-            "address": TEST_IRONWOOD_RECIPIENT,
+            "address": PROFILE_IRONWOOD_RECIPIENT,
             "amount": "1",
             "memo": exactly_512_utf8_bytes,
         }]));
         let rejected = send_request(serde_json::json!([{
-            "address": TEST_IRONWOOD_RECIPIENT,
+            "address": PROFILE_IRONWOOD_RECIPIENT,
             "amount": "1",
             "memo": too_many_utf8_bytes,
         }]));
@@ -1737,12 +1784,10 @@ mod tests {
             "send",
             &signed,
             100,
-            Err(WcashTestnetRuntimeError::Rpc(
-                WalletRpcError::AmbiguousBroadcast {
-                    txid: signed.txid.clone(),
-                    reason: "network acknowledgement lost".to_owned(),
-                },
-            )),
+            Err(WcashRuntimeError::Rpc(WalletRpcError::AmbiguousBroadcast {
+                txid: signed.txid.clone(),
+                reason: "network acknowledgement lost".to_owned(),
+            })),
         );
         let parsed: Value = serde_json::from_str(&output).unwrap();
 
@@ -1805,7 +1850,7 @@ mod tests {
             "send",
             &signed,
             100,
-            Err(WcashTestnetRuntimeError::Rpc(WalletRpcError::Rejected {
+            Err(WcashRuntimeError::Rpc(WalletRpcError::Rejected {
                 code: -26,
                 message: "consensus-invalid".to_owned(),
             })),
@@ -1855,7 +1900,7 @@ mod tests {
             "send",
             &signed,
             99,
-            Err(WcashTestnetRuntimeError::SignedTransactionMetadataMismatch),
+            Err(WcashRuntimeError::SignedTransactionMetadataMismatch),
         );
         let parsed: Value = serde_json::from_str(&output).unwrap();
 
@@ -1880,7 +1925,7 @@ mod tests {
 
         assert_eq!(parsed["outcome"], "recovery_required");
         assert_eq!(parsed["txid"], first);
-        assert_eq!(parsed["branch_id"], WalletNetwork::Testnet.branch_id_hex());
+        assert_eq!(parsed["branch_id"], WCASH_NETWORK.branch_id_hex());
         assert_eq!(parsed["expiry_height"], Value::Null);
         assert_eq!(parsed["exact_tip_height"], 200);
         assert_eq!(parsed["recovery"]["code"], REVIEW_REQUIRED_CODE);

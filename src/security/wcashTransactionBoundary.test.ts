@@ -17,6 +17,7 @@ const {
   INVALID_RECIPIENT_MESSAGE,
   visibleText,
 } = require("../../public/wcashTransactionBoundary");
+const { LOCAL_REGTEST_RUNTIME_PROFILE } = require("../../public/wcashRuntimeProfile");
 
 const TXID = "a".repeat(64);
 const ADDRESS = `wutest1${"q".repeat(80)}`;
@@ -44,6 +45,24 @@ const broadcastEnvelope = (overrides = {}) => ({
 });
 
 describe("Wcash transaction main-process boundary", () => {
+  it("validates the local Regtest network and branch without accepting them on Testnet", () => {
+    const address = `wuregtest1${"q".repeat(80)}`;
+    const validation = {
+      schema_version: 1,
+      valid: true,
+      network: "Wcash Regtest",
+      recipient_kind: "ironwood",
+      canonical_address: address,
+      error: null,
+    };
+    expect(parseNativeRecipientValidation(validation, LOCAL_REGTEST_RUNTIME_PROFILE)).toEqual(validation);
+    expect(() => parseNativeRecipientValidation(validation)).toThrow();
+
+    const localEnvelope = broadcastEnvelope({ branch_id: "c3a6678a" });
+    expect(parseNativeOperationEnvelope(localEnvelope, "send", LOCAL_REGTEST_RUNTIME_PROFILE)).toEqual(localEnvelope);
+    expect(() => parseNativeOperationEnvelope(localEnvelope, "send")).toThrow("wrong branch");
+  });
+
   it.each([
     ["0.00000001", "1"],
     ["1", "100000000"],
@@ -75,6 +94,7 @@ describe("Wcash transaction main-process boundary", () => {
   });
 
   it("accepts exactly one immutable payment and counts UTF-8 memo bytes", () => {
+    // eslint-disable-next-line testing-library/render-result-naming-convention -- This parses an IPC request, not a Testing Library render result.
     const parsed = parseRendererSendRequest({ payments: [{ address: ADDRESS, amount: "1.25", memo: "💚" }] });
 
     expect(parsed).toEqual({
@@ -410,6 +430,7 @@ describe("Wcash transaction main-process boundary", () => {
 
   it("makes control and bidi characters visible in system confirmation text", () => {
     expect(visibleText("safe\u202Etxt\n\u0000")).toBe("safe\\u{202E}txt\\u{A}\\u{0}");
+    // eslint-disable-next-line testing-library/render-result-naming-convention -- This parses an IPC request, not a Testing Library render result.
     const request = parseRendererSendRequest({
       payments: [{ address: ADDRESS, amount: "1.25", memo: "safe\u202Etxt" }],
     });

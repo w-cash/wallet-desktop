@@ -8,20 +8,48 @@ const { createWcashWindowDrainState } = require("./wcashWindowDrainState");
 const { verifyWcashDeviceOwner } = require("./wcashDeviceAuth");
 const { LIFECYCLE_STATES, createWcashWalletLifecycle } = require("./wcashWalletLifecycle");
 const { createWcashTransactionController } = require("./wcashTransactionBoundary");
+const {
+  TESTNET_RUNTIME_PROFILE,
+  publicRuntimeConfig,
+  resolveWcashUserDataPath,
+  selectWcashRuntimeProfile,
+} = require("./wcashRuntimeProfile");
 
-const WCASH_RUNTIME = require("../config/wcash-runtime.json");
+const WCASH_PACKAGED_RUNTIME = require("../config/wcash-runtime.json");
+const WCASH_LOCALNET_REQUESTED = process.env.WCASH_LOCALNET_DEV === "1";
+const WCASH_RUNTIME = selectWcashRuntimeProfile({
+  isPackaged: app.isPackaged,
+  localnetRequested: WCASH_LOCALNET_REQUESTED,
+});
+if (
+  WCASH_PACKAGED_RUNTIME.appId !== TESTNET_RUNTIME_PROFILE.appId ||
+  WCASH_PACKAGED_RUNTIME.productName !== TESTNET_RUNTIME_PROFILE.productName ||
+  WCASH_PACKAGED_RUNTIME.network !== TESTNET_RUNTIME_PROFILE.network ||
+  WCASH_PACKAGED_RUNTIME.ticker !== TESTNET_RUNTIME_PROFILE.ticker ||
+  WCASH_PACKAGED_RUNTIME.runtimeReady !== TESTNET_RUNTIME_PROFILE.runtimeReady ||
+  WCASH_PACKAGED_RUNTIME.coreRevision !== TESTNET_RUNTIME_PROFILE.coreRevision
+) {
+  throw new Error("Packaged Wcash runtime metadata diverged from the fixed Testnet profile");
+}
+const WCASH_PUBLIC_RUNTIME = publicRuntimeConfig(WCASH_RUNTIME);
 const WCASH_RUNTIME_READY = WCASH_RUNTIME.runtimeReady;
 // The Wcash core has its own narrow bridge below. This legacy flag must remain
 // false even after WCASH_RUNTIME_READY becomes true.
 const LEGACY_ZCASH_RUNTIME_ENABLED = false;
 const WCASH_APP_ID = WCASH_RUNTIME.appId;
 const WCASH_PRODUCT_NAME = WCASH_RUNTIME.productName;
-const WCASH_USER_DATA_NAMESPACE = WCASH_PRODUCT_NAME;
 
 // Keep this pre-core product completely separate from Zingo/Zcash data. This
 // must run before settings or electron-json-storage are initialized.
 app.setName(WCASH_PRODUCT_NAME);
-app.setPath("userData", path.join(app.getPath("appData"), WCASH_USER_DATA_NAMESPACE));
+app.setPath(
+  "userData",
+  resolveWcashUserDataPath({
+    profile: WCASH_RUNTIME,
+    appDataPath: app.getPath("appData"),
+    localnetDataDir: WCASH_RUNTIME.localnet ? process.env.WCASH_LOCALNET_DATA_DIR : undefined,
+  }),
+);
 if (process.platform === "win32") app.setAppUserModelId(WCASH_APP_ID);
 
 const settings = require("electron-settings");
@@ -561,8 +589,8 @@ ipcMain.handle("auth:verify", async () => ({ success: false, reason: "legacy-run
 // Only an explicit "false" stored by the user disables the feature.
 const KEYTAR_SERVICE = WCASH_PRODUCT_NAME;
 const KEYTAR_ACCOUNT = "requireDeviceAuth";
-const WCASH_SEED_KEYTAR_SERVICE = `${WCASH_APP_ID}.wallet-seed.v1`;
-const WCASH_SEED_KEYTAR_ACCOUNT = "wcash-testnet-primary";
+const WCASH_SEED_KEYTAR_SERVICE = WCASH_RUNTIME.keytarService;
+const WCASH_SEED_KEYTAR_ACCOUNT = WCASH_RUNTIME.keytarAccount;
 
 // In-process cache of the value so we only hit Keychain ONCE per session.
 // Repeated accesses (loadSettings is called several times across pages) used
@@ -834,6 +862,7 @@ function getWcashWalletLifecycle() {
       native,
       service: WCASH_SEED_KEYTAR_SERVICE,
       account: WCASH_SEED_KEYTAR_ACCOUNT,
+      profile: WCASH_RUNTIME,
       // Signing, backup reveal/acknowledgement, and crash-resume credential
       // reads invoke this fail-closed platform challenge. Read-only wallet use
       // never receives the credential outside the main process.
@@ -852,7 +881,16 @@ const wcashIpcBoundary = createWcashIpcBoundary({
 });
 const handleWcash = (channel, operation, options) => wcashIpcBoundary.register(ipcMain, channel, operation, options);
 
+// Preload receives only this public, immutable identity. Profile selection,
+// endpoint selection, wallet paths, and credential namespaces remain owned by
+// the main process and cannot be supplied by renderer arguments.
+ipcMain.on("wcash:runtime-config", (event) => {
+  event.returnValue =
+    wcashTrustedWebContents !== null && event.sender === wcashTrustedWebContents ? WCASH_PUBLIC_RUNTIME : null;
+});
+
 const wcashTransactionController = createWcashTransactionController({
+  profile: WCASH_RUNTIME,
   validateRecipientNative: (address) => {
     const native = requireWcashNative("wcash_validate_recipient");
     return native.wcash_validate_recipient(address);
@@ -1834,6 +1872,13 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
     },
   });
+  // Keep the compile-time profile visible even if the renderer fails before
+  // React mounts or attempts to replace the native window title.
+  mainWindow.webContents.on("page-title-updated", (event) => {
+    event.preventDefault();
+    if (!mainWindow.isDestroyed()) mainWindow.setTitle(WCASH_PRODUCT_NAME);
+  });
+  mainWindow.setTitle(WCASH_PRODUCT_NAME);
   wcashTrustedWebContents = mainWindow.webContents;
   mainWindow.webContents.once("destroyed", () => {
     if (wcashTrustedWebContents === mainWindow.webContents) {

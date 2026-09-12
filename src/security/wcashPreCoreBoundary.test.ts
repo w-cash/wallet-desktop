@@ -18,13 +18,13 @@ describe("Wcash pinned-runtime product boundary", () => {
       productName: "Wcash Warden Testnet",
       runtimeReady: true,
       releaseReady: false,
-      coreRevision: "da048ab4dd0c29553e3db641f9092f3a0ff9b268",
+      coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
       network: "Wcash Testnet",
       ticker: "TWC",
     });
 
     const guardedScripts = Object.entries<string>(packageJson.scripts).filter(([name]) =>
-      /^(?:release:prep|build:runtime|build-(?:mac|win)|dist:)/.test(name),
+      /^(?:release:prep|build:runtime|build-(?:mac|win)(?!.*localnet)|dist:)/.test(name),
     );
     expect(guardedScripts.length).toBeGreaterThan(0);
     guardedScripts.forEach(([, command]) => expect(command).toMatch(/^node scripts\/assert-wcash-runtime-ready\.js/));

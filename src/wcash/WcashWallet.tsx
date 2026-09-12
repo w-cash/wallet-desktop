@@ -21,6 +21,7 @@ import {
   parseStatus,
   parseCanonicalTwcAmount,
   publicErrorMessage,
+  requireWcashProductConfig,
   require24WordRecoveryPhrase,
 } from "./api";
 import "./WcashWallet.css";
@@ -52,7 +53,7 @@ interface SendReview {
   readonly memoBytes: number;
 }
 
-const WcashHeader = () => (
+const WcashHeader = ({ network, ticker }: { network: string; ticker: string }) => (
   <header className="warden-header">
     <div className="warden-brand" aria-label="Wcash Warden">
       <span className="warden-mark" aria-hidden="true">
@@ -61,7 +62,7 @@ const WcashHeader = () => (
       <span>Wcash Warden</span>
     </div>
     <div className="warden-network">
-      <span aria-hidden="true" /> Wcash Testnet · TWC
+      <span aria-hidden="true" /> {network} · {ticker}
     </div>
   </header>
 );
@@ -88,6 +89,11 @@ const ErrorNotice = ({ message, onDismiss }: { message: string; onDismiss?: () =
 );
 
 const WcashWallet = () => {
+  const runtimeConfig = window.wcash?.config;
+  const networkLabel = runtimeConfig?.network ?? "Wcash";
+  const ticker = runtimeConfig?.ticker ?? "TWC";
+  const localRegtest = runtimeConfig?.profile === "local-regtest";
+  const recipientPlaceholder = localRegtest ? "wuregtest1…" : "wutest1…";
   const [screen, setScreen] = useState<Screen>("boot");
   const [wallet, setWallet] = useState<WcashWalletMetadata | null>(null);
   const [receivers, setReceivers] = useState<WcashReceivers | null>(null);
@@ -124,7 +130,7 @@ const WcashWallet = () => {
       let snapshotTip: number | null | undefined;
 
       for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
-        const page = parsePendingTransactions(await window.wcash.pendingTransactions(cursor));
+        const page = parsePendingTransactions(await window.wcash.pendingTransactions(cursor), window.wcash.config);
         if (snapshotTip === undefined) snapshotTip = page.exactTipHeight;
         if (snapshotTip !== page.exactTipHeight) {
           throw new Error("The Wcash tip changed while signed pending transactions were being read");
@@ -165,21 +171,20 @@ const WcashWallet = () => {
 
     try {
       const bridge = window.wcash;
-      if (
-        !bridge?.config.runtimeReady ||
-        bridge.config.network !== "Wcash Testnet" ||
-        bridge.config.ticker !== "TWC" ||
-        !bridge.config.coreRevision ||
-        !/^[0-9a-f]{40}$/.test(bridge.config.coreRevision)
-      ) {
+      if (!bridge) {
         setScreen("unavailable");
         return;
       }
+      const runtimeConfig = requireWcashProductConfig(bridge.config);
 
-      const status = parseStatus(await bridge.status());
+      const status = parseStatus(await bridge.status(), runtimeConfig);
       if (
-        (status.network !== undefined && status.network !== "Wcash Testnet") ||
-        (status.ticker !== undefined && status.ticker !== "TWC")
+        status.profile !== runtimeConfig.profile ||
+        status.network !== runtimeConfig.network ||
+        status.ticker !== runtimeConfig.ticker ||
+        status.endpoint !== runtimeConfig.endpoint ||
+        status.storageNamespace !== runtimeConfig.storageNamespace ||
+        status.branchId !== runtimeConfig.branchId
       ) {
         throw new Error("Wallet runtime reported an unexpected network identity");
       }
@@ -222,6 +227,10 @@ const WcashWallet = () => {
   }, []);
 
   useEffect(() => {
+    document.title = runtimeConfig?.productName ?? "Wcash Warden";
+  }, [runtimeConfig?.productName]);
+
+  useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
 
@@ -233,7 +242,7 @@ const WcashWallet = () => {
     setPendingLoadState("idle");
     setSyncNote("Checking wallet state…");
 
-    const addresses = parseReceivers(await window.wcash.receivers());
+    const addresses = parseReceivers(await window.wcash.receivers(), window.wcash.config);
     setWallet(metadata);
     setReceivers(addresses);
     setScreen("wallet");
@@ -299,7 +308,7 @@ const WcashWallet = () => {
     setError(null);
     setScreen("backupRequired");
     try {
-      const acknowledged = parseStatus(await window.wcash.acknowledgeBackup());
+      const acknowledged = parseStatus(await window.wcash.acknowledgeBackup(), window.wcash.config);
       if (acknowledged.state !== "database-and-secret-ready" || !isSameWallet(acknowledged.wallet, metadata)) {
         throw new Error("Wallet backup acknowledgement did not reach a durable ready state");
       }
@@ -402,7 +411,7 @@ const WcashWallet = () => {
     setSyncing(true);
     setBalance(null);
     setError(null);
-    setSyncNote("Synchronizing Wcash Testnet…");
+    setSyncNote(`Synchronizing ${networkLabel}…`);
     try {
       const result = parseBalance(await window.wcash.sync());
       if (!isExactTipBalance(result)) {
@@ -502,7 +511,7 @@ const WcashWallet = () => {
       syncing ||
       busy
     ) {
-      setError("Synchronize and verify signed pending transactions at the exact Wcash Testnet tip first.");
+      setError(`Synchronize and verify signed pending transactions at the exact ${networkLabel} tip first.`);
       return;
     }
 
@@ -510,13 +519,17 @@ const WcashWallet = () => {
     setError(null);
     setTransactionNote(null);
     try {
-      const request = createSendRequest(sendAddress, sendAmount, sendMemo);
-      const validation = parseRecipientValidation(await window.wcash.validateRecipient(request.payments[0].address));
+      const request = createSendRequest(sendAddress, sendAmount, sendMemo, window.wcash.config);
+      const validation = parseRecipientValidation(
+        await window.wcash.validateRecipient(request.payments[0].address),
+        window.wcash.config,
+      );
       if (!validation.valid) throw new Error(validation.error.message);
       const canonicalRequest = createSendRequest(
         validation.canonicalAddress,
         request.payments[0].amount,
         request.payments[0].memo ?? "",
+        window.wcash.config,
       );
       const { amountZat } = parseCanonicalTwcAmount(canonicalRequest.payments[0].amount);
       const spendable = sum(balance.accounts.map((account) => account.ironwoodSpendableZat));
@@ -554,7 +567,7 @@ const WcashWallet = () => {
     setBusy(true);
     setError(null);
     try {
-      const result = parseOperationResult(await window.wcash.send(reviewed.request), "send");
+      const result = parseOperationResult(await window.wcash.send(reviewed.request), "send", window.wcash.config);
       if (result.outcome === "cancelled") {
         setTransactionNote("Payment cancelled before signing. No transaction was created.");
         return;
@@ -597,7 +610,7 @@ const WcashWallet = () => {
     setBusy(true);
     setError(null);
     try {
-      const result = parseOperationResult(await window.wcash.shieldCoinbase(), "shield_coinbase");
+      const result = parseOperationResult(await window.wcash.shieldCoinbase(), "shield_coinbase", window.wcash.config);
       if (result.outcome === "cancelled") {
         setTransactionNote("Shielding cancelled before signing. No transaction was created.");
         return;
@@ -633,6 +646,7 @@ const WcashWallet = () => {
       const result = parseOperationResult(
         await window.wcash.rebroadcastPending(transaction.txid),
         "rebroadcast_pending",
+        window.wcash.config,
       );
       if (result.outcome === "cancelled") throw new Error("Pending transaction retry was unexpectedly cancelled.");
       retainOperationSafetyState(result);
@@ -685,10 +699,16 @@ const WcashWallet = () => {
 
   return (
     <main className="warden-shell">
-      <WcashHeader />
+      <WcashHeader network={networkLabel} ticker={ticker} />
       <section className="warden-main">
         <div className="warden-testnet-warning" role="note">
-          Testnet funds have no monetary value. This build connects only to Wcash Testnet.
+          {localRegtest ? (
+            <>
+              Local Regtest funds have no monetary value. Fixed endpoint: <code>{runtimeConfig?.endpoint}</code>.
+            </>
+          ) : (
+            <>Testnet funds have no monetary value. This build connects only to Wcash Testnet.</>
+          )}
         </div>
 
         {error ? <ErrorNotice message={error} onDismiss={() => setError(null)} /> : null}
@@ -732,7 +752,7 @@ const WcashWallet = () => {
               <article>
                 <span className="warden-step">02</span>
                 <h2>Restore a wallet</h2>
-                <p>Recover an existing Wcash Testnet wallet from its phrase and birthday.</p>
+                <p>Recover an existing {networkLabel} wallet from its phrase and birthday.</p>
                 <button
                   className="warden-button warden-button--secondary"
                   type="button"
@@ -783,7 +803,7 @@ const WcashWallet = () => {
               ← Back
             </button>
             <p className="warden-kicker">Wallet recovery</p>
-            <h1 id="restore-title">Restore Wcash Testnet wallet</h1>
+            <h1 id="restore-title">Restore {networkLabel} wallet</h1>
             <p className="warden-help">
               The birthday is the earliest block that may contain wallet activity. Use 1 if you are unsure; scanning
               will take longer.
@@ -870,8 +890,8 @@ const WcashWallet = () => {
             <p className="warden-kicker">Local wallet found</p>
             <h1>Open Wcash Warden</h1>
             <p>
-              Wcash wallet data is stored in the isolated Testnet profile. Device authentication may be requested by
-              your operating system.
+              Wcash wallet data is stored in the isolated {networkLabel} profile. Device authentication may be requested
+              by your operating system.
             </p>
             {wallet ? <p className="warden-meta">Birthday block {wallet.birthdayHeight.toLocaleString()}</p> : null}
             <button className="warden-button" type="button" disabled={busy} onClick={() => void openWallet()}>
@@ -901,7 +921,7 @@ const WcashWallet = () => {
           <section className="warden-wallet" aria-labelledby="wallet-title">
             <div className="warden-wallet-title">
               <div>
-                <p className="warden-kicker">Wcash Testnet wallet</p>
+                <p className="warden-kicker">{networkLabel} wallet</p>
                 <h1 id="wallet-title">Overview</h1>
               </div>
               {syncing ? (
@@ -966,7 +986,7 @@ const WcashWallet = () => {
                 <span>Ironwood only</span>
               </div>
               <form className="warden-send-form" onSubmit={(event) => void reviewSend(event)}>
-                <label htmlFor="send-address">Wcash Testnet recipient</label>
+                <label htmlFor="send-address">{networkLabel} recipient</label>
                 <input
                   id="send-address"
                   type="text"
@@ -977,7 +997,7 @@ const WcashWallet = () => {
                   autoCapitalize="none"
                   spellCheck={false}
                   disabled={transactionsBusy}
-                  placeholder="wutest1…"
+                  placeholder={recipientPlaceholder}
                 />
                 <div className="warden-send-row">
                   <label>
@@ -1031,7 +1051,7 @@ const WcashWallet = () => {
 
               {sendReview ? (
                 <div className="warden-review" role="dialog" aria-modal="true" aria-labelledby="payment-review-title">
-                  <p className="warden-kicker">Wcash Testnet · final app review</p>
+                  <p className="warden-kicker">{networkLabel} · final app review</p>
                   <h3 id="payment-review-title">Check every payment detail</h3>
                   <dl>
                     <div>
@@ -1104,11 +1124,11 @@ const WcashWallet = () => {
               </button>
               {shieldReview ? (
                 <div className="warden-review" role="dialog" aria-modal="true" aria-labelledby="shield-review-title">
-                  <p className="warden-kicker">Wcash Testnet · mining privacy</p>
+                  <p className="warden-kicker">{networkLabel} · mining privacy</p>
                   <h3 id="shield-review-title">Shield up to {formatTwc(totals?.coinbaseSpendable ?? 0n)} TWC</h3>
                   <p>
                     Destination: this wallet&apos;s own private Ironwood receiver. The exact selected amount and ZIP-317
-                    fee are calculated during signing. This creates and broadcasts a real Testnet transaction.
+                    fee are calculated during signing. This creates and broadcasts a real {networkLabel} transaction.
                   </p>
                   <div className="warden-review-actions">
                     <button

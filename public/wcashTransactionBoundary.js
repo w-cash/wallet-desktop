@@ -1,8 +1,10 @@
 "use strict";
 
-const WCASH_NETWORK = "Wcash Testnet";
-const WCASH_TICKER = "TWC";
-const WCASH_BRANCH_ID = "b3cfd27e";
+const { TESTNET_RUNTIME_PROFILE, requireKnownRuntimeProfile } = require("./wcashRuntimeProfile");
+
+const WCASH_NETWORK = TESTNET_RUNTIME_PROFILE.network;
+const WCASH_TICKER = TESTNET_RUNTIME_PROFILE.ticker;
+const WCASH_BRANCH_ID = TESTNET_RUNTIME_PROFILE.branchId;
 const ZATOSHIS_PER_COIN = 100_000_000n;
 const MAX_MONEY_ZAT = 21_000_000n * ZATOSHIS_PER_COIN;
 const MAX_MEMO_BYTES = 512;
@@ -54,7 +56,8 @@ function parseCanonicalAmount(value) {
   return Object.freeze({ amount: value, amountZat: zatoshis.toString() });
 }
 
-function parseRendererSendRequest(value) {
+function parseRendererSendRequest(value, profile = TESTNET_RUNTIME_PROFILE) {
+  const runtimeProfile = requireKnownRuntimeProfile(profile);
   if (!hasExactKeys(value, ["payments"]) || !Array.isArray(value.payments) || value.payments.length !== 1) {
     throw new WcashTransactionBoundaryError("INVALID_REQUEST", "Send requires exactly one reviewed payment");
   }
@@ -73,7 +76,10 @@ function parseRendererSendRequest(value) {
     payment.address.length > 512 ||
     payment.address !== payment.address.trim()
   ) {
-    throw new WcashTransactionBoundaryError("INVALID_RECIPIENT", "Enter a canonical Wcash Testnet recipient");
+    throw new WcashTransactionBoundaryError(
+      "INVALID_RECIPIENT",
+      `Enter a canonical ${runtimeProfile.network} recipient`,
+    );
   }
 
   const amount = parseCanonicalAmount(payment.amount);
@@ -118,13 +124,14 @@ function parseJsonObject(method, value) {
   return parsed;
 }
 
-function parseNativeRecipientValidation(value) {
+function parseNativeRecipientValidation(value, profile = TESTNET_RUNTIME_PROFILE) {
+  const runtimeProfile = requireKnownRuntimeProfile(profile);
   const operation = "Recipient validation";
   const record = parseJsonObject(operation, value);
   if (!hasExactKeys(record, ["schema_version", "valid", "network", "recipient_kind", "canonical_address", "error"])) {
     throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
   }
-  if (record.schema_version !== 1 || record.network !== WCASH_NETWORK || typeof record.valid !== "boolean") {
+  if (record.schema_version !== 1 || record.network !== runtimeProfile.network || typeof record.valid !== "boolean") {
     throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
   }
 
@@ -154,10 +161,15 @@ function parseNativeRecipientValidation(value) {
   return Object.freeze({
     schema_version: 1,
     valid: record.valid,
-    network: WCASH_NETWORK,
+    network: runtimeProfile.network,
     recipient_kind: record.valid ? "ironwood" : null,
     canonical_address: record.valid ? record.canonical_address : null,
-    error: record.valid ? null : Object.freeze({ code: "invalid_recipient", message: INVALID_RECIPIENT_MESSAGE }),
+    error: record.valid
+      ? null
+      : Object.freeze({
+          code: "invalid_recipient",
+          message: `This is not a valid ${runtimeProfile.network} Ironwood recipient.`,
+        }),
   });
 }
 
@@ -219,7 +231,8 @@ function parseRecoveryTxids(value, expectedTxid, allowMultiple, operation) {
   return Object.freeze(txids);
 }
 
-function parseNativeOperationEnvelope(value, expectedOperation) {
+function parseNativeOperationEnvelope(value, expectedOperation, profile = TESTNET_RUNTIME_PROFILE) {
+  const runtimeProfile = requireKnownRuntimeProfile(profile);
   const operation = "Transaction operation";
   const record = parseJsonObject(operation, value);
   if (
@@ -245,7 +258,7 @@ function parseNativeOperationEnvelope(value, expectedOperation) {
     throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
   }
   const txid = requireTxid(record.txid, operation);
-  if (record.branch_id !== WCASH_BRANCH_ID) {
+  if (record.branch_id !== runtimeProfile.branchId) {
     throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned the wrong branch identity`);
   }
   const exactTipHeight = requireU32(record.exact_tip_height, operation);
@@ -369,7 +382,7 @@ function parseNativeOperationEnvelope(value, expectedOperation) {
     operation: expectedOperation,
     outcome: record.outcome,
     txid,
-    branch_id: WCASH_BRANCH_ID,
+    branch_id: runtimeProfile.branchId,
     expiry_height: expiryHeight,
     target_height: targetHeight,
     fee_zat: feeZat,
@@ -381,7 +394,8 @@ function parseNativeOperationEnvelope(value, expectedOperation) {
   });
 }
 
-function parseNativePendingTransactions(value) {
+function parseNativePendingTransactions(value, profile = TESTNET_RUNTIME_PROFILE) {
+  const runtimeProfile = requireKnownRuntimeProfile(profile);
   const operation = "Pending transactions";
   const record = parseJsonObject(operation, value);
   if (
@@ -412,7 +426,7 @@ function parseNativePendingTransactions(value) {
         "rebroadcast_allowed",
         "blocks_new_signing",
       ]) ||
-      transaction.branch_id !== WCASH_BRANCH_ID
+      transaction.branch_id !== runtimeProfile.branchId
     ) {
       throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
     }
@@ -439,7 +453,7 @@ function parseNativePendingTransactions(value) {
     seenTxids.add(txid);
     return Object.freeze({
       txid,
-      branch_id: WCASH_BRANCH_ID,
+      branch_id: runtimeProfile.branchId,
       expiry_height: expiryHeight,
       lifecycle: expectedLifecycle,
       rebroadcast_allowed: expectedRebroadcastAllowed,
@@ -484,20 +498,21 @@ function visibleText(value) {
   );
 }
 
-function buildSendConfirmation(request, canonicalAddress) {
+function buildSendConfirmation(request, canonicalAddress, profile = TESTNET_RUNTIME_PROFILE) {
+  const runtimeProfile = requireKnownRuntimeProfile(profile);
   const payment = request.payments[0];
   const memoDisplay = request.memo.length === 0 ? "(none)" : visibleText(request.memo);
   return Object.freeze({
     type: "warning",
-    title: `Confirm ${WCASH_NETWORK} payment`,
-    message: `Send ${payment.amount} ${WCASH_TICKER} on ${WCASH_NETWORK}?`,
+    title: `Confirm ${runtimeProfile.network} payment`,
+    message: `Send ${payment.amount} ${runtimeProfile.ticker} on ${runtimeProfile.network}?`,
     detail: [
       `Recipient:\n${canonicalAddress}`,
-      `Amount: ${payment.amount} ${WCASH_TICKER}`,
+      `Amount: ${payment.amount} ${runtimeProfile.ticker}`,
       `Amount in zatoshis: ${request.amountZat}`,
       `Memo (${request.memoBytes} UTF-8 bytes):\n${memoDisplay}`,
       "The exact ZIP-317 network fee will be calculated during signing and added to this payment.",
-      "This action signs and broadcasts a real Wcash Testnet transaction.",
+      `This action signs and broadcasts a real ${runtimeProfile.network} transaction.`,
     ].join("\n\n"),
     buttons: ["Sign and broadcast", "Cancel"],
     defaultId: 1,
@@ -506,17 +521,18 @@ function buildSendConfirmation(request, canonicalAddress) {
   });
 }
 
-function buildShieldConfirmation() {
+function buildShieldConfirmation(profile = TESTNET_RUNTIME_PROFILE) {
+  const runtimeProfile = requireKnownRuntimeProfile(profile);
   return Object.freeze({
     type: "warning",
-    title: `Confirm ${WCASH_NETWORK} shielding`,
-    message: `Shield mature mining rewards on ${WCASH_NETWORK}?`,
+    title: `Confirm ${runtimeProfile.network} shielding`,
+    message: `Shield mature mining rewards on ${runtimeProfile.network}?`,
     detail: [
       "Destination: this wallet's own private Ironwood receiver.",
       "Up to 100 mature transparent coinbase inputs will be selected.",
       "Maximum value authorized by this confirmation: 21,000,000 TWC.",
       "The exact ZIP-317 network fee will be calculated during signing and deducted from the shielded value.",
-      "This action signs and broadcasts a real Wcash Testnet transaction.",
+      `This action signs and broadcasts a real ${runtimeProfile.network} transaction.`,
     ].join("\n\n"),
     buttons: ["Shield and broadcast", "Cancel"],
     defaultId: 1,
@@ -542,6 +558,7 @@ function requireFunction(owner, method) {
 }
 
 function createWcashTransactionController(dependencies) {
+  const runtimeProfile = requireKnownRuntimeProfile(dependencies.profile ?? TESTNET_RUNTIME_PROFILE);
   [
     "validateRecipientNative",
     "sendAndBroadcast",
@@ -573,7 +590,10 @@ function createWcashTransactionController(dependencies) {
 
   async function validateRecipient(address) {
     if (typeof address !== "string" || address.length < 16 || address.length > 512 || address !== address.trim()) {
-      throw new WcashTransactionBoundaryError("INVALID_RECIPIENT", "Enter a canonical Wcash Testnet recipient");
+      throw new WcashTransactionBoundaryError(
+        "INVALID_RECIPIENT",
+        `Enter a canonical ${runtimeProfile.network} recipient`,
+      );
     }
     return parseNativeRecipientValidation(
       await invokeDependency(
@@ -581,11 +601,12 @@ function createWcashTransactionController(dependencies) {
         "RECIPIENT_VALIDATION_UNAVAILABLE",
         "Wcash recipient validation is temporarily unavailable.",
       ),
+      runtimeProfile,
     );
   }
 
   async function send(value) {
-    const request = parseRendererSendRequest(value);
+    const request = parseRendererSendRequest(value, runtimeProfile);
     const validation = await validateRecipient(request.payments[0].address);
     if (!validation.valid) {
       throw new WcashTransactionBoundaryError("INVALID_RECIPIENT", validation.error.message);
@@ -596,7 +617,9 @@ function createWcashTransactionController(dependencies) {
       ...(request.memo.length === 0 ? {} : { memo: request.memo }),
     });
     const nativeRequest = Object.freeze({ payments: Object.freeze([payment]) });
-    const confirmed = await dependencies.confirmSend(buildSendConfirmation(request, validation.canonical_address));
+    const confirmed = await dependencies.confirmSend(
+      buildSendConfirmation(request, validation.canonical_address, runtimeProfile),
+    );
     if (confirmed !== true) return cancelledOperation("send");
 
     const invocation = await invokeSigningDependency(
@@ -604,18 +627,22 @@ function createWcashTransactionController(dependencies) {
       "send",
       "Wcash transaction status is unknown. Refresh signed pending transactions before trying again; do not create a replacement.",
     );
-    return invocation.notStarted ? invocation.value : parseNativeOperationEnvelope(invocation.value, "send");
+    return invocation.notStarted
+      ? invocation.value
+      : parseNativeOperationEnvelope(invocation.value, "send", runtimeProfile);
   }
 
   async function shieldCoinbase() {
-    const confirmed = await dependencies.confirmShield(buildShieldConfirmation());
+    const confirmed = await dependencies.confirmShield(buildShieldConfirmation(runtimeProfile));
     if (confirmed !== true) return cancelledOperation("shield_coinbase");
     const invocation = await invokeSigningDependency(
       () => dependencies.shieldCoinbaseAndBroadcast(),
       "shield_coinbase",
       "Wcash shielding status is unknown. Refresh signed pending transactions before trying again; do not create a replacement.",
     );
-    return invocation.notStarted ? invocation.value : parseNativeOperationEnvelope(invocation.value, "shield_coinbase");
+    return invocation.notStarted
+      ? invocation.value
+      : parseNativeOperationEnvelope(invocation.value, "shield_coinbase", runtimeProfile);
   }
 
   async function pendingTransactions(afterCursor) {
@@ -626,6 +653,7 @@ function createWcashTransactionController(dependencies) {
         "PENDING_STATUS_UNAVAILABLE",
         "Signed pending transaction metadata is temporarily unavailable.",
       ),
+      runtimeProfile,
     );
   }
 
@@ -638,6 +666,7 @@ function createWcashTransactionController(dependencies) {
         "Rebroadcast status is unknown. Do not create a replacement; refresh signed pending transactions.",
       ),
       "rebroadcast_pending",
+      runtimeProfile,
     );
   }
 

@@ -10,6 +10,7 @@ on:
       - "feat/wcash-*"
       - "fix/wcash-*"
       - "ci/wcash-*"
+      - "codex/wcash-*"
   workflow_dispatch:
 
 permissions:
@@ -86,6 +87,12 @@ jobs:
 
       - name: Run native Rust lints
         run: yarn cargo:clippy
+
+      - name: Run local Regtest native tests
+        run: yarn cargo:test:localnet
+
+      - name: Run local Regtest native lints
+        run: yarn cargo:clippy:localnet
 
       - name: Check isolated package policy
         run: yarn test:package:unsigned-local

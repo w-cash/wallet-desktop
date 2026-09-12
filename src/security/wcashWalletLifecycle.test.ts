@@ -1,15 +1,19 @@
 export {};
 
 const { LIFECYCLE_STATES, SEED_SCHEME, createWcashWalletLifecycle } = require("../../public/wcashWalletLifecycle");
+const { LOCAL_REGTEST_RUNTIME_PROFILE } = require("../../public/wcashRuntimeProfile");
 
 const PHRASE = `${"abandon ".repeat(23)}art`;
 const SERVICE = "com.wcashwallet.warden.testnet.wallet-seed.v1";
 const ACCOUNT = "wcash-testnet-primary";
 const WALLET = { account_id: 0, birthday_height: 321, address: "wutest1example" };
 const STATUS_IDENTITY = {
+  profile: "testnet",
   network: "Wcash Testnet",
   ticker: "TWC",
+  endpoint: "https://wallet-testnet.wcashexplorer.com:443",
   storage_namespace: "wcashtestnet-v5",
+  branch_id: "b3cfd27e",
 };
 
 const publicState = (state: string, fields = {}) => ({ state, ...STATUS_IDENTITY, ...fields });
@@ -111,6 +115,46 @@ function harness({ stored = null, status = { wallet: null } }: HarnessOptions = 
 }
 
 describe("Wcash main-process wallet lifecycle", () => {
+  it("accepts only the exact feature-gated local Regtest status identity", async () => {
+    const localStatus = {
+      profile: "local-regtest",
+      network: "Wcash Regtest",
+      ticker: "TWC",
+      endpoint: "http://127.0.0.1:48234",
+      storage_namespace: "wcashregtest-v5",
+      branch_id: "c3a6678a",
+      wallet: null,
+    };
+    const native = {
+      wcash_status: jest.fn(async () => JSON.stringify(localStatus)),
+      wcash_verify_mnemonic: jest.fn(async () => true),
+    };
+    const lifecycle = createWcashWalletLifecycle({
+      keytar: {
+        getPassword: jest.fn(async () => null),
+        setPassword: jest.fn(async () => undefined),
+        deletePassword: jest.fn(async () => true),
+      },
+      native,
+      authenticate: jest.fn(async () => true),
+      service: LOCAL_REGTEST_RUNTIME_PROFILE.keytarService,
+      account: LOCAL_REGTEST_RUNTIME_PROFILE.keytarAccount,
+      profile: LOCAL_REGTEST_RUNTIME_PROFILE,
+    });
+
+    await expect(lifecycle.inspectState()).resolves.toEqual({
+      state: LIFECYCLE_STATES.EMPTY,
+      profile: "local-regtest",
+      network: "Wcash Regtest",
+      ticker: "TWC",
+      endpoint: "http://127.0.0.1:48234",
+      storage_namespace: "wcashregtest-v5",
+      branch_id: "c3a6678a",
+    });
+    native.wcash_status.mockResolvedValueOnce(JSON.stringify({ ...localStatus, branch_id: "b3cfd27e" }));
+    await expect(lifecycle.inspectState()).rejects.toThrow("wrong network identity");
+  });
+
   it.each([
     [null, { wallet: null }, publicState(LIFECYCLE_STATES.EMPTY)],
     [

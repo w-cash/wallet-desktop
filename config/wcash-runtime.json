@@ -3,7 +3,7 @@
   "productName": "Wcash Warden Testnet",
   "runtimeReady": true,
   "releaseReady": false,
-  "coreRevision": "da048ab4dd0c29553e3db641f9092f3a0ff9b268",
+  "coreRevision": "db28e549bda764adcc5ba48c295a3e33c033d638",
   "network": "Wcash Testnet",
   "ticker": "TWC"
 }

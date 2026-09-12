@@ -9,7 +9,7 @@ and the mainnet release gate remains closed.
 ## Locked Wcash dependencies
 
 - Wolf: `9a9c0668784117f116d5b69bdb3a090765092343`
-- wallet-core: `da048ab4dd0c29553e3db641f9092f3a0ff9b268`
+- wallet-core: `db28e549bda764adcc5ba48c295a3e33c033d638`
 
 ## Source validation
 

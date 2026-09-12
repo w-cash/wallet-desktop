@@ -62,21 +62,34 @@ const balance = (tip: number, scanned = tip) => ({
 
 type Bridge = Window["wcash"];
 
+const testnetConfig: Bridge["config"] = {
+  profile: "testnet",
+  productName: "Wcash Warden Testnet",
+  network: "Wcash Testnet",
+  ticker: "TWC",
+  endpoint: "https://wallet-testnet.wcashexplorer.com:443",
+  storageNamespace: "wcashtestnet-v5",
+  branchId: "b3cfd27e",
+  runtimeReady: true,
+  coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
+};
+
+const localRegtestConfig: Bridge["config"] = {
+  profile: "local-regtest",
+  productName: "Wcash Warden Local Regtest",
+  network: "Wcash Regtest",
+  ticker: "TWC",
+  endpoint: "http://127.0.0.1:48234",
+  storageNamespace: "wcashregtest-v5",
+  branchId: "c3a6678a",
+  runtimeReady: true,
+  coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
+};
+
 const installBridge = (overrides: Partial<Bridge> = {}): Bridge => {
   const bridge: Bridge = {
-    config: {
-      productName: "Wcash Warden Testnet",
-      network: "Wcash Testnet",
-      ticker: "TWC",
-      runtimeReady: true,
-      coreRevision: "da048ab4dd0c29553e3db641f9092f3a0ff9b268",
-    },
-    status: jest.fn().mockResolvedValue({
-      network: "Wcash Testnet",
-      ticker: "TWC",
-      storage_namespace: "wcashtestnet-v5",
-      state: "no-database-no-secret",
-    }),
+    config: testnetConfig,
+    status: jest.fn().mockResolvedValue({ state: "no-database-no-secret" }),
     create: jest.fn(),
     restore: jest.fn(),
     resumePending: jest.fn(),
@@ -105,6 +118,24 @@ const installBridge = (overrides: Partial<Bridge> = {}): Bridge => {
     rebroadcastPending: jest.fn().mockResolvedValue(broadcastResult("rebroadcast_pending")),
     ...overrides,
   };
+  const statusIdentity = {
+    profile: bridge.config.profile,
+    network: bridge.config.network,
+    ticker: bridge.config.ticker,
+    endpoint: bridge.config.endpoint,
+    storage_namespace: bridge.config.storageNamespace,
+    branch_id: bridge.config.branchId,
+  };
+  const rawStatus = bridge.status;
+  bridge.status = jest.fn(async (...args: Parameters<Bridge["status"]>) => ({
+    ...statusIdentity,
+    ...((await rawStatus(...args)) as object),
+  }));
+  const rawAcknowledgeBackup = bridge.acknowledgeBackup;
+  bridge.acknowledgeBackup = jest.fn(async (...args: Parameters<Bridge["acknowledgeBackup"]>) => ({
+    ...statusIdentity,
+    ...((await rawAcknowledgeBackup(...args)) as object),
+  }));
   Object.defineProperty(window, "wcash", { configurable: true, value: bridge });
   return bridge;
 };
@@ -114,12 +145,24 @@ describe("Wcash Testnet desktop wallet", () => {
     delete (window as Partial<Window>).wcash;
   });
 
+  it("visibly identifies the fixed local Regtest endpoint", async () => {
+    installBridge({
+      config: localRegtestConfig,
+      status: jest.fn().mockResolvedValue({ state: "database-and-secret-ready", wallet }),
+    });
+    render(<WcashWallet />);
+
+    expect(await screen.findByText(/Local Regtest funds have no monetary value/i)).toBeInTheDocument();
+    expect(screen.getByText("http://127.0.0.1:48234")).toBeInTheDocument();
+    expect(screen.getByText(/Wcash Regtest · TWC/i)).toBeInTheDocument();
+    expect(await screen.findByText(/isolated Wcash Regtest profile/i)).toBeInTheDocument();
+    expect(document.title).toBe("Wcash Warden Local Regtest");
+  });
+
   it("fails closed when the reviewed runtime is unavailable", async () => {
     const bridge = installBridge({
       config: {
-        productName: "Wcash Warden Testnet",
-        network: "Wcash Testnet",
-        ticker: "TWC",
+        ...testnetConfig,
         runtimeReady: false,
         coreRevision: null,
       },

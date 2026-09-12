@@ -1,7 +1,19 @@
 "use strict";
 
 const path = require("path");
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, ipcMain } = require("electron");
+
+const TESTNET_RUNTIME_CONFIG = Object.freeze({
+  profile: "testnet",
+  productName: "Wcash Warden Testnet",
+  network: "Wcash Testnet",
+  ticker: "TWC",
+  endpoint: "https://wallet-testnet.wcashexplorer.com:443",
+  storageNamespace: "wcashtestnet-v5",
+  branchId: "b3cfd27e",
+  runtimeReady: true,
+  coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
+});
 
 const EXPECTED_METHODS = [
   "acknowledgeBackup",
@@ -29,6 +41,9 @@ const timeout = setTimeout(() => {
 }, 15_000);
 
 async function run() {
+  ipcMain.on("wcash:runtime-config", (event) => {
+    event.returnValue = TESTNET_RUNTIME_CONFIG;
+  });
   const window = new BrowserWindow({
     show: false,
     webPreferences: {
@@ -55,10 +70,14 @@ async function run() {
   if (
     JSON.stringify(result.methods) !== JSON.stringify([...EXPECTED_METHODS].sort()) ||
     result.config?.productName !== "Wcash Warden Testnet" ||
+    result.config?.profile !== "testnet" ||
     result.config?.network !== "Wcash Testnet" ||
     result.config?.ticker !== "TWC" ||
+    result.config?.endpoint !== "https://wallet-testnet.wcashexplorer.com:443" ||
+    result.config?.storageNamespace !== "wcashtestnet-v5" ||
+    result.config?.branchId !== "b3cfd27e" ||
     result.config?.runtimeReady !== true ||
-    result.config?.coreRevision !== "da048ab4dd0c29553e3db641f9092f3a0ff9b268" ||
+    result.config?.coreRevision !== "db28e549bda764adcc5ba48c295a3e33c033d638" ||
     result.directRequire !== "undefined" ||
     result.directNative !== "undefined" ||
     result.directInvoke !== "undefined"
@@ -70,7 +89,9 @@ async function run() {
     JSON.stringify({
       ok: true,
       sandboxed: true,
+      profile: result.config.profile,
       network: result.config.network,
+      endpoint: result.config.endpoint,
       ticker: result.config.ticker,
       exposedMethods: result.methods,
       directGlobals: {

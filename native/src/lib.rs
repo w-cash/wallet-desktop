@@ -1,9 +1,16 @@
-//! Native boundary for Wcash Warden Testnet.
+//! Native boundary for Wcash Warden.
 //!
 //! The original Zingo native bridge is preserved in 'legacy_zcash.rs' for
 //! reference while the product is migrated, but it is deliberately not linked
 //! into this Wcash build. Only fixed-network wallet operations and generic
 //! platform authentication are exported.
+
+#[cfg(all(feature = "wcash-testnet", feature = "wcash-regtest"))]
+compile_error!(
+    "select exactly one Wcash native profile; Regtest builds must disable default features"
+);
+#[cfg(not(any(feature = "wcash-testnet", feature = "wcash-regtest")))]
+compile_error!("select exactly one Wcash native profile");
 
 mod wcash;
 

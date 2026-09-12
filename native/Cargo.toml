@@ -11,12 +11,20 @@ crate-type = ["cdylib"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["wcash-testnet"]
+# Public and unsigned package builds use only the immutable reviewed Git pin.
+wcash-testnet = ["dep:zingolib"]
+# The local QA build is deliberately explicit and enables the default-off
+# Regtest facade on the same immutable core revision as Testnet.
+wcash-regtest = ["dep:zingolib", "zingolib/regtest"]
+
 [dependencies]
 # The Wcash facade is pinned to one immutable, reviewed wallet-core revision.
 # The inherited Zingo implementation remains in legacy_zcash.rs for future
 # reference but is neither linked nor exported by the Wcash native artifact.
-zingolib = { git = "https://github.com/w-cash/wallet-core.git", rev = "da048ab4dd0c29553e3db641f9092f3a0ff9b268" }
-wcash-wallet = { git = "https://github.com/w-cash/wolf.git", rev = "9a9c0668784117f116d5b69bdb3a090765092343" }
+zingolib = { git = "https://github.com/w-cash/wallet-core.git", rev = "db28e549bda764adcc5ba48c295a3e33c033d638", optional = true }
+wcash-wallet = { git = "https://github.com/w-cash/wolf.git", rev = "b44571035074900570ef13f4fa96787886674ada" }
 
 bip0039 = { version = "0.14", features = ["rand"] }
 serde_json = "1"

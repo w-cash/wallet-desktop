@@ -1,10 +1,12 @@
 "use strict";
 
+const { TESTNET_RUNTIME_PROFILE, requireKnownRuntimeProfile } = require("./wcashRuntimeProfile");
+
 const CREDENTIAL_VERSION = 1;
 const SEED_SCHEME = "bip39-english-24-empty-passphrase-v1";
-const WCASH_NETWORK = "Wcash Testnet";
-const WCASH_STORAGE_NAMESPACE = "wcashtestnet-v5";
-const WCASH_TICKER = "TWC";
+const WCASH_NETWORK = TESTNET_RUNTIME_PROFILE.network;
+const WCASH_STORAGE_NAMESPACE = TESTNET_RUNTIME_PROFILE.storageNamespace;
+const WCASH_TICKER = TESTNET_RUNTIME_PROFILE.ticker;
 
 const LIFECYCLE_STATES = Object.freeze({
   EMPTY: "no-database-no-secret",
@@ -55,12 +57,16 @@ function parseJsonObject(method, value) {
   return parsed;
 }
 
-function parseStatus(value) {
+function parseStatus(value, profile = TESTNET_RUNTIME_PROFILE) {
+  const expected = requireKnownRuntimeProfile(profile);
   const status = parseJsonObject("wcash_status", value);
   if (
-    status.network !== WCASH_NETWORK ||
-    status.ticker !== WCASH_TICKER ||
-    status.storage_namespace !== WCASH_STORAGE_NAMESPACE
+    status.profile !== expected.id ||
+    status.network !== expected.network ||
+    status.ticker !== expected.ticker ||
+    status.endpoint !== expected.endpoint ||
+    status.storage_namespace !== expected.storageNamespace ||
+    status.branch_id !== expected.branchId
   ) {
     throw new WcashWalletLifecycleError(
       "NATIVE_STATUS_AMBIGUOUS",
@@ -139,7 +145,15 @@ function assertFunction(owner, method, label) {
   }
 }
 
-function createWcashWalletLifecycle({ keytar, native, authenticate, service, account }) {
+function createWcashWalletLifecycle({
+  keytar,
+  native,
+  authenticate,
+  service,
+  account,
+  profile = TESTNET_RUNTIME_PROFILE,
+}) {
+  const runtimeProfile = requireKnownRuntimeProfile(profile);
   assertFunction(keytar, "getPassword", "keytar");
   assertFunction(keytar, "setPassword", "keytar");
   assertFunction(keytar, "deletePassword", "keytar");
@@ -178,7 +192,7 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
   }
 
   async function inspectNativeStatus() {
-    return parseStatus(await native.wcash_status());
+    return parseStatus(await native.wcash_status(), runtimeProfile);
   }
 
   async function classifyUnsafe({ authenticateCredential = false } = {}) {
@@ -221,9 +235,12 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
 
   function publicIdentity(classification) {
     return {
+      profile: classification.status.profile,
       network: classification.status.network,
       ticker: classification.status.ticker,
+      endpoint: classification.status.endpoint,
       storage_namespace: classification.status.storage_namespace,
+      branch_id: classification.status.branch_id,
     };
   }
 
@@ -461,7 +478,7 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
     restore(phrase, birthdayHeight) {
       return serialize(async () => {
         if (!Number.isSafeInteger(birthdayHeight) || birthdayHeight < 1 || birthdayHeight > 0xffffffff) {
-          throw new RangeError("Wcash Testnet birthday must be an integer from 1 through 4294967295");
+          throw new RangeError(`${runtimeProfile.network} birthday must be an integer from 1 through 4294967295`);
         }
         const classification = await classifyUnsafe();
         requireEmpty(classification);

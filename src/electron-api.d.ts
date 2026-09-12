@@ -14,9 +14,13 @@ declare global {
   interface Window {
     wcash: {
       readonly config: {
+        readonly profile: "testnet" | "local-regtest";
         readonly productName: string;
-        readonly network: string;
-        readonly ticker: string;
+        readonly network: "Wcash Testnet" | "Wcash Regtest";
+        readonly ticker: "TWC";
+        readonly endpoint: "https://wallet-testnet.wcashexplorer.com:443" | "http://127.0.0.1:48234";
+        readonly storageNamespace: "wcashtestnet-v5" | "wcashregtest-v5";
+        readonly branchId: "b3cfd27e" | "c3a6678a";
         readonly runtimeReady: boolean;
         readonly coreRevision: string | null;
       };

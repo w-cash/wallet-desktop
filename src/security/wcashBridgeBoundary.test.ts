@@ -1,18 +1,22 @@
 const runtimeConfig = {
-  appId: "com.wcashwallet.warden.testnet",
+  profile: "testnet",
   productName: "Wcash Warden Testnet",
   runtimeReady: true,
-  coreRevision: "da048ab4dd0c29553e3db641f9092f3a0ff9b268",
+  coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
   network: "Wcash Testnet",
   ticker: "TWC",
+  endpoint: "https://wallet-testnet.wcashexplorer.com:443",
+  storageNamespace: "wcashtestnet-v5",
+  branchId: "b3cfd27e",
 };
 
-const loadPreload = () => {
+const loadPreload = (selectedRuntime = runtimeConfig) => {
   jest.resetModules();
   const exposeInMainWorld = jest.fn();
   const invoke = jest.fn().mockResolvedValue({ ok: true });
   const ipcRenderer = {
     invoke,
+    sendSync: jest.fn().mockReturnValue(selectedRuntime),
     send: jest.fn(),
     on: jest.fn(),
     off: jest.fn(),
@@ -119,11 +123,34 @@ describe("Wcash renderer bridge boundary", () => {
     const { exposed } = loadPreload();
 
     expect(exposed.wcash.config).toEqual({
+      profile: runtimeConfig.profile,
       productName: runtimeConfig.productName,
       network: runtimeConfig.network,
       ticker: runtimeConfig.ticker,
+      endpoint: runtimeConfig.endpoint,
+      storageNamespace: runtimeConfig.storageNamespace,
+      branchId: runtimeConfig.branchId,
       runtimeReady: true,
       coreRevision: runtimeConfig.coreRevision,
     });
+  });
+
+  it("accepts only the exact main-process local Regtest identity", () => {
+    const localRuntime = {
+      profile: "local-regtest",
+      productName: "Wcash Warden Local Regtest",
+      network: "Wcash Regtest",
+      ticker: "TWC",
+      endpoint: "http://127.0.0.1:48234",
+      storageNamespace: "wcashregtest-v5",
+      branchId: "c3a6678a",
+      runtimeReady: true,
+      coreRevision: runtimeConfig.coreRevision,
+    };
+    expect(loadPreload(localRuntime).exposed.wcash.config).toEqual(localRuntime);
+    expect(() => loadPreload({ ...localRuntime, endpoint: "http://127.0.0.1:9999" })).toThrow(
+      "invalid runtime profile",
+    );
+    expect(() => loadPreload({ ...runtimeConfig, network: "Wcash Regtest" })).toThrow("invalid runtime profile");
   });
 });

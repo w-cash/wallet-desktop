@@ -1,6 +1,7 @@
 const ZATOSHIS_PER_COIN = 100_000_000n;
 const MAX_MONEY_ZAT = 21_000_000n * ZATOSHIS_PER_COIN;
 const WCASH_BRANCH_ID = "b3cfd27e";
+const WCASH_REGTEST_BRANCH_ID = "c3a6678a";
 const TXID_PATTERN = /^[0-9a-f]{64}$/;
 const RECOVERY_MESSAGE = "The signed transaction is stored. Retry this exact transaction; do not create a replacement.";
 const REVIEW_MESSAGE =
@@ -10,9 +11,13 @@ const REJECTION_MESSAGE =
 const WCASH_SEED_SCHEME = "bip39-english-24-empty-passphrase-v1";
 
 export interface WcashProductConfig {
+  readonly profile: "testnet" | "local-regtest";
   readonly productName: string;
-  readonly network: string;
-  readonly ticker: string;
+  readonly network: "Wcash Testnet" | "Wcash Regtest";
+  readonly ticker: "TWC";
+  readonly endpoint: "https://wallet-testnet.wcashexplorer.com:443" | "http://127.0.0.1:48234";
+  readonly storageNamespace: "wcashtestnet-v5" | "wcashregtest-v5";
+  readonly branchId: typeof WCASH_BRANCH_ID | typeof WCASH_REGTEST_BRANCH_ID;
   readonly runtimeReady: boolean;
   readonly coreRevision: string | null;
 }
@@ -23,9 +28,12 @@ export interface WcashWalletMetadata {
 }
 
 interface WcashStatusBase {
-  readonly network?: string;
-  readonly ticker?: string;
-  readonly storageNamespace?: string;
+  readonly profile: WcashProductConfig["profile"];
+  readonly network: WcashProductConfig["network"];
+  readonly ticker: "TWC";
+  readonly endpoint: WcashProductConfig["endpoint"];
+  readonly storageNamespace: WcashProductConfig["storageNamespace"];
+  readonly branchId: WcashProductConfig["branchId"];
 }
 
 export type WcashStatus =
@@ -90,7 +98,7 @@ export type WcashRecipientValidation =
   | {
       readonly schemaVersion: 1;
       readonly valid: true;
-      readonly network: "Wcash Testnet";
+      readonly network: WcashProductConfig["network"];
       readonly recipientKind: "ironwood";
       readonly canonicalAddress: string;
       readonly error: null;
@@ -98,7 +106,7 @@ export type WcashRecipientValidation =
   | {
       readonly schemaVersion: 1;
       readonly valid: false;
-      readonly network: "Wcash Testnet";
+      readonly network: WcashProductConfig["network"];
       readonly recipientKind: null;
       readonly canonicalAddress: null;
       readonly error: { readonly code: "invalid_recipient"; readonly message: string };
@@ -106,7 +114,7 @@ export type WcashRecipientValidation =
 
 export interface WcashPendingTransaction {
   readonly txid: string;
-  readonly branchId: typeof WCASH_BRANCH_ID;
+  readonly branchId: WcashProductConfig["branchId"];
   readonly expiryHeight: number;
   readonly lifecycle: "unexpired" | "expired" | "tip_unknown";
   readonly rebroadcastAllowed: boolean;
@@ -135,7 +143,7 @@ export type WcashOperationResult =
       readonly operation: WcashOperation;
       readonly outcome: "broadcast" | "rejected" | "recovery_required" | "expired";
       readonly txid: string;
-      readonly branchId: typeof WCASH_BRANCH_ID;
+      readonly branchId: WcashProductConfig["branchId"];
       readonly expiryHeight: number | null;
       readonly targetHeight: number | null;
       readonly feeZat: bigint | null;
@@ -166,6 +174,60 @@ const requireExactKeys = (record: UnknownRecord, expected: readonly string[], op
     throw new Error(`${operation} returned malformed data`);
   }
 };
+
+export const WCASH_TESTNET_PRODUCT_CONFIG: WcashProductConfig = Object.freeze({
+  profile: "testnet",
+  productName: "Wcash Warden Testnet",
+  network: "Wcash Testnet",
+  ticker: "TWC",
+  endpoint: "https://wallet-testnet.wcashexplorer.com:443",
+  storageNamespace: "wcashtestnet-v5",
+  branchId: WCASH_BRANCH_ID,
+  runtimeReady: true,
+  coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
+});
+
+export const WCASH_LOCAL_REGTEST_PRODUCT_CONFIG: WcashProductConfig = Object.freeze({
+  profile: "local-regtest",
+  productName: "Wcash Warden Local Regtest",
+  network: "Wcash Regtest",
+  ticker: "TWC",
+  endpoint: "http://127.0.0.1:48234",
+  storageNamespace: "wcashregtest-v5",
+  branchId: WCASH_REGTEST_BRANCH_ID,
+  runtimeReady: true,
+  coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
+});
+
+const PRODUCT_CONFIG_KEYS = [
+  "profile",
+  "productName",
+  "network",
+  "ticker",
+  "endpoint",
+  "storageNamespace",
+  "branchId",
+  "runtimeReady",
+  "coreRevision",
+] as const;
+
+export const requireWcashProductConfig = (value: unknown): WcashProductConfig => {
+  if (!isRecord(value)) throw new Error("Wallet runtime profile is unavailable");
+  requireExactKeys(value, PRODUCT_CONFIG_KEYS, "Wallet runtime profile");
+  const expected =
+    value.profile === "testnet"
+      ? WCASH_TESTNET_PRODUCT_CONFIG
+      : value.profile === "local-regtest"
+        ? WCASH_LOCAL_REGTEST_PRODUCT_CONFIG
+        : null;
+  if (expected === null || PRODUCT_CONFIG_KEYS.some((key) => value[key] !== expected[key])) {
+    throw new Error("Wallet runtime profile is invalid");
+  }
+  return expected;
+};
+
+const expectedRuntime = (config?: WcashProductConfig): WcashProductConfig =>
+  requireWcashProductConfig(config ?? WCASH_TESTNET_PRODUCT_CONFIG);
 
 const parsePayload = (payload: unknown, operation: string): unknown => {
   if (typeof payload !== "string") return payload;
@@ -223,16 +285,28 @@ const parseWalletMetadata = (value: unknown, operation: string): WcashWalletMeta
   };
 };
 
-export const parseStatus = (payload: unknown): WcashStatus => {
+export const parseStatus = (payload: unknown, config?: WcashProductConfig): WcashStatus => {
   const operation = "Wallet status";
+  const expected = expectedRuntime(config);
   const record = requireRecord(payload, operation);
   const base: WcashStatusBase = {
-    ...(record.network === undefined ? {} : { network: requireString(record, "network", operation) }),
-    ...(record.ticker === undefined ? {} : { ticker: requireString(record, "ticker", operation) }),
-    ...(record.storage_namespace === undefined
-      ? {}
-      : { storageNamespace: requireString(record, "storage_namespace", operation) }),
+    profile: requireString(record, "profile", operation) as WcashStatusBase["profile"],
+    network: requireString(record, "network", operation) as WcashStatusBase["network"],
+    ticker: requireString(record, "ticker", operation) as "TWC",
+    endpoint: requireString(record, "endpoint", operation) as WcashStatusBase["endpoint"],
+    storageNamespace: requireString(record, "storage_namespace", operation) as WcashStatusBase["storageNamespace"],
+    branchId: requireString(record, "branch_id", operation) as WcashStatusBase["branchId"],
   };
+  if (
+    base.profile !== expected.profile ||
+    base.network !== expected.network ||
+    base.ticker !== expected.ticker ||
+    base.endpoint !== expected.endpoint ||
+    base.storageNamespace !== expected.storageNamespace ||
+    base.branchId !== expected.branchId
+  ) {
+    throw new Error("Wallet status returned the wrong runtime identity");
+  }
   switch (record.state) {
     case "no-database-no-secret":
       return { ...base, state: record.state };
@@ -281,13 +355,16 @@ export const parseOpenedWallet = (payload: unknown, operation = "Wallet open"): 
   return parseWalletMetadata(record.wallet, operation);
 };
 
-export const parseReceivers = (payload: unknown): WcashReceivers => {
+export const parseReceivers = (payload: unknown, config?: WcashProductConfig): WcashReceivers => {
   const operation = "Receiving addresses";
+  const expected = expectedRuntime(config);
   const record = requireRecord(payload, operation);
   const ironwoodAddress = requireString(record, "ironwood_address", operation);
   const transparentCoinbaseAddress = requireString(record, "transparent_coinbase_address", operation);
+  const ironwoodPrefix = expected.profile === "local-regtest" ? "wuregtest1" : "wutest1";
+  const transparentPrefix = expected.profile === "local-regtest" ? "WR" : "WT";
 
-  if (!ironwoodAddress.startsWith("wutest1") || !transparentCoinbaseAddress.startsWith("WT")) {
+  if (!ironwoodAddress.startsWith(ironwoodPrefix) || !transparentCoinbaseAddress.startsWith(transparentPrefix)) {
     throw new Error("Wallet core returned addresses for a different network");
   }
   return { ironwoodAddress, transparentCoinbaseAddress };
@@ -345,9 +422,17 @@ export const parseCanonicalTwcAmount = (value: string): { readonly amount: strin
 
 export const memoUtf8Bytes = (memo: string): number => new TextEncoder().encode(memo).byteLength;
 
-export const createSendRequest = (addressInput: string, amountInput: string, memo: string): WcashSendRequest => {
+export const createSendRequest = (
+  addressInput: string,
+  amountInput: string,
+  memo: string,
+  config?: WcashProductConfig,
+): WcashSendRequest => {
+  const expected = expectedRuntime(config);
   const address = addressInput.trim();
-  if (address.length < 16 || address.length > 512) throw new Error("Enter a Wcash Testnet Ironwood recipient.");
+  if (address.length < 16 || address.length > 512) {
+    throw new Error(`Enter a ${expected.network} Ironwood recipient.`);
+  }
   const { amount } = parseCanonicalTwcAmount(amountInput.trim());
   if (memo.length > 512 || memoUtf8Bytes(memo) > 512) {
     throw new Error("Memo is longer than the 512-byte Wcash limit.");
@@ -360,15 +445,16 @@ export const createSendRequest = (addressInput: string, amountInput: string, mem
   return Object.freeze({ payments: Object.freeze([payment]) }) as WcashSendRequest;
 };
 
-export const parseRecipientValidation = (payload: unknown): WcashRecipientValidation => {
+export const parseRecipientValidation = (payload: unknown, config?: WcashProductConfig): WcashRecipientValidation => {
   const operation = "Recipient validation";
+  const expected = expectedRuntime(config);
   const record = requireRecord(payload, operation);
   requireExactKeys(
     record,
     ["schema_version", "valid", "network", "recipient_kind", "canonical_address", "error"],
     operation,
   );
-  if (record.schema_version !== 1 || record.network !== "Wcash Testnet" || typeof record.valid !== "boolean") {
+  if (record.schema_version !== 1 || record.network !== expected.network || typeof record.valid !== "boolean") {
     throw new Error(`${operation} returned malformed data`);
   }
   if (record.valid) {
@@ -383,7 +469,7 @@ export const parseRecipientValidation = (payload: unknown): WcashRecipientValida
     return {
       schemaVersion: 1,
       valid: true,
-      network: "Wcash Testnet",
+      network: expected.network,
       recipientKind: "ironwood",
       canonicalAddress: record.canonical_address,
       error: null,
@@ -403,7 +489,7 @@ export const parseRecipientValidation = (payload: unknown): WcashRecipientValida
   return {
     schemaVersion: 1,
     valid: false,
-    network: "Wcash Testnet",
+    network: expected.network,
     recipientKind: null,
     canonicalAddress: null,
     error: { code: "invalid_recipient", message: record.error.message },
@@ -456,8 +542,13 @@ const parseRecoveryTxids = (
   return Object.freeze(txids);
 };
 
-export const parseOperationResult = (payload: unknown, expectedOperation: WcashOperation): WcashOperationResult => {
+export const parseOperationResult = (
+  payload: unknown,
+  expectedOperation: WcashOperation,
+  config?: WcashProductConfig,
+): WcashOperationResult => {
   const operation = "Transaction operation";
+  const expected = expectedRuntime(config);
   const record = requireRecord(payload, operation);
   if (record.outcome === "cancelled") {
     requireExactKeys(record, ["schema_version", "operation", "outcome"], operation);
@@ -493,7 +584,7 @@ export const parseOperationResult = (payload: unknown, expectedOperation: WcashO
       record.outcome !== "rejected" &&
       record.outcome !== "recovery_required" &&
       record.outcome !== "expired") ||
-    record.branch_id !== WCASH_BRANCH_ID
+    record.branch_id !== expected.branchId
   ) {
     throw new Error(`${operation} returned malformed data`);
   }
@@ -622,7 +713,7 @@ export const parseOperationResult = (payload: unknown, expectedOperation: WcashO
     operation: expectedOperation,
     outcome: record.outcome,
     txid,
-    branchId: WCASH_BRANCH_ID,
+    branchId: expected.branchId,
     expiryHeight,
     targetHeight,
     feeZat,
@@ -634,8 +725,9 @@ export const parseOperationResult = (payload: unknown, expectedOperation: WcashO
   };
 };
 
-export const parsePendingTransactions = (payload: unknown): WcashPendingTransactions => {
+export const parsePendingTransactions = (payload: unknown, config?: WcashProductConfig): WcashPendingTransactions => {
   const operation = "Pending transactions";
+  const expected = expectedRuntime(config);
   const record = requireRecord(payload, operation);
   requireExactKeys(record, ["schema_version", "exact_tip_height", "transactions", "next_cursor"], operation);
   if (
@@ -663,7 +755,7 @@ export const parsePendingTransactions = (payload: unknown): WcashPendingTransact
       ["txid", "branch_id", "expiry_height", "lifecycle", "rebroadcast_allowed", "blocks_new_signing"],
       operation,
     );
-    if (value.branch_id !== WCASH_BRANCH_ID) throw new Error(`${operation} returned malformed data`);
+    if (value.branch_id !== expected.branchId) throw new Error(`${operation} returned malformed data`);
     const transactionId = requireTxid(value, "txid", operation);
     if (seenTxids.has(transactionId)) throw new Error(`${operation} returned malformed data`);
     seenTxids.add(transactionId);
@@ -685,7 +777,7 @@ export const parsePendingTransactions = (payload: unknown): WcashPendingTransact
     }
     return {
       txid: transactionId,
-      branchId: WCASH_BRANCH_ID,
+      branchId: expected.branchId,
       expiryHeight,
       lifecycle,
       rebroadcastAllowed,

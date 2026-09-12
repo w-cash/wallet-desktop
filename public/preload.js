@@ -4,15 +4,49 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 // Sandboxed Electron preload scripts can only require Electron's allowlisted
-// built-ins. Keep this public, immutable identity inline and assert it against
-// config/wcash-runtime.json in the product-boundary tests.
-const WCASH_RUNTIME = Object.freeze({
+// built-ins. The main process selects a compile-time-compatible profile and
+// returns only this public identity. Validate the entire tuple before exposing
+// it so neither an arbitrary network nor an arbitrary endpoint reaches the UI.
+const WCASH_TESTNET_RUNTIME = Object.freeze({
+  profile: "testnet",
   productName: "Wcash Warden Testnet",
   network: "Wcash Testnet",
   ticker: "TWC",
+  endpoint: "https://wallet-testnet.wcashexplorer.com:443",
+  storageNamespace: "wcashtestnet-v5",
+  branchId: "b3cfd27e",
   runtimeReady: true,
-  coreRevision: "da048ab4dd0c29553e3db641f9092f3a0ff9b268",
+  coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
 });
+const WCASH_LOCAL_REGTEST_RUNTIME = Object.freeze({
+  profile: "local-regtest",
+  productName: "Wcash Warden Local Regtest",
+  network: "Wcash Regtest",
+  ticker: "TWC",
+  endpoint: "http://127.0.0.1:48234",
+  storageNamespace: "wcashregtest-v5",
+  branchId: "c3a6678a",
+  runtimeReady: true,
+  coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
+});
+const publicProfileKeys = Object.keys(WCASH_TESTNET_RUNTIME).sort();
+const selectedRuntime = ipcRenderer.sendSync("wcash:runtime-config");
+const expectedRuntime =
+  selectedRuntime?.profile === "testnet"
+    ? WCASH_TESTNET_RUNTIME
+    : selectedRuntime?.profile === "local-regtest"
+      ? WCASH_LOCAL_REGTEST_RUNTIME
+      : null;
+if (
+  expectedRuntime === null ||
+  selectedRuntime === null ||
+  typeof selectedRuntime !== "object" ||
+  Object.keys(selectedRuntime).sort().join("\0") !== publicProfileKeys.join("\0") ||
+  publicProfileKeys.some((key) => selectedRuntime[key] !== expectedRuntime[key])
+) {
+  throw new Error("Wcash main process returned an invalid runtime profile");
+}
+const WCASH_RUNTIME = expectedRuntime;
 const WCASH_RUNTIME_READY = WCASH_RUNTIME.runtimeReady;
 // The inherited bridge is intentionally never reopened. Wcash calls use the
 // fixed allowlist exposed as window.wcash below.
@@ -169,8 +203,12 @@ contextBridge.exposeInMainWorld(
   Object.freeze({
     config: Object.freeze({
       productName: WCASH_RUNTIME.productName,
+      profile: WCASH_RUNTIME.profile,
       network: WCASH_RUNTIME.network,
       ticker: WCASH_RUNTIME.ticker,
+      endpoint: WCASH_RUNTIME.endpoint,
+      storageNamespace: WCASH_RUNTIME.storageNamespace,
+      branchId: WCASH_RUNTIME.branchId,
       runtimeReady: WCASH_RUNTIME_READY,
       coreRevision: WCASH_RUNTIME.coreRevision,
     }),

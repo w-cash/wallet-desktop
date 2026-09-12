@@ -12,6 +12,7 @@ import {
   parseReceivers,
   parseStatus,
   require24WordRecoveryPhrase,
+  WCASH_LOCAL_REGTEST_PRODUCT_CONFIG,
 } from "./api";
 
 const account = {
@@ -363,14 +364,17 @@ describe("Wcash renderer boundary", () => {
 
   it("parses only the explicit crash-recovery lifecycle states", () => {
     const base = {
+      profile: "testnet",
       network: "Wcash Testnet",
       ticker: "TWC",
+      endpoint: "https://wallet-testnet.wcashexplorer.com:443",
       storage_namespace: "wcashtestnet-v5",
+      branch_id: "b3cfd27e",
     };
     expect(parseStatus({ ...base, state: "no-database-no-secret" })).toMatchObject({
       state: "no-database-no-secret",
     });
-    expect(parseStatus({ state: "no-database-no-secret" })).toEqual({ state: "no-database-no-secret" });
+    expect(() => parseStatus({ state: "no-database-no-secret" })).toThrow("malformed data");
     expect(
       parseStatus({
         ...base,
@@ -390,6 +394,7 @@ describe("Wcash renderer boundary", () => {
     ).toThrow("malformed data");
     expect(
       parseStatus({
+        ...base,
         state: "database-secret-backup-required",
         wallet: { account_id: "id", birthday_height: 1 },
       }),
@@ -397,5 +402,38 @@ describe("Wcash renderer boundary", () => {
       state: "database-secret-backup-required",
       wallet: { accountId: "id", birthdayHeight: 1 },
     });
+  });
+
+  it("parses only the exact Regtest profile, endpoint, namespace, and branch", () => {
+    const local = {
+      profile: "local-regtest",
+      network: "Wcash Regtest",
+      ticker: "TWC",
+      endpoint: "http://127.0.0.1:48234",
+      storage_namespace: "wcashregtest-v5",
+      branch_id: "c3a6678a",
+      state: "no-database-no-secret",
+    };
+    expect(parseStatus(local, WCASH_LOCAL_REGTEST_PRODUCT_CONFIG)).toMatchObject({
+      profile: "local-regtest",
+      network: "Wcash Regtest",
+      endpoint: "http://127.0.0.1:48234",
+      storageNamespace: "wcashregtest-v5",
+      branchId: "c3a6678a",
+    });
+    expect(() => parseStatus(local)).toThrow("wrong runtime identity");
+    expect(() =>
+      parseStatus({ ...local, endpoint: "http://127.0.0.1:9999" }, WCASH_LOCAL_REGTEST_PRODUCT_CONFIG),
+    ).toThrow("wrong runtime identity");
+
+    expect(
+      parseReceivers(
+        {
+          ironwood_address: `wuregtest1${"q".repeat(80)}`,
+          transparent_coinbase_address: `WR${"q".repeat(32)}`,
+        },
+        WCASH_LOCAL_REGTEST_PRODUCT_CONFIG,
+      ),
+    ).toMatchObject({ transparentCoinbaseAddress: `WR${"q".repeat(32)}` });
   });
 });

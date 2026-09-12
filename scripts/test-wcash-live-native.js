@@ -4,9 +4,15 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const EXPECTED_NETWORK = "Wcash Testnet";
+const LOCAL_REGTEST = process.env.WCASH_LOCALNET_DEV === "1";
+const EXPECTED_PROFILE = LOCAL_REGTEST ? "local-regtest" : "testnet";
+const EXPECTED_NETWORK = LOCAL_REGTEST ? "Wcash Regtest" : "Wcash Testnet";
 const EXPECTED_TICKER = "TWC";
-const EXPECTED_NAMESPACE = "wcashtestnet-v5";
+const EXPECTED_ENDPOINT = LOCAL_REGTEST ? "http://127.0.0.1:48234" : "https://wallet-testnet.wcashexplorer.com:443";
+const EXPECTED_NAMESPACE = LOCAL_REGTEST ? "wcashregtest-v5" : "wcashtestnet-v5";
+const EXPECTED_BRANCH_ID = LOCAL_REGTEST ? "c3a6678a" : "b3cfd27e";
+const EXPECTED_IRONWOOD_PREFIX = LOCAL_REGTEST ? "wuregtest1" : "wutest1";
+const EXPECTED_TRANSPARENT_PREFIX = LOCAL_REGTEST ? "WR" : "WT";
 const EXPECTED_SEED_SCHEME = "bip39-english-24-empty-passphrase-v1";
 
 function parseObject(method, value) {
@@ -23,7 +29,7 @@ function parseObject(method, value) {
 
 function requireStringPrefix(value, prefix, label) {
   if (typeof value !== "string" || !value.startsWith(prefix)) {
-    throw new Error(`${label} does not use the expected Wcash Testnet prefix`);
+    throw new Error(`${label} does not use the expected ${EXPECTED_NETWORK} prefix`);
   }
 }
 
@@ -34,7 +40,7 @@ function requireExactTip(summary, label) {
     summary.chain_tip_height < 1 ||
     summary.fully_scanned_height !== summary.chain_tip_height
   ) {
-    throw new Error(`${label} did not report an exact Wcash Testnet tip`);
+    throw new Error(`${label} did not report an exact ${EXPECTED_NETWORK} tip`);
   }
 }
 
@@ -65,12 +71,15 @@ async function main() {
 
     const initialStatus = parseObject("wcash_status", await native.wcash_status());
     if (
+      initialStatus.profile !== EXPECTED_PROFILE ||
       initialStatus.network !== EXPECTED_NETWORK ||
       initialStatus.ticker !== EXPECTED_TICKER ||
+      initialStatus.endpoint !== EXPECTED_ENDPOINT ||
       initialStatus.storage_namespace !== EXPECTED_NAMESPACE ||
+      initialStatus.branch_id !== EXPECTED_BRANCH_ID ||
       initialStatus.wallet !== null
     ) {
-      throw new Error("the native module did not start with an empty Wcash Testnet identity");
+      throw new Error(`the native module did not start with an empty ${EXPECTED_NETWORK} identity`);
     }
 
     let recoveryPhrase = await native.wcash_generate_mnemonic();
@@ -91,8 +100,8 @@ async function main() {
     requireExactTip(sync, "wcash_sync");
 
     const receivers = parseObject("wcash_receivers", await native.wcash_receivers());
-    requireStringPrefix(receivers.ironwood_address, "wutest1", "Ironwood receiver");
-    requireStringPrefix(receivers.transparent_coinbase_address, "WT", "transparent receiver");
+    requireStringPrefix(receivers.ironwood_address, EXPECTED_IRONWOOD_PREFIX, "Ironwood receiver");
+    requireStringPrefix(receivers.transparent_coinbase_address, EXPECTED_TRANSPARENT_PREFIX, "transparent receiver");
 
     const recipient = parseObject(
       "wcash_validate_recipient",
@@ -100,10 +109,11 @@ async function main() {
     );
     if (
       recipient.valid !== true ||
+      recipient.network !== EXPECTED_NETWORK ||
       recipient.recipient_kind !== "ironwood" ||
       recipient.canonical_address !== receivers.ironwood_address
     ) {
-      throw new Error("the native recipient validator rejected its Wcash Testnet receiver");
+      throw new Error(`the native recipient validator rejected its ${EXPECTED_NETWORK} receiver`);
     }
 
     let invalidSendRejected = false;
@@ -154,13 +164,16 @@ async function main() {
     console.log(
       JSON.stringify({
         ok: true,
+        profile: finalStatus.profile,
         network: finalStatus.network,
         ticker: finalStatus.ticker,
+        endpoint: finalStatus.endpoint,
         storageNamespace: finalStatus.storage_namespace,
+        branchId: finalStatus.branch_id,
         chainTipHeight: balance.chain_tip_height,
         fullyScannedHeight: balance.fully_scanned_height,
         synchronized: balance.synchronized,
-        ironwoodPrefix: receivers.ironwood_address.slice(0, 7),
+        ironwoodPrefix: receivers.ironwood_address.slice(0, EXPECTED_IRONWOOD_PREFIX.length),
         transparentPrefix: receivers.transparent_coinbase_address.slice(0, 2),
         persistedWalletReopened: true,
         transactionBoundaryValidated: true,
