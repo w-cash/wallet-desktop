@@ -182,6 +182,20 @@ describe("Wcash transaction main-process boundary", () => {
       },
     });
 
+    const shieldReview = {
+      ...persistedReview,
+      operation: "shield_coinbase",
+      recovery: { ...persistedReview.recovery, txids: [TXID] },
+    };
+    expect(parseNativeOperationEnvelope(shieldReview, "shield_coinbase")).toEqual({
+      ...shieldReview,
+      recovery: {
+        code: "exact_transaction_review_required",
+        message: REVIEW_MESSAGE,
+        txids: [TXID],
+      },
+    });
+
     const rejected = broadcastEnvelope({
       outcome: "rejected",
       broadcast: null,

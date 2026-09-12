@@ -58,7 +58,7 @@ async function run() {
     result.config?.network !== "Wcash Testnet" ||
     result.config?.ticker !== "TWC" ||
     result.config?.runtimeReady !== true ||
-    result.config?.coreRevision !== "62d729a17fed2263eddac9a11731def20062293d" ||
+    result.config?.coreRevision !== "da048ab4dd0c29553e3db641f9092f3a0ff9b268" ||
     result.directRequire !== "undefined" ||
     result.directNative !== "undefined" ||
     result.directInvoke !== "undefined"

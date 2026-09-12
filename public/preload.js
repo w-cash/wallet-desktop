@@ -11,7 +11,7 @@ const WCASH_RUNTIME = Object.freeze({
   network: "Wcash Testnet",
   ticker: "TWC",
   runtimeReady: true,
-  coreRevision: "62d729a17fed2263eddac9a11731def20062293d",
+  coreRevision: "da048ab4dd0c29553e3db641f9092f3a0ff9b268",
 });
 const WCASH_RUNTIME_READY = WCASH_RUNTIME.runtimeReady;
 // The inherited bridge is intentionally never reopened. Wcash calls use the

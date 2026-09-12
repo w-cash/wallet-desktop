@@ -15,8 +15,8 @@ crate-type = ["cdylib"]
 # The Wcash facade is pinned to one immutable, reviewed wallet-core revision.
 # The inherited Zingo implementation remains in legacy_zcash.rs for future
 # reference but is neither linked nor exported by the Wcash native artifact.
-zingolib = { git = "https://github.com/w-cash/wallet-core.git", rev = "14cdc78cea4d71bbd902bc60c057a72a6885f261" }
-wcash-wallet = { git = "https://github.com/w-cash/wolf.git", rev = "47c44cd2adab6e6aa911ac740450c62ab600b4f5" }
+zingolib = { git = "https://github.com/w-cash/wallet-core.git", rev = "da048ab4dd0c29553e3db641f9092f3a0ff9b268" }
+wcash-wallet = { git = "https://github.com/w-cash/wolf.git", rev = "9a9c0668784117f116d5b69bdb3a090765092343" }
 
 bip0039 = { version = "0.14", features = ["rand"] }
 serde_json = "1"
@@ -44,9 +44,9 @@ tempfile = "3"
 # immutable Wcash/Ironwood source selections from wallet-core at the pinned SHA.
 [patch.crates-io]
 time = { git = "https://github.com/time-rs/time", tag = "v0.3.47" }
-pczt = { git = "https://github.com/w-cash/wolf.git", rev = "47c44cd2adab6e6aa911ac740450c62ab600b4f5" }
-zcash_primitives = { git = "https://github.com/w-cash/wolf.git", rev = "47c44cd2adab6e6aa911ac740450c62ab600b4f5" }
-zcash_protocol = { git = "https://github.com/w-cash/wolf.git", rev = "47c44cd2adab6e6aa911ac740450c62ab600b4f5" }
+pczt = { git = "https://github.com/w-cash/wolf.git", rev = "9a9c0668784117f116d5b69bdb3a090765092343" }
+zcash_primitives = { git = "https://github.com/w-cash/wolf.git", rev = "9a9c0668784117f116d5b69bdb3a090765092343" }
+zcash_protocol = { git = "https://github.com/w-cash/wolf.git", rev = "9a9c0668784117f116d5b69bdb3a090765092343" }
 lightwallet-protocol = { git = "https://github.com/zingolabs/lightwallet-protocol-rust", rev = "9bdfdc77eb283f2a3d26c27100cc2ac90148cd93" }
 
 [profile.release]

@@ -2,7 +2,7 @@
 
 const runtime = require("../config/wcash-runtime.json");
 
-const reviewedRevision = "62d729a17fed2263eddac9a11731def20062293d";
+const reviewedRevision = "da048ab4dd0c29553e3db641f9092f3a0ff9b268";
 
 if (
   runtime.runtimeReady !== true ||

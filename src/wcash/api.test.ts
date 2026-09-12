@@ -192,6 +192,18 @@ describe("Wcash renderer boundary", () => {
       parseOperationResult({ ...review, recovery: { ...review.recovery, message: "private diagnostic" } }, "send"),
     ).toThrow();
 
+    const shieldReview = {
+      ...review,
+      operation: "shield_coinbase",
+      recovery: { ...review.recovery, txids: [txid] },
+    };
+    expect(parseOperationResult(shieldReview, "shield_coinbase")).toMatchObject({
+      operation: "shield_coinbase",
+      outcome: "recovery_required",
+      expiryHeight: null,
+      recovery: { code: "exact_transaction_review_required", txids: [txid] },
+    });
+
     expect(
       parseOperationResult(
         {

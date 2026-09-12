@@ -2,7 +2,7 @@ const runtimeConfig = {
   appId: "com.wcashwallet.warden.testnet",
   productName: "Wcash Warden Testnet",
   runtimeReady: true,
-  coreRevision: "62d729a17fed2263eddac9a11731def20062293d",
+  coreRevision: "da048ab4dd0c29553e3db641f9092f3a0ff9b268",
   network: "Wcash Testnet",
   ticker: "TWC",
 };

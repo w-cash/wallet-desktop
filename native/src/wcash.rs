@@ -40,6 +40,8 @@ const MAX_MEMO_BYTES: usize = 512;
 const RECOVERY_REQUIRED_CODE: &str = "exact_transaction_rebroadcast_required";
 const REVIEW_REQUIRED_CODE: &str = "exact_transaction_review_required";
 const REJECTED_CODE: &str = "transaction_rejected";
+const PUBLIC_REVIEW_MESSAGE: &str =
+    "The signed transaction is stored but needs review. Refresh signed pending transactions; do not create a replacement.";
 const MAX_PUBLIC_ERROR_MESSAGE_BYTES: usize = 4_096;
 const MAX_PUBLIC_RECOVERY_TXIDS: usize = MAX_PENDING_TRANSACTION_PAGE_SIZE;
 const RECOVERY_STATUS_UNKNOWN_MESSAGE: &str =
@@ -425,32 +427,52 @@ fn next_pending_cursor(
     }
 }
 
-fn ensure_no_unexpired_pending_transactions(
+fn active_pending_transaction(
     runtime: &WcashTestnetRuntime,
-    exact_tip_height: u32,
-) -> Result<(), ZingolibError> {
-    let mut after_row_id = None;
-    loop {
-        let page = runtime
-            .pending_transactions(after_row_id, MAX_PENDING_TRANSACTION_PAGE_SIZE)
-            .map_err(|error| {
-                ZingolibError::Read(format!("inspect pending Wcash transactions: {error}"))
-            })?;
-        if let Some(transaction) = page.transactions.iter().find(|transaction| {
-            pending_lifecycle(transaction.expiry_height, Some(exact_tip_height))
-                .blocks_new_signing()
-        }) {
-            return Err(ZingolibError::Init(format!(
-                "unexpired signed transaction {} must settle, be rebroadcast, or reach expiry height {} before signing another transaction",
-                transaction.txid, transaction.expiry_height
-            )));
-        }
-
-        match next_pending_cursor(after_row_id, page.next_after_row_id)? {
-            Some(next) => after_row_id = Some(next),
-            None => return Ok(()),
+    expected_tip_height: Option<u32>,
+) -> Result<(u32, Option<String>), ZingolibError> {
+    // This snapshot improves recovery UX. The backend independently repeats
+    // the active-row check while holding its exclusive signing lock, which
+    // remains the decisive protection against a concurrent signer or reorg.
+    let page = runtime
+        .active_pending_transactions(None, None, 1)
+        .map_err(|error| {
+            ZingolibError::Read(format!(
+                "inspect active pending Wcash transactions: {error}"
+            ))
+        })?;
+    let attested_tip = page.exact_tip.ok_or_else(|| {
+        ZingolibError::Read(
+            "Wcash transaction recovery did not return an exact chain tip".to_owned(),
+        )
+    })?;
+    if let Some(expected_tip_height) = expected_tip_height {
+        if attested_tip.height != expected_tip_height {
+            return Err(ZingolibError::Read(
+                "Wcash chain tip changed while transaction recovery was being checked; synchronize and retry"
+                    .to_owned(),
+            ));
         }
     }
+    Ok((
+        attested_tip.height,
+        page.transactions
+            .first()
+            .map(|transaction| transaction.txid.clone()),
+    ))
+}
+
+fn attest_backend_active_transaction(
+    runtime: &WcashTestnetRuntime,
+    rejected_txid: &str,
+) -> Result<u32, ZingolibError> {
+    let (exact_tip_height, active_txid) = active_pending_transaction(runtime, None)?;
+    if active_txid.as_deref() != Some(rejected_txid) {
+        return Err(ZingolibError::Read(
+            RECOVERY_STATUS_UNKNOWN_MESSAGE.to_owned(),
+        ));
+    }
+    Ok(exact_tip_height)
 }
 
 fn bounded_public_message(message: impl AsRef<str>) -> String {
@@ -617,7 +639,6 @@ fn public_recovery_txids(txids: &[String]) -> Result<Vec<&str>, ZingolibError> {
 fn persisted_transactions_review_result_json(
     operation: &str,
     txids: &[String],
-    reason: &str,
     exact_tip_height: u32,
 ) -> Result<String, ZingolibError> {
     let txids = public_recovery_txids(txids)?;
@@ -636,12 +657,20 @@ fn persisted_transactions_review_result_json(
         "broadcast": null,
         "recovery": {
             "code": REVIEW_REQUIRED_CODE,
-            "message": bounded_public_message(reason),
+            "message": PUBLIC_REVIEW_MESSAGE,
             "txids": txids,
         },
         "rejection": null,
     })
     .to_string())
+}
+
+fn active_pending_review_result_json(
+    operation: &str,
+    txid: &str,
+    exact_tip_height: u32,
+) -> Result<String, ZingolibError> {
+    persisted_transactions_review_result_json(operation, &[txid.to_owned()], exact_tip_height)
 }
 
 fn signed_transaction_result_json(
@@ -1054,19 +1083,27 @@ fn send_and_broadcast(mut cx: FunctionContext) -> JsResult<JsPromise> {
                 .as_mut()
                 .ok_or_else(|| ZingolibError::Init("Wcash wallet is not open".to_owned()))?;
             let exact_tip_height = require_exact_wallet_tip(runtime)?;
-            ensure_no_unexpired_pending_transactions(runtime, exact_tip_height)?;
+            let (_, active_txid) = active_pending_transaction(runtime, Some(exact_tip_height))?;
+            if let Some(txid) = active_txid {
+                return active_pending_review_result_json("send", &txid, exact_tip_height);
+            }
 
             let signed = match RT.block_on(runtime.send(&master_seed, payments)) {
                 Ok(signed) => signed,
                 Err(WcashTestnetRuntimeError::Wallet(
-                    WalletServiceError::PersistedTransactionsRequireReview { txids, reason },
+                    WalletServiceError::PersistedTransactionsRequireReview { txids, .. },
                 )) => {
                     return persisted_transactions_review_result_json(
                         "send",
                         &txids,
-                        &reason,
                         exact_tip_height,
                     );
+                }
+                Err(WcashTestnetRuntimeError::Wallet(
+                    WalletServiceError::ActivePendingTransaction { txid, .. },
+                )) => {
+                    let recovery_tip_height = attest_backend_active_transaction(runtime, &txid)?;
+                    return active_pending_review_result_json("send", &txid, recovery_tip_height);
                 }
                 Err(error) => {
                     return Err(ZingolibError::Init(format!("Wcash Testnet send: {error}")));
@@ -1102,18 +1139,34 @@ fn shield_coinbase_and_broadcast(mut cx: FunctionContext) -> JsResult<JsPromise>
                 .as_mut()
                 .ok_or_else(|| ZingolibError::Init("Wcash wallet is not open".to_owned()))?;
             let exact_tip_height = require_exact_wallet_tip(runtime)?;
-            ensure_no_unexpired_pending_transactions(runtime, exact_tip_height)?;
+            let (_, active_txid) = active_pending_transaction(runtime, Some(exact_tip_height))?;
+            if let Some(txid) = active_txid {
+                return active_pending_review_result_json(
+                    "shield_coinbase",
+                    &txid,
+                    exact_tip_height,
+                );
+            }
 
             let signed = match RT.block_on(runtime.shield_coinbase(&master_seed)) {
                 Ok(signed) => signed,
                 Err(WcashTestnetRuntimeError::Wallet(
-                    WalletServiceError::PersistedTransactionsRequireReview { txids, reason },
+                    WalletServiceError::PersistedTransactionsRequireReview { txids, .. },
                 )) => {
                     return persisted_transactions_review_result_json(
                         "shield_coinbase",
                         &txids,
-                        &reason,
                         exact_tip_height,
+                    );
+                }
+                Err(WcashTestnetRuntimeError::Wallet(
+                    WalletServiceError::ActivePendingTransaction { txid, .. },
+                )) => {
+                    let recovery_tip_height = attest_backend_active_transaction(runtime, &txid)?;
+                    return active_pending_review_result_json(
+                        "shield_coinbase",
+                        &txid,
+                        recovery_tip_height,
                     );
                 }
                 Err(error) => {
@@ -1717,7 +1770,6 @@ mod tests {
         let output = persisted_transactions_review_result_json(
             "send",
             &[first.clone(), second.clone()],
-            "final policy verification failed",
             200,
         )
         .unwrap();
@@ -1729,6 +1781,7 @@ mod tests {
         assert_eq!(parsed["expiry_height"], Value::Null);
         assert_eq!(parsed["exact_tip_height"], 200);
         assert_eq!(parsed["recovery"]["code"], REVIEW_REQUIRED_CODE);
+        assert_eq!(parsed["recovery"]["message"], PUBLIC_REVIEW_MESSAGE);
         assert_eq!(
             parsed["recovery"]["txids"],
             serde_json::json!([first, second])
@@ -1752,13 +1805,33 @@ mod tests {
             duplicate_pair.as_slice(),
             too_many.as_slice(),
         ] {
-            let error =
-                persisted_transactions_review_result_json("send", txids, "must not escape", 200)
-                    .unwrap_err();
+            let error = persisted_transactions_review_result_json("send", txids, 200).unwrap_err();
             assert!(matches!(
                 error,
                 ZingolibError::Read(message) if message == RECOVERY_STATUS_UNKNOWN_MESSAGE
             ));
+        }
+    }
+
+    #[test]
+    fn active_pending_review_is_structured_for_send_and_shielding() {
+        let txid = "de".repeat(32);
+
+        for operation in ["send", "shield_coinbase"] {
+            let output = active_pending_review_result_json(operation, &txid, 321).unwrap();
+            let parsed: Value = serde_json::from_str(&output).unwrap();
+
+            assert_eq!(parsed["operation"], operation);
+            assert_eq!(parsed["outcome"], "recovery_required");
+            assert_eq!(parsed["txid"], txid);
+            assert_eq!(parsed["exact_tip_height"], 321);
+            assert_eq!(parsed["expiry_height"], Value::Null);
+            assert_eq!(parsed["target_height"], Value::Null);
+            assert_eq!(parsed["fee_zat"], Value::Null);
+            assert_eq!(parsed["recovery"]["code"], REVIEW_REQUIRED_CODE);
+            assert_eq!(parsed["recovery"]["message"], PUBLIC_REVIEW_MESSAGE);
+            assert_eq!(parsed["recovery"]["txids"], serde_json::json!([txid]));
+            assert!(parsed.get("raw_transaction_hex").is_none());
         }
     }
 
