@@ -21,7 +21,6 @@
     ],
     "excludedPaths": [
       "src/components/addNewWallet/AddNewWallet.tsx",
-      "src/components/addressBook/Addressbook.tsx",
       "src/components/addressBook/AddressbookImpl.ts",
       "src/components/appSecurity/AppSecurityModal.tsx",
       "src/components/common/Common.module.css",
@@ -35,12 +34,10 @@
       "src/components/logo/Logo.tsx",
       "src/components/receive/components/AddressBlock.tsx",
       "src/components/send/Send.tsx",
-      "src/components/send/components/SendConfirmModal.tsx",
-      "src/components/send/components/ToAddrBox.tsx",
       "src/components/sideBar/Sidebar.tsx"
     ],
-    "fileCount": 103,
-    "sha256": "8e2e5ca705cb3d69a730273444a00eba3ea302b3475cde2ef138d6dd2f2bf627"
+    "fileCount": 106,
+    "sha256": "8e29f571a920a5d9fa7a04c84e55bc76e5a2248e050613a27dc685e1285afcd7"
   },
   "approvedBrandingFiles": {
     "public/favicon.ico": "b593fb06133ec48cd0f1b2f825583a6d83d8d688f3dbb012bdec14b4c470dceb",
@@ -52,17 +49,17 @@
     "resources/icons/512x512.png": "87056ea18ded749bc73254a48a32fe1b9321f62ab6bf73889b1cc69215b263c3",
     "src/App.tsx": "33480f5f548bd49da1fefb9f16b5610361b5efc9b9703d6473440f85e5b61016",
     "src/assets/img/wcash-mark.svg": "f5d55ff7db37e114cd1a454af085de070207367bc314e662f3681efa657c490c",
+    "src/components/addNewWallet/AddNewWallet.tsx": "d52109ffbd59f0fa91674131982072e95cfda1b7a33cfd033fd6518332b6e2f1",
     "src/components/addressBook/AddressbookImpl.ts": "a26e990a82741ffe960523952af11d270b772653b47820b6abbb7911a281c4cd",
-    "src/components/appSecurity/AppSecurityModal.tsx": "8aa4d8818ba3e943078870645a36c2da1ac396fd541df593fef1f12ae82850a2",
-    "src/components/dashboard/Dashboard.tsx": "c90e6ecd3fd7ddb2e562c48cd42019625c54a67c66d39291820cf935f57fe4a3",
+    "src/components/appSecurity/AppSecurityModal.tsx": "6b291c64e3f93487dd2ebae3d95668c662c5c22ea2f2e3316235182137f0ec1b",
+    "src/components/dashboard/Dashboard.tsx": "6d48cc4b6485afa841ab8459eb3ac8774c740a1f8fb8a7e7583d554c57b6438c",
     "src/components/importData/ImportDataModal.tsx": "25405a488eb4c41924e95412297148cbebe875d8429b68b7e4c496088c9abc1c",
     "src/components/loadingScreen/LoadingScreen.tsx": "a551c7a88b66ed9625f1923b23f0e257d500a79a3ffd92da4782d42160077275",
     "src/components/lockScreen/LockScreen.tsx": "83906861719820fc73ea2f622dc044f79d8e094351a83fc40050381ebc6164b9",
     "src/components/logo/Logo.tsx": "3892dcd4757244d415e50a44fe29f702fe2efb106a8773253b8705f597b240d8",
-    "src/components/receive/components/AddressBlock.tsx": "118c175b9790e144221785d136d97bb534d50ed8aee7d2e2d063870ae444d598",
-    "src/components/sideBar/Sidebar.tsx": "1fe5d0360bd0ba1754a0dcd19ecfcfaf7d10f4cf771af79bc7cc0e5d90033934",
-    "src/utils/utils.ts": "88ab249c8cff8ee55626c2cde226cfc179922adcd52f210a4b71bf521d47218d",
-    "src/components/addNewWallet/AddNewWallet.tsx": "68f4fc907c717e3d4ba6a720f7ac6a9240f4e237a7567b6cb302e7139d22f535"
+    "src/components/receive/components/AddressBlock.tsx": "fd1e060fe19050c539754d0d41c73ebb27beec5e5ced133d8d63b1e6428d378c",
+    "src/components/sideBar/Sidebar.tsx": "5d0b4f3fd6c27667013512c9869129c4e5dfbd118e489a0246488b37d8d27306",
+    "src/utils/utils.ts": "88ab249c8cff8ee55626c2cde226cfc179922adcd52f210a4b71bf521d47218d"
   },
   "forbiddenPaths": [
     "src/wcash/WcashWallet.tsx",
@@ -70,16 +67,12 @@
     "src/wcash/WcashRoutes.tsx"
   ],
   "approvedProtocolFiles": {
-    "src/components/addressBook/Addressbook.tsx": "f38845cbc3aa7225c5250f68c1fe8c51a872b98aed1ef78da59dae4c3527c69b",
     "src/rpc/rpc.ts": "f0b637d632f744c23b089a98ed03ff55c31e2ed1e62313d402251cc2e3616079",
     "src/utils/uris.ts": "e84c06eeacf7ebadeb619d9ad7401f5ffea8fee8bb313c98598ce8d349836923",
     "src/components/send/Send.tsx": "ea2b6f6ea7868e58011c3970b1f4b9f5768495e6a808b0e30d210da3b30aa5f9",
-    "src/components/send/components/SendConfirmModal.tsx": "a5229e5bbcbd2745874f2811ed430c77a54b4e24794983113086d67e7aaf77aa",
     "src/components/history/components/VtItemBlock.tsx": "cefa659a6d2cf3fc55666893f781edc2a610443060e2878b14c8da35f865cb6e",
     "src/components/history/components/VtModal.tsx": "80a11faef01b0a5747091585a0fb3c78d45b40ed706f1a93cd252adea551b66d",
-    "src/components/insight/Insight.tsx": "b5bdd014807130528ef6c8d25b00f5570f8af23af513c512e51d6c9b2780761f",
-    "src/components/send/components/ToAddrBox.tsx": "c9725d0a627519e252398798c8d4318f4b2b8a18f0763e27b0ab0a67c274a20f",
-    "src/rpc/components/mixnetPresenter.ts": "476b8a15a3c7a538454ce535fc8ff7c336920ffda4d1cb3fbe59ee57edc555da"
+    "src/components/insight/Insight.tsx": "b5bdd014807130528ef6c8d25b00f5570f8af23af513c512e51d6c9b2780761f"
   },
   "approvedLayoutFiles": {
     "src/components/common/Common.module.css": "f65679a98840faa261c8c2fdf6565532121bb405e270dc3f9ad59c258d854c1b"

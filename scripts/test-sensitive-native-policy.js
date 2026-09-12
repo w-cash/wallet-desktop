@@ -1,7 +1,11 @@
 "use strict";
 
 const assert = require("assert/strict");
-const { createRequireAuthSettingHandler, createSensitiveNativeHandler } = require("../public/sensitiveNativePolicy");
+const {
+  createRequireAuthSettingHandler,
+  createSensitiveAuthorizationGrantStore,
+  createSensitiveNativeHandler,
+} = require("../public/sensitiveNativePolicy");
 
 async function verifySensitiveOperation(method) {
   let nativeCalls = 0;
@@ -56,11 +60,51 @@ async function verifySensitiveOperation(method) {
   });
   assert.equal(await explicitlyDisabled({}, { authenticated: false }), `${method}-ok`);
   assert.equal(nativeCalls, 2);
+
+  let priorAuthorizationConsumed = 0;
+  const alreadyAuthorized = createSensitiveNativeHandler({
+    method,
+    getRequireDeviceAuth: async () => true,
+    consumePriorAuthorization: async (event, operation) => {
+      assert.deepEqual(event, { sender: { id: 7 } });
+      assert.equal(operation, method);
+      priorAuthorizationConsumed += 1;
+      return true;
+    },
+    verifyDeviceAuthentication: async () => {
+      throw new Error("a valid one-shot renderer authorization must not prompt twice");
+    },
+    invokeNative: async () => {
+      nativeCalls += 1;
+      return `${method}-prior-auth-ok`;
+    },
+  });
+  assert.equal(await alreadyAuthorized({ sender: { id: 7 } }), `${method}-prior-auth-ok`);
+  assert.equal(priorAuthorizationConsumed, 1);
+  assert.equal(nativeCalls, 3);
 }
 
 async function main() {
   await verifySensitiveOperation("get_seed");
+  await verifySensitiveOperation("get_ufvk");
   await verifySensitiveOperation("confirm");
+
+  let clock = 1_000;
+  const grants = createSensitiveAuthorizationGrantStore({ ttlMs: 15_000, now: () => clock });
+  const authorizedRenderer = { sender: { id: 7 } };
+  const otherRenderer = { sender: { id: 8 } };
+  grants.remember(authorizedRenderer, ["get_seed", "get_ufvk"]);
+  assert.equal(grants.consume(otherRenderer, "get_seed"), false, "a grant must stay bound to its renderer");
+  assert.equal(grants.consume(authorizedRenderer, "get_seed"), true);
+  assert.equal(grants.consume(authorizedRenderer, "get_seed"), false, "each operation grant must be one-use");
+  assert.equal(
+    grants.consume(authorizedRenderer, "get_ufvk"),
+    true,
+    "one upstream seed/viewing-key prompt must authorize both exports exactly once",
+  );
+  grants.remember(authorizedRenderer, ["get_ufvk"]);
+  clock += 15_001;
+  assert.equal(grants.consume(authorizedRenderer, "get_ufvk"), false, "expired grants must fail closed");
 
   let stored = true;
   let setCalls = 0;

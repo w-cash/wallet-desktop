@@ -211,6 +211,15 @@ const SendConfirmModal: React.FC<SendConfirmModalProps> = ({
   }, [getPrivacyLevel, sendFee, sendPageState.toaddr]);
 
   const sendButton = async () => {
+    const allSettings = await window.electronAPI.ipcRenderer.invoke("loadSettings");
+    if (allSettings?.requireDeviceAuth) {
+      const result: { success: boolean } = await window.electronAPI.ipcRenderer.invoke(
+        "auth:verify",
+        "Authorize transaction",
+      );
+      if (!result.success) return;
+    }
+
     // First, close the confirm modal.
     closeModal();
 

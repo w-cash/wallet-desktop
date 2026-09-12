@@ -111,16 +111,6 @@ describe("AddressBlock — Unified", () => {
     expect(screen.queryByRole("button", { name: /view on explorer/i })).not.toBeInTheDocument();
   });
 
-  it("truthfully disables unsupported new addresses on Local Regtest", () => {
-    renderInAccordion(<AddressBlock {...baseProps} address={uAddr} type="u" />, {
-      contextOverrides: { currentWallet: regtestWallet },
-    });
-    fireEvent.click(screen.getByText("u1shortaddr000000000000000"));
-    expect(screen.getByRole("button", { name: /fixed local address/i })).toBeDisabled();
-    expect(screen.getByRole("combobox", { name: /new address type/i })).toBeDisabled();
-    expect(RPC.createNewAddressUnified).not.toHaveBeenCalled();
-  });
-
   it("shows 'View on explorer' on mainnet", () => {
     renderInAccordion(<AddressBlock {...baseProps} address={uAddr} type="u" />, {
       contextOverrides: { currentWallet: mainnetWallet },

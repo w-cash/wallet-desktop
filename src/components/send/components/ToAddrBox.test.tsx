@@ -71,10 +71,7 @@ describe("ToAddrBox", () => {
 
   it("renders the recipient address, amount, fee and memo inputs", () => {
     render(<ToAddrBox {...makeProps()} />);
-    const recipient = screen.getByRole("textbox", { name: /recipient address/i });
-    expect(recipient).toBeInTheDocument();
-    expect(recipient).toHaveAttribute("placeholder", "Unified | Sapling | Transparent | TEX address");
-    expect(recipient).not.toHaveAttribute("placeholder", expect.stringMatching(/\.zcash/i));
+    expect(screen.getByRole("textbox", { name: /recipient address/i })).toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: /amount/i })).toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: /transaction fee/i })).toBeInTheDocument();
   });

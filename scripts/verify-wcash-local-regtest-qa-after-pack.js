@@ -143,7 +143,9 @@ function verifyPackagedApplication(context) {
   assert(packagedMain.includes("Wcash Wallet"), "main does not set the exact product name");
   assert(packagedMain.includes("createSensitiveNativeHandler"), "main does not enforce sensitive native operations");
   assert(
-    packagedSensitivePolicy.includes("get_seed") && packagedSensitivePolicy.includes("confirm"),
+    packagedSensitivePolicy.includes("get_seed") &&
+      packagedSensitivePolicy.includes("get_ufvk") &&
+      packagedSensitivePolicy.includes("confirm"),
     "sensitive native policy is missing",
   );
   assert(

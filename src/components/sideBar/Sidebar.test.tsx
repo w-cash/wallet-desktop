@@ -91,8 +91,6 @@ const renderSidebar = (overrides: any = {}) => {
 beforeEach(() => {
   cleanup();
   mockNavigate.mockReset();
-  mockGetSeed.mockReset();
-  mockGetUfvk.mockReset();
   PayURIModalMock.mockImplementation(() => null);
   BlockExplorerModalMock.mockImplementation(() => null);
   installIpcCapture();
@@ -224,21 +222,13 @@ describe("Sidebar", () => {
       expect(lastBlockExplorerModalProps()?.modalIsOpen).toBe(true);
     });
 
-    it("'blockexplorer' reports no explorer for Local Regtest", () => {
-      const openErrorModal = jest.fn();
-      renderSidebar({ openErrorModal, currentWallet: makeWallet(ServerChainNameEnum.regtestChainName) });
-      act(() => getListener("blockexplorer")?.({}));
-      expect(openErrorModal).toHaveBeenCalledWith("Block Explorer", expect.stringContaining("not available"));
-      expect(lastBlockExplorerModalProps()?.modalIsOpen).toBe(false);
-    });
-
     it("'seed' shows error when no current wallet", async () => {
       const openErrorModal = jest.fn();
       renderSidebar({ openErrorModal, currentWallet: null });
       await act(async () => {
         await getListener("seed")?.({});
       });
-      expect(openErrorModal).toHaveBeenCalledWith("Wallet Seed Phrase", expect.any(String));
+      expect(openErrorModal).toHaveBeenCalledWith("Wallet Seed Phrase/Viewing Key", expect.any(String));
     });
 
     it("'seed' displays the seed phrase for a normal wallet", async () => {
@@ -249,30 +239,29 @@ describe("Sidebar", () => {
         await getListener("seed")?.({});
       });
       expect(openErrorModal).toHaveBeenCalled();
-      expect(openErrorModal.mock.calls[0][0]).toBe("Wallet Seed Phrase");
-      expect(mockGetUfvk).not.toHaveBeenCalled();
+      expect(openErrorModal.mock.calls[0][0]).toBe("Wallet Seed Phrase / Viewing Key");
     });
 
-    it("'seed' reports UFVK export as unavailable for a read-only wallet", async () => {
+    it("'seed' displays the ufvk for a read-only wallet", async () => {
       const openErrorModal = jest.fn();
+      mockGetUfvk.mockResolvedValue(JSON.stringify({ ufvk: "uview1xyz" }));
       renderSidebar({ openErrorModal, readOnly: true });
       await act(async () => {
         await getListener("seed")?.({});
       });
-      expect(openErrorModal).toHaveBeenCalledWith("Wallet Seed Phrase", expect.stringContaining("not available"));
-      expect(mockGetSeed).not.toHaveBeenCalled();
-      expect(mockGetUfvk).not.toHaveBeenCalled();
+      expect(mockGetUfvk).toHaveBeenCalled();
     });
 
-    it("'seed' fetches only the supported seed phrase", async () => {
+    it("'seed' on a normal wallet also fetches the UFVK so users can share view-only access", async () => {
       const openErrorModal = jest.fn();
       mockGetSeed.mockResolvedValue(JSON.stringify({ seed_phrase: "abandon ability …" }));
+      mockGetUfvk.mockResolvedValue(JSON.stringify({ ufvk: "uview1abc" }));
       renderSidebar({ openErrorModal });
       await act(async () => {
         await getListener("seed")?.({});
       });
       expect(mockGetSeed).toHaveBeenCalled();
-      expect(mockGetUfvk).not.toHaveBeenCalled();
+      expect(mockGetUfvk).toHaveBeenCalled();
     });
 
     it("'rescan' delegates to doRescan when wallet is loaded", async () => {
@@ -285,25 +274,6 @@ describe("Sidebar", () => {
         await getListener("rescan")?.({});
       });
       expect(doRescan).toHaveBeenCalled();
-    });
-
-    it("'rescan' reports unsupported for Local Regtest", async () => {
-      const doRescan = jest.fn();
-      const openErrorModal = jest.fn();
-      render(
-        <Sidebar doRescan={doRescan} navigateToLoadingScreenChangingWallet={jest.fn()} setBlockExplorer={jest.fn()} />,
-        {
-          contextOverrides: {
-            currentWallet: makeWallet(ServerChainNameEnum.regtestChainName),
-            openErrorModal,
-          },
-        },
-      );
-      await act(async () => {
-        await getListener("rescan")?.({});
-      });
-      expect(doRescan).not.toHaveBeenCalled();
-      expect(openErrorModal).toHaveBeenCalledWith("Rescan Wallet", expect.stringContaining("not available"));
     });
 
     it("'rescan' shows error without a current wallet", async () => {
@@ -319,18 +289,6 @@ describe("Sidebar", () => {
       renderSidebar();
       act(() => getListener("addnewwallet")?.({}));
       expect(mockNavigate).toHaveBeenCalledWith(routes.ADDNEWWALLET, { state: { mode: "addnew" } });
-    });
-
-    it("'addnewwallet' reports the one-wallet Local Regtest limit", () => {
-      const wallet = makeWallet(ServerChainNameEnum.regtestChainName);
-      const openErrorModal = jest.fn();
-      renderSidebar({ openErrorModal, currentWallet: wallet, wallets: [wallet] });
-      act(() => getListener("addnewwallet")?.({}));
-      expect(mockNavigate).not.toHaveBeenCalled();
-      expect(openErrorModal).toHaveBeenCalledWith(
-        "Add New Wallet",
-        expect.stringContaining("one fixed-profile wallet"),
-      );
     });
 
     it("'settingswallet' navigates to settings mode when wallet is loaded", () => {

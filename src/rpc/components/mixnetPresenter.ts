@@ -97,7 +97,7 @@ export function describeSendRoute(view: MixnetView): string {
     case "mixnet.status.ready":
       return "This send will travel over the Nym mixnet.";
     case "mixnet.status.off":
-      return "This send uses the configured Wcash server connection.";
+      return "This send will travel over clearnet — the Nym mixnet is off for this session.";
     case "mixnet.status.bootstrapping":
       return `Sending waits for the Nym mixnet to finish connecting${view.narration ? ` (${view.narration})` : ""}.`;
     default:

@@ -3,7 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const CORE_REVISION = "58bc22ec63bbe3eddab5f961c137836431589c95";
+const CORE_REVISION = "d10113e19c712a403c1b68947c2186e97f61f854";
 const TESTNET_PACKAGED_PROFILE = "testnet";
 const LOCAL_REGTEST_QA_PACKAGED_PROFILE = "local-regtest-qa";
 

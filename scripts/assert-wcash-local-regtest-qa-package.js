@@ -167,8 +167,8 @@ requireCondition(
   "the native package author metadata is inherited from upstream",
 );
 for (const [repository, revision] of [
-  ["https://github.com/w-cash/wallet-core.git", "58bc22ec63bbe3eddab5f961c137836431589c95"],
-  ["https://github.com/w-cash/wolf.git", "5b4e29980eb45e84ddab9024f530c923986d7e1e"],
+  ["https://github.com/w-cash/wallet-core.git", "d10113e19c712a403c1b68947c2186e97f61f854"],
+  ["https://github.com/w-cash/wolf.git", "168b59310056964a6347ed993ace8f8d1385cde1"],
   ["https://github.com/w-cash/wolf.git", "9a9c0668784117f116d5b69bdb3a090765092343"],
 ]) {
   requireCondition(
@@ -193,15 +193,16 @@ requireCondition(
 );
 const noParamMethods = main.match(/const _NATIVE_NO_PARAM_METHODS = \[([\s\S]*?)\];/)?.[1] || "";
 requireCondition(!noParamMethods.includes('"get_seed"'), "seed export is exposed through the generic native IPC loop");
+requireCondition(!noParamMethods.includes('"get_ufvk"'), "viewing-key export is exposed through the generic native IPC loop");
 requireCondition(
   !noParamMethods.includes('"confirm"'),
   "transaction signing is exposed through the generic native IPC loop",
 );
 requireCondition(
-  main.includes('for (const method of ["get_seed", "confirm"])') &&
+  main.includes('for (const method of ["get_seed", "get_ufvk", "confirm"])') &&
     main.includes("createSensitiveNativeHandler") &&
     sensitivePolicy.includes("verifyDeviceAuthentication"),
-  "trusted-main authentication is not wired for seed export and transaction signing",
+  "trusted-main authentication is not wired for seed/viewing-key export and transaction signing",
 );
 const securityTest = spawnSync(process.execPath, [path.join(root, "scripts", "test-sensitive-native-policy.js")], {
   cwd: root,

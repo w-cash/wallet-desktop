@@ -118,6 +118,28 @@ for (const forbiddenPath of manifest.forbiddenPaths) {
   if (fs.existsSync(path.join(root, forbiddenPath))) failures.push(`${forbiddenPath} must not exist`);
 }
 
+// Local profile limitations belong behind the compatibility adapter. These
+// phrases previously marked upstream controls unavailable and created a
+// different Wcash UI in both React and Electron menus.
+const forbiddenProfileUiCopy = [
+  "fixed Local Regtest profile",
+  "unavailable in Local Regtest",
+  "Local Regtest QA supports one",
+  "Fixed Local Address",
+  "seed restore only",
+];
+const uiTextCandidates = git(["ls-files", "--", ...manifest.protected.roots, "public/electron.js"])
+  .split("\n")
+  .filter(Boolean)
+  .map(toPosix)
+  .filter((relativePath) => relativePath === "public/electron.js" || productionPath(relativePath));
+for (const candidate of uiTextCandidates) {
+  const contents = fs.readFileSync(path.join(root, candidate), "utf8");
+  for (const phrase of forbiddenProfileUiCopy) {
+    if (contents.includes(phrase)) failures.push(`${candidate}: profile-specific UI copy is forbidden: ${phrase}`);
+  }
+}
+
 if (failures.length > 0) {
   console.error(`Exact Zingo UI parity failed (${manifest.baseline.tag} / ${manifest.baseline.commit}):`);
   for (const failure of failures) console.error(`- ${failure}`);
@@ -129,5 +151,5 @@ console.log(
     `${changedFromUpstream.size} explicit upstream deviations, ` +
     `${Object.keys(manifest.approvedBrandingFiles).length} branding files, ` +
     `${Object.keys(manifest.approvedProtocolFiles || {}).length} protocol files, ` +
-    `${Object.keys(manifest.approvedLayoutFiles || {}).length} accessibility layout files.`,
+    `${Object.keys(manifest.approvedLayoutFiles || {}).length} requested layout files.`,
 );

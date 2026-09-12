@@ -3,7 +3,11 @@ const os = require("os");
 const path = require("path");
 const fs = require("fs");
 const { createWcashZingoNativeAdapter } = require("./wcashZingoNativeAdapter");
-const { createRequireAuthSettingHandler, createSensitiveNativeHandler } = require("./sensitiveNativePolicy");
+const {
+  createRequireAuthSettingHandler,
+  createSensitiveAuthorizationGrantStore,
+  createSensitiveNativeHandler,
+} = require("./sensitiveNativePolicy");
 const {
   TESTNET_PACKAGED_PROFILE,
   resolveWcashUserDataPath,
@@ -166,25 +170,23 @@ class MenuBuilder {
       label: "Wallet",
       submenu: [
         {
-          label: wcashProfile.localnet ? "Add new Wallet (fixed Local Regtest profile)" : "&Add new Wallet",
+          label: "&Add new Wallet",
           accelerator: "Ctrl+A",
-          enabled: !wcashProfile.localnet,
           click: () => {
             mainWindow.webContents.send("addnewwallet");
           },
         },
         { type: "separator" },
         {
-          label: "Wallet &Seed Phrase",
+          label: "Wallet &Seed Phrase / Viewing Key",
           accelerator: "Ctrl+S",
           click: () => {
             mainWindow.webContents.send("seed");
           },
         },
         {
-          label: wcashProfile.localnet ? "Rescan Wallet (unavailable in Local Regtest QA)" : "&Rescan Wallet",
+          label: "&Rescan Wallet",
           accelerator: "Ctrl+R",
-          enabled: !wcashProfile.localnet,
           click: () => {
             mainWindow.webContents.send("rescan");
           },
@@ -217,9 +219,8 @@ class MenuBuilder {
       label: "Settings",
       submenu: [
         {
-          label: wcashProfile.localnet ? "Block Explorer (unavailable in Local Regtest QA)" : "Select Block &Explorer",
+          label: "Select Block &Explorer",
           accelerator: "Ctrl+E",
-          enabled: !wcashProfile.localnet,
           click: () => {
             mainWindow.webContents.send("blockexplorer");
           },
@@ -233,22 +234,21 @@ class MenuBuilder {
           },
         },
         {
-          label: wcashProfile.localnet ? "Nym Mixnet (unavailable in Local Regtest QA)" : "&Nym Mixnet",
-          enabled: !wcashProfile.localnet,
+          label: "&Nym Mixnet",
           click: () => {
             mainWindow.webContents.send("mixnet-settings");
           },
         },
         {
           label: "Change &Wallets Folder Location…",
-          visible: process.mas === true && !wcashProfile.localnet,
+          visible: process.mas === true,
           click: () => {
             mainWindow.webContents.send("change-wallet-dir");
           },
         },
         {
           label: "&Import Data from Another Installation…",
-          visible: (process.mas === true || !!process.env.FLATPAK_ID) && !wcashProfile.localnet,
+          visible: process.mas === true || !!process.env.FLATPAK_ID,
           click: () => {
             mainWindow.webContents.send("import-data");
           },
@@ -316,25 +316,23 @@ class MenuBuilder {
         label: "&Wallet",
         submenu: [
           {
-            label: wcashProfile.localnet ? "Add new Wallet (fixed Local Regtest profile)" : "&Add new Wallet",
+            label: "&Add new Wallet",
             accelerator: "Ctrl+A",
-            enabled: !wcashProfile.localnet,
             click: () => {
               mainWindow.webContents.send("addnewwallet");
             },
           },
           { type: "separator" },
           {
-            label: "Wallet &Seed Phrase",
+            label: "Wallet &Seed Phrase / Viewing Key",
             accelerator: "Ctrl+S",
             click: () => {
               mainWindow.webContents.send("seed");
             },
           },
           {
-            label: wcashProfile.localnet ? "Rescan Wallet (unavailable in Local Regtest QA)" : "&Rescan Wallet",
+            label: "&Rescan Wallet",
             accelerator: "Ctrl+R",
-            enabled: !wcashProfile.localnet,
             click: () => {
               mainWindow.webContents.send("rescan");
             },
@@ -360,11 +358,8 @@ class MenuBuilder {
         label: "&Settings",
         submenu: [
           {
-            label: wcashProfile.localnet
-              ? "Block Explorer (unavailable in Local Regtest QA)"
-              : "Select Block &Explorer",
+            label: "Select Block &Explorer",
             accelerator: "Ctrl+E",
-            enabled: !wcashProfile.localnet,
             click: () => {
               mainWindow.webContents.send("blockexplorer");
             },
@@ -378,15 +373,14 @@ class MenuBuilder {
             },
           },
           {
-            label: wcashProfile.localnet ? "Nym Mixnet (unavailable in Local Regtest QA)" : "&Nym Mixnet",
-            enabled: !wcashProfile.localnet,
+            label: "&Nym Mixnet",
             click: () => {
               mainWindow.webContents.send("mixnet-settings");
             },
           },
           {
             label: "&Import Data from Another Installation…",
-            visible: !!process.env.FLATPAK_ID && !wcashProfile.localnet,
+            visible: !!process.env.FLATPAK_ID,
             click: () => {
               mainWindow.webContents.send("import-data");
             },
@@ -679,7 +673,33 @@ async function verifyDeviceAuthentication(reason, { requireAvailable = false } =
   return requireAvailable ? { success: false, unavailable: true } : { success: true };
 }
 
-ipcMain.handle("auth:verify", (_e, reason) => verifyDeviceAuthentication(reason));
+// The upstream renderer authenticates immediately before requesting a seed or
+// confirming a transaction. Preserve that exact one-prompt flow while the
+// trusted main process still enforces each sensitive native operation. Grants
+// are bound to one renderer, one operation, one use, and a short time window.
+const SENSITIVE_RENDERER_AUTH_REASONS = new Map([
+  ["Show seed phrase / viewing key", ["get_seed", "get_ufvk"]],
+  ["Authorize transaction", ["confirm"]],
+]);
+const SENSITIVE_AUTH_GRANT_TTL_MS = 15_000;
+const sensitiveAuthGrants = createSensitiveAuthorizationGrantStore({ ttlMs: SENSITIVE_AUTH_GRANT_TTL_MS });
+
+function rememberSensitiveAuthorization(event, reason, result) {
+  const methods = SENSITIVE_RENDERER_AUTH_REASONS.get(reason);
+  if (methods && result && result.success === true) {
+    sensitiveAuthGrants.remember(event, methods);
+  }
+}
+
+function consumeSensitiveAuthorization(event, method) {
+  return sensitiveAuthGrants.consume(event, method);
+}
+
+ipcMain.handle("auth:verify", async (event, reason) => {
+  const result = await verifyDeviceAuthentication(reason);
+  rememberSensitiveAuthorization(event, reason, result);
+  return result;
+});
 
 // ── Keychain-backed requireDeviceAuth ─────────────────────────────────────
 // Missing or deleted entry is treated as true (auth required by default).
@@ -959,7 +979,6 @@ function setWalletBaseDirInMainProcess(walletPath, wdLog) {
 const _NATIVE_NO_PARAM_METHODS = [
   "save_wallet_file",
   "check_save_error",
-  "get_ufvk",
   "get_latest_block_wallet",
   "get_value_transfers",
   "poll_sync",
@@ -1009,13 +1028,14 @@ for (const method of _NATIVE_NO_PARAM_METHODS) {
 // Spending authority never crosses the renderer boundary without the trusted
 // main process enforcing the user's device-authentication setting. Renderer
 // arguments are intentionally ignored by the policy handler.
-for (const method of ["get_seed", "confirm"]) {
+for (const method of ["get_seed", "get_ufvk", "confirm"]) {
   ipcMain.handle(
     `native:${method}`,
     createSensitiveNativeHandler({
       method,
       getRequireDeviceAuth: getRequireAuth,
       verifyDeviceAuthentication,
+      consumePriorAuthorization: (event) => consumeSensitiveAuthorization(event, method),
       invokeNative: () => requireNative(method)[method](),
     }),
   );

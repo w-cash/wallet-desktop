@@ -290,16 +290,16 @@ describe("SendConfirmModal", () => {
   });
 
   describe("sendButton", () => {
-    it("leaves authorization to the trusted main-process native boundary", async () => {
+    it("calls auth:verify when requireDeviceAuth is true; bails on failure", async () => {
       const invoke = installElectronAPI({ loadSettings: { requireDeviceAuth: true }, authVerify: { success: false } });
-      const sendTransaction = jest.fn().mockResolvedValue("txid-1");
+      const sendTransaction = jest.fn();
       const closeModal = jest.fn();
       render(<SendConfirmModal {...makeProps({ sendTransaction, closeModal })} />);
       fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
-      await waitFor(() => expect(sendTransaction).toHaveBeenCalled());
-      expect(invoke).not.toHaveBeenCalledWith("auth:verify", expect.anything());
-      expect(invoke).not.toHaveBeenCalledWith("loadSettings");
-      expect(closeModal).toHaveBeenCalled();
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith("auth:verify", "Authorize transaction"));
+      expect(invoke).toHaveBeenCalledWith("loadSettings");
+      expect(sendTransaction).not.toHaveBeenCalled();
+      expect(closeModal).not.toHaveBeenCalled();
     });
 
     it("skips auth when requireDeviceAuth is unset", async () => {
