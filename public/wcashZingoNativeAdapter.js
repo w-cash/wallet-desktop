@@ -392,9 +392,13 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
     if (!isRecord(history.exact_tip) || !Array.isArray(history.transactions)) {
       throw new TypeError("Wcash core returned invalid confirmed history");
     }
-    return history.transactions.map((tx) => {
+    return history.transactions.map((entry) => {
+      if (!isRecord(entry) || !isRecord(entry.transaction)) {
+        throw new TypeError("Wcash core returned an invalid confirmed transaction summary");
+      }
+      const tx = entry.transaction;
       const direction = tx.direction;
-      const valueKnown = tx.value_zat !== null && tx.value_zat !== undefined;
+      const valueKnown = entry.value_zat !== null && entry.value_zat !== undefined;
       const kind = valueKnown
         ? tx.kind === "shielding"
           ? "shield"
@@ -421,7 +425,7 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
         transaction_fee: tx.fee_zat === null ? 0 : safeInteger(tx.fee_zat, "transaction fee"),
         status: "confirmed",
         blockheight: safeInteger(tx.mined_height, "transaction height"),
-        value: valueKnown ? safeInteger(tx.value_zat, "transaction value") : 0,
+        value: valueKnown ? safeInteger(entry.value_zat, "transaction value") : 0,
         pools_sent_from: poolsSentFrom,
         pools_received: !valueKnown || direction === "outgoing" ? [] : [pool],
       };
