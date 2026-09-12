@@ -12,6 +12,8 @@ const {
   parseRendererSendRequest,
   requireCanonicalTxid,
   RECOVERY_MESSAGE,
+  REJECTION_MESSAGE,
+  REVIEW_MESSAGE,
   INVALID_RECIPIENT_MESSAGE,
   visibleText,
 } = require("../../public/wcashTransactionBoundary");
@@ -30,12 +32,14 @@ const broadcastEnvelope = (overrides = {}) => ({
   target_height: 140,
   fee_zat: "15000",
   internal_change_receiver_verified: true,
+  exact_tip_height: 140,
   broadcast: {
     txid: TXID,
     disposition: "submitted",
     status: { state: "mempool" },
   },
   recovery: null,
+  rejection: null,
   ...overrides,
 });
 
@@ -145,12 +149,142 @@ describe("Wcash transaction main-process boundary", () => {
       recovery: {
         code: "exact_transaction_rebroadcast_required",
         message: "sensitive server endpoint diagnostic",
+        txids: [TXID],
       },
     });
     expect(parseNativeOperationEnvelope(JSON.stringify(recovery), "shield_coinbase")).toEqual({
       ...recovery,
-      recovery: { code: "exact_transaction_rebroadcast_required", message: RECOVERY_MESSAGE },
+      recovery: { code: "exact_transaction_rebroadcast_required", message: RECOVERY_MESSAGE, txids: [TXID] },
     });
+  });
+
+  it("distinguishes persisted review, definitive rejection, and expired retry outcomes", () => {
+    const secondTxid = "b".repeat(64);
+    const persistedReview = broadcastEnvelope({
+      outcome: "recovery_required",
+      expiry_height: null,
+      target_height: null,
+      fee_zat: null,
+      internal_change_receiver_verified: null,
+      broadcast: null,
+      recovery: {
+        code: "exact_transaction_review_required",
+        message: "sensitive native diagnostic",
+        txids: [TXID, secondTxid],
+      },
+    });
+    expect(parseNativeOperationEnvelope(persistedReview, "send")).toEqual({
+      ...persistedReview,
+      recovery: {
+        code: "exact_transaction_review_required",
+        message: REVIEW_MESSAGE,
+        txids: [TXID, secondTxid],
+      },
+    });
+
+    const rejected = broadcastEnvelope({
+      outcome: "rejected",
+      broadcast: null,
+      recovery: null,
+      rejection: { code: "transaction_rejected", node_code: -26, message: "" },
+    });
+    expect(parseNativeOperationEnvelope(rejected, "send")).toEqual({
+      ...rejected,
+      rejection: { code: "transaction_rejected", node_code: -26, message: REJECTION_MESSAGE },
+    });
+    expect(() =>
+      parseNativeOperationEnvelope(
+        { ...rejected, rejection: { code: "transaction_rejected", node_code: 0, message: "" } },
+        "send",
+      ),
+    ).toThrow();
+
+    const expired = broadcastEnvelope({
+      operation: "rebroadcast_pending",
+      outcome: "expired",
+      expiry_height: 140,
+      target_height: null,
+      fee_zat: null,
+      internal_change_receiver_verified: null,
+      broadcast: null,
+      recovery: null,
+      rejection: null,
+    });
+    expect(parseNativeOperationEnvelope(expired, "rebroadcast_pending")).toEqual(expired);
+    expect(() => parseNativeOperationEnvelope({ ...expired, exact_tip_height: 139 }, "rebroadcast_pending")).toThrow(
+      "operation-specific metadata",
+    );
+  });
+
+  it("rejects malformed recovery transaction sets and persisted transactions hidden in native extras", () => {
+    const review = broadcastEnvelope({
+      outcome: "recovery_required",
+      expiry_height: null,
+      target_height: null,
+      fee_zat: null,
+      internal_change_receiver_verified: null,
+      broadcast: null,
+      recovery: {
+        code: "exact_transaction_review_required",
+        message: "review",
+        txids: [TXID],
+      },
+    });
+    expect(() =>
+      parseNativeOperationEnvelope(
+        {
+          ...review,
+          recovery: { code: "exact_transaction_review_required", message: "review", txids: [] },
+        },
+        "send",
+      ),
+    ).toThrow();
+    expect(() =>
+      parseNativeOperationEnvelope(
+        {
+          ...review,
+          recovery: { code: "exact_transaction_review_required", message: "review", txids: [TXID, TXID] },
+        },
+        "send",
+      ),
+    ).toThrow();
+    expect(() =>
+      parseNativeOperationEnvelope(
+        { ...broadcastEnvelope(), rejection: { code: "transaction_rejected", node_code: -1, message: "hidden" } },
+        "send",
+      ),
+    ).toThrow();
+  });
+
+  it("accepts a single full-metadata review result and rejects persisted review on retry", () => {
+    const fullMetadataReview = broadcastEnvelope({
+      outcome: "recovery_required",
+      broadcast: null,
+      recovery: {
+        code: "exact_transaction_review_required",
+        message: "post-signing consistency failure",
+        txids: [TXID],
+      },
+    });
+    expect(parseNativeOperationEnvelope(fullMetadataReview, "send")).toMatchObject({
+      outcome: "recovery_required",
+      expiry_height: 180,
+      recovery: { code: "exact_transaction_review_required", message: REVIEW_MESSAGE, txids: [TXID] },
+    });
+
+    expect(() =>
+      parseNativeOperationEnvelope(
+        {
+          ...fullMetadataReview,
+          operation: "rebroadcast_pending",
+          expiry_height: null,
+          target_height: null,
+          fee_zat: null,
+          internal_change_receiver_verified: null,
+        },
+        "rebroadcast_pending",
+      ),
+    ).toThrow("operation-specific metadata");
   });
 
   it("rejects raw bytes, secret fields, wrong branch, mismatched txid, and unknown status", () => {
@@ -173,6 +307,12 @@ describe("Wcash transaction main-process boundary", () => {
     expect(() => parseNativeOperationEnvelope({ ...broadcastEnvelope(), fee_zat: null }, "send")).toThrow(
       "operation-specific metadata",
     );
+    expect(() => parseNativeOperationEnvelope({ ...broadcastEnvelope(), expiry_height: 0 }, "send")).toThrow(
+      "operation-specific metadata",
+    );
+    expect(() => parseNativeOperationEnvelope({ ...broadcastEnvelope(), expiry_height: 140 }, "send")).toThrow(
+      "operation-specific metadata",
+    );
     expect(() =>
       parseNativeOperationEnvelope(
         { ...broadcastEnvelope(), broadcast: { ...broadcastEnvelope().broadcast, status: { state: "unknown" } } },
@@ -184,7 +324,17 @@ describe("Wcash transaction main-process boundary", () => {
   it("allowlists pending metadata without exposing stored signed bytes", () => {
     const pending = {
       schema_version: 1,
-      transactions: [{ txid: TXID, branch_id: "b3cfd27e", expiry_height: 180 }],
+      exact_tip_height: 140,
+      transactions: [
+        {
+          txid: TXID,
+          branch_id: "b3cfd27e",
+          expiry_height: 180,
+          lifecycle: "unexpired",
+          rebroadcast_allowed: true,
+          blocks_new_signing: true,
+        },
+      ],
       next_cursor: "42",
     };
     expect(parseNativePendingTransactions(pending)).toEqual(pending);
@@ -195,6 +345,43 @@ describe("Wcash transaction main-process boundary", () => {
       }),
     ).toThrow();
     expect(() => parseNativePendingTransactions({ ...pending, next_cursor: "01" })).toThrow();
+  });
+
+  it("derives pending lifecycle from one exact-tip snapshot and treats zero expiry as unexpired", () => {
+    const noExpiry = {
+      txid: TXID,
+      branch_id: "b3cfd27e",
+      expiry_height: 0,
+      lifecycle: "unexpired",
+      rebroadcast_allowed: true,
+      blocks_new_signing: true,
+    };
+    expect(
+      parseNativePendingTransactions({
+        schema_version: 1,
+        exact_tip_height: 0xffff_ffff,
+        transactions: [noExpiry],
+        next_cursor: null,
+      }),
+    ).toMatchObject({ transactions: [noExpiry] });
+
+    expect(
+      parseNativePendingTransactions({
+        schema_version: 1,
+        exact_tip_height: null,
+        transactions: [{ ...noExpiry, lifecycle: "tip_unknown", rebroadcast_allowed: false, blocks_new_signing: true }],
+        next_cursor: null,
+      }),
+    ).toMatchObject({ exact_tip_height: null, transactions: [{ lifecycle: "tip_unknown" }] });
+
+    expect(() =>
+      parseNativePendingTransactions({
+        schema_version: 1,
+        exact_tip_height: 180,
+        transactions: [noExpiry, noExpiry],
+        next_cursor: null,
+      }),
+    ).toThrow();
   });
 
   it("requires exact lowercase transaction IDs for retry", () => {
@@ -253,6 +440,41 @@ describe("Wcash transaction main-process boundary", () => {
       outcome: "cancelled",
     });
     expect(sendAndBroadcast).not.toHaveBeenCalled();
+  });
+
+  it("returns a non-transactional cancellation when authorization stops before native signing", async () => {
+    const notStarted = Object.assign(new Error("device authentication was cancelled"), {
+      name: "WcashWalletLifecycleError",
+      code: "TRANSACTION_NOT_STARTED",
+    });
+    const sendAndBroadcast = jest.fn().mockRejectedValue(notStarted);
+    const controller = createWcashTransactionController({
+      validateRecipientNative: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        valid: true,
+        network: "Wcash Testnet",
+        recipient_kind: "ironwood",
+        canonical_address: ADDRESS,
+        error: null,
+      }),
+      sendAndBroadcast,
+      shieldCoinbaseAndBroadcast: jest.fn().mockRejectedValue(notStarted),
+      pendingTransactionsNative: jest.fn(),
+      rebroadcastPendingNative: jest.fn(),
+      confirmSend: jest.fn().mockResolvedValue(true),
+      confirmShield: jest.fn().mockResolvedValue(true),
+    });
+
+    await expect(controller.send({ payments: [{ address: ADDRESS, amount: "1" }] })).resolves.toEqual({
+      schema_version: 1,
+      operation: "send",
+      outcome: "cancelled",
+    });
+    await expect(controller.shieldCoinbase()).resolves.toEqual({
+      schema_version: 1,
+      operation: "shield_coinbase",
+      outcome: "cancelled",
+    });
   });
 
   it("revalidates, confirms, then invokes one composite sign-and-broadcast operation", async () => {
@@ -351,7 +573,17 @@ describe("Wcash transaction main-process boundary", () => {
     const shieldCoinbaseAndBroadcast = jest.fn();
     const pendingTransactionsNative = jest.fn().mockResolvedValue({
       schema_version: 1,
-      transactions: [{ txid: TXID, branch_id: "b3cfd27e", expiry_height: 180 }],
+      exact_tip_height: 140,
+      transactions: [
+        {
+          txid: TXID,
+          branch_id: "b3cfd27e",
+          expiry_height: 180,
+          lifecycle: "unexpired",
+          rebroadcast_allowed: true,
+          blocks_new_signing: true,
+        },
+      ],
       next_cursor: null,
     });
     const controller = createWcashTransactionController({

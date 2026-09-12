@@ -9,6 +9,10 @@ const MAX_MEMO_BYTES = 512;
 const INVALID_RECIPIENT_MESSAGE = "This is not a valid Wcash Testnet Ironwood recipient.";
 const TXID_PATTERN = /^[0-9a-f]{64}$/;
 const RECOVERY_MESSAGE = "The signed transaction is stored. Retry this exact transaction; do not create a replacement.";
+const REVIEW_MESSAGE =
+  "The signed transaction is stored but needs review. Refresh signed pending transactions; do not create a replacement.";
+const REJECTION_MESSAGE =
+  "The Wcash node rejected this signed transaction. Wait for it to expire before creating a replacement.";
 
 class WcashTransactionBoundaryError extends Error {
   constructor(code, message) {
@@ -204,6 +208,17 @@ function parseBroadcast(value, expectedTxid, operation) {
   throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
 }
 
+function parseRecoveryTxids(value, expectedTxid, allowMultiple, operation) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 25) {
+    throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
+  }
+  const txids = value.map((txid) => requireTxid(txid, operation));
+  if (txids[0] !== expectedTxid || new Set(txids).size !== txids.length || (!allowMultiple && txids.length !== 1)) {
+    throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
+  }
+  return Object.freeze(txids);
+}
+
 function parseNativeOperationEnvelope(value, expectedOperation) {
   const operation = "Transaction operation";
   const record = parseJsonObject(operation, value);
@@ -218,12 +233,14 @@ function parseNativeOperationEnvelope(value, expectedOperation) {
       "target_height",
       "fee_zat",
       "internal_change_receiver_verified",
+      "exact_tip_height",
       "broadcast",
       "recovery",
+      "rejection",
     ]) ||
     record.schema_version !== 1 ||
     record.operation !== expectedOperation ||
-    (record.outcome !== "broadcast" && record.outcome !== "recovery_required")
+    !["broadcast", "rejected", "recovery_required", "expired"].includes(record.outcome)
   ) {
     throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
   }
@@ -231,10 +248,11 @@ function parseNativeOperationEnvelope(value, expectedOperation) {
   if (record.branch_id !== WCASH_BRANCH_ID) {
     throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned the wrong branch identity`);
   }
-  const expiryHeight = requireU32(record.expiry_height, operation);
+  const exactTipHeight = requireU32(record.exact_tip_height, operation);
+  const expiryHeight = record.expiry_height === null ? null : requireU32(record.expiry_height, operation);
   const targetHeight = record.target_height === null ? null : requireU32(record.target_height, operation);
   const feeZat = record.fee_zat;
-  if (feeZat !== null && (typeof feeZat !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(feeZat))) {
+  if (feeZat !== null && (typeof feeZat !== "string" || feeZat.length > 16 || !/^(?:0|[1-9][0-9]*)$/.test(feeZat))) {
     throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
   }
   if (
@@ -243,13 +261,7 @@ function parseNativeOperationEnvelope(value, expectedOperation) {
   ) {
     throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
   }
-  if (
-    (feeZat !== null && BigInt(feeZat) > MAX_MONEY_ZAT) ||
-    (expectedOperation === "rebroadcast_pending" &&
-      (targetHeight !== null || feeZat !== null || record.internal_change_receiver_verified !== null)) ||
-    (expectedOperation !== "rebroadcast_pending" &&
-      (targetHeight === null || feeZat === null || record.internal_change_receiver_verified !== true))
-  ) {
+  if (feeZat !== null && BigInt(feeZat) > MAX_MONEY_ZAT) {
     throw new WcashTransactionBoundaryError(
       "NATIVE_DATA_INVALID",
       `${operation} returned invalid operation-specific metadata`,
@@ -258,23 +270,98 @@ function parseNativeOperationEnvelope(value, expectedOperation) {
 
   let broadcast = null;
   let recovery = null;
+  let rejection = null;
+  let persistedReview = false;
   if (record.outcome === "broadcast") {
-    if (record.recovery !== null) {
+    if (record.recovery !== null || record.rejection !== null || record.broadcast === null) {
       throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
     }
     broadcast = parseBroadcast(record.broadcast, txid, operation);
-  } else {
+  } else if (record.outcome === "recovery_required") {
     if (
       record.broadcast !== null ||
-      !hasExactKeys(record.recovery, ["code", "message"]) ||
-      record.recovery.code !== "exact_transaction_rebroadcast_required" ||
+      record.rejection !== null ||
+      !hasExactKeys(record.recovery, ["code", "message", "txids"]) ||
+      (record.recovery.code !== "exact_transaction_rebroadcast_required" &&
+        record.recovery.code !== "exact_transaction_review_required") ||
       typeof record.recovery.message !== "string" ||
       record.recovery.message.length === 0 ||
-      record.recovery.message.length > 2048
+      record.recovery.message.length > 4096 ||
+      utf8ByteLength(record.recovery.message) > 4096
     ) {
       throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
     }
-    recovery = Object.freeze({ code: record.recovery.code, message: RECOVERY_MESSAGE });
+    persistedReview =
+      record.recovery.code === "exact_transaction_review_required" &&
+      expectedOperation !== "rebroadcast_pending" &&
+      expiryHeight === null &&
+      targetHeight === null &&
+      feeZat === null &&
+      record.internal_change_receiver_verified === null;
+    const txids = parseRecoveryTxids(record.recovery.txids, txid, persistedReview, operation);
+    recovery = Object.freeze({
+      code: record.recovery.code,
+      message: record.recovery.code === "exact_transaction_rebroadcast_required" ? RECOVERY_MESSAGE : REVIEW_MESSAGE,
+      txids,
+    });
+  } else if (record.outcome === "rejected") {
+    if (
+      record.broadcast !== null ||
+      record.recovery !== null ||
+      !hasExactKeys(record.rejection, ["code", "node_code", "message"]) ||
+      record.rejection.code !== "transaction_rejected" ||
+      !Number.isInteger(record.rejection.node_code) ||
+      record.rejection.node_code === 0 ||
+      record.rejection.node_code < -0x8000_0000 ||
+      record.rejection.node_code > 0x7fff_ffff ||
+      typeof record.rejection.message !== "string" ||
+      record.rejection.message.length > 4096 ||
+      utf8ByteLength(record.rejection.message) > 4096
+    ) {
+      throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
+    }
+    rejection = Object.freeze({
+      code: "transaction_rejected",
+      node_code: record.rejection.node_code,
+      message: REJECTION_MESSAGE,
+    });
+  } else if (
+    expectedOperation !== "rebroadcast_pending" ||
+    record.broadcast !== null ||
+    record.recovery !== null ||
+    record.rejection !== null
+  ) {
+    throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
+  }
+
+  const rebroadcastMetadata =
+    expiryHeight !== null &&
+    targetHeight === null &&
+    feeZat === null &&
+    record.internal_change_receiver_verified === null;
+  const signedMetadata =
+    expiryHeight !== null &&
+    targetHeight !== null &&
+    feeZat !== null &&
+    record.internal_change_receiver_verified === true;
+  if (
+    (!persistedReview && expectedOperation === "rebroadcast_pending" && !rebroadcastMetadata) ||
+    (!persistedReview && expectedOperation !== "rebroadcast_pending" && !signedMetadata) ||
+    (persistedReview && recovery === null) ||
+    (!persistedReview &&
+      expectedOperation !== "rebroadcast_pending" &&
+      (expiryHeight === null || expiryHeight === 0 || exactTipHeight >= expiryHeight)) ||
+    (record.outcome === "expired" && (expiryHeight === null || expiryHeight === 0 || exactTipHeight < expiryHeight)) ||
+    (expectedOperation === "rebroadcast_pending" &&
+      record.outcome !== "expired" &&
+      expiryHeight !== null &&
+      expiryHeight !== 0 &&
+      exactTipHeight >= expiryHeight)
+  ) {
+    throw new WcashTransactionBoundaryError(
+      "NATIVE_DATA_INVALID",
+      `${operation} returned invalid operation-specific metadata`,
+    );
   }
 
   return Object.freeze({
@@ -287,8 +374,10 @@ function parseNativeOperationEnvelope(value, expectedOperation) {
     target_height: targetHeight,
     fee_zat: feeZat,
     internal_change_receiver_verified: record.internal_change_receiver_verified,
+    exact_tip_height: exactTipHeight,
     broadcast,
     recovery,
+    rejection,
   });
 }
 
@@ -296,30 +385,70 @@ function parseNativePendingTransactions(value) {
   const operation = "Pending transactions";
   const record = parseJsonObject(operation, value);
   if (
-    !hasExactKeys(record, ["schema_version", "transactions", "next_cursor"]) ||
+    !hasExactKeys(record, ["schema_version", "exact_tip_height", "transactions", "next_cursor"]) ||
     record.schema_version !== 1 ||
     !Array.isArray(record.transactions) ||
     record.transactions.length > 25 ||
+    (record.exact_tip_height !== null &&
+      (!Number.isInteger(record.exact_tip_height) ||
+        record.exact_tip_height < 0 ||
+        record.exact_tip_height > 0xffff_ffff)) ||
     (record.next_cursor !== null &&
-      (typeof record.next_cursor !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(record.next_cursor)))
+      (typeof record.next_cursor !== "string" ||
+        record.next_cursor.length > 20 ||
+        !/^(?:0|[1-9][0-9]*)$/.test(record.next_cursor) ||
+        BigInt(record.next_cursor) > 0xffff_ffff_ffff_ffffn))
   ) {
     throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
   }
+  const seenTxids = new Set();
   const transactions = record.transactions.map((transaction) => {
     if (
-      !hasExactKeys(transaction, ["txid", "branch_id", "expiry_height"]) ||
+      !hasExactKeys(transaction, [
+        "txid",
+        "branch_id",
+        "expiry_height",
+        "lifecycle",
+        "rebroadcast_allowed",
+        "blocks_new_signing",
+      ]) ||
       transaction.branch_id !== WCASH_BRANCH_ID
     ) {
       throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
     }
+    const expiryHeight = requireU32(transaction.expiry_height, operation);
+    const expectedLifecycle =
+      record.exact_tip_height === null
+        ? "tip_unknown"
+        : expiryHeight !== 0 && record.exact_tip_height >= expiryHeight
+          ? "expired"
+          : "unexpired";
+    const expectedRebroadcastAllowed = expectedLifecycle === "unexpired";
+    const expectedBlocksNewSigning = expectedLifecycle !== "expired";
+    if (
+      transaction.lifecycle !== expectedLifecycle ||
+      transaction.rebroadcast_allowed !== expectedRebroadcastAllowed ||
+      transaction.blocks_new_signing !== expectedBlocksNewSigning
+    ) {
+      throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
+    }
+    const txid = requireTxid(transaction.txid, operation);
+    if (seenTxids.has(txid)) {
+      throw new WcashTransactionBoundaryError("NATIVE_DATA_INVALID", `${operation} returned malformed data`);
+    }
+    seenTxids.add(txid);
     return Object.freeze({
-      txid: requireTxid(transaction.txid, operation),
+      txid,
       branch_id: WCASH_BRANCH_ID,
-      expiry_height: requireU32(transaction.expiry_height, operation),
+      expiry_height: expiryHeight,
+      lifecycle: expectedLifecycle,
+      rebroadcast_allowed: expectedRebroadcastAllowed,
+      blocks_new_signing: expectedBlocksNewSigning,
     });
   });
   return Object.freeze({
     schema_version: 1,
+    exact_tip_height: record.exact_tip_height,
     transactions: Object.freeze(transactions),
     next_cursor: record.next_cursor,
   });
@@ -339,8 +468,8 @@ function requirePendingCursor(value) {
   if (value === undefined) return undefined;
   if (
     typeof value !== "string" ||
-    !/^(?:0|[1-9][0-9]*)$/.test(value) ||
     value.length > 20 ||
+    !/^(?:0|[1-9][0-9]*)$/.test(value) ||
     BigInt(value) > 0xffff_ffff_ffff_ffffn
   ) {
     throw new WcashTransactionBoundaryError("INVALID_CURSOR", "Pending transaction cursor is invalid");
@@ -400,6 +529,12 @@ function cancelledOperation(operation) {
   return Object.freeze({ schema_version: 1, operation, outcome: "cancelled" });
 }
 
+function isTransactionNotStarted(error) {
+  return (
+    error instanceof Error && error.name === "WcashWalletLifecycleError" && error.code === "TRANSACTION_NOT_STARTED"
+  );
+}
+
 function requireFunction(owner, method) {
   if (!owner || typeof owner[method] !== "function") {
     throw new TypeError(`${method} must be a function`);
@@ -422,6 +557,17 @@ function createWcashTransactionController(dependencies) {
       return await invocation();
     } catch {
       throw new WcashTransactionBoundaryError(code, message);
+    }
+  }
+
+  async function invokeSigningDependency(invocation, operation, message) {
+    try {
+      return Object.freeze({ notStarted: false, value: await invocation() });
+    } catch (cause) {
+      if (isTransactionNotStarted(cause)) {
+        return Object.freeze({ notStarted: true, value: cancelledOperation(operation) });
+      }
+      throw new WcashTransactionBoundaryError("TRANSACTION_STATUS_UNKNOWN", message);
     }
   }
 
@@ -453,27 +599,23 @@ function createWcashTransactionController(dependencies) {
     const confirmed = await dependencies.confirmSend(buildSendConfirmation(request, validation.canonical_address));
     if (confirmed !== true) return cancelledOperation("send");
 
-    return parseNativeOperationEnvelope(
-      await invokeDependency(
-        () => dependencies.sendAndBroadcast(JSON.stringify(nativeRequest)),
-        "TRANSACTION_STATUS_UNKNOWN",
-        "Wcash transaction status is unknown. Refresh signed pending transactions before trying again; do not create a replacement.",
-      ),
+    const invocation = await invokeSigningDependency(
+      () => dependencies.sendAndBroadcast(JSON.stringify(nativeRequest)),
       "send",
+      "Wcash transaction status is unknown. Refresh signed pending transactions before trying again; do not create a replacement.",
     );
+    return invocation.notStarted ? invocation.value : parseNativeOperationEnvelope(invocation.value, "send");
   }
 
   async function shieldCoinbase() {
     const confirmed = await dependencies.confirmShield(buildShieldConfirmation());
     if (confirmed !== true) return cancelledOperation("shield_coinbase");
-    return parseNativeOperationEnvelope(
-      await invokeDependency(
-        () => dependencies.shieldCoinbaseAndBroadcast(),
-        "TRANSACTION_STATUS_UNKNOWN",
-        "Wcash shielding status is unknown. Refresh signed pending transactions before trying again; do not create a replacement.",
-      ),
+    const invocation = await invokeSigningDependency(
+      () => dependencies.shieldCoinbaseAndBroadcast(),
       "shield_coinbase",
+      "Wcash shielding status is unknown. Refresh signed pending transactions before trying again; do not create a replacement.",
     );
+    return invocation.notStarted ? invocation.value : parseNativeOperationEnvelope(invocation.value, "shield_coinbase");
   }
 
   async function pendingTransactions(afterCursor) {
@@ -507,6 +649,8 @@ module.exports = {
   MAX_MEMO_BYTES,
   MAX_MONEY_ZAT,
   RECOVERY_MESSAGE,
+  REJECTION_MESSAGE,
+  REVIEW_MESSAGE,
   WCASH_BRANCH_ID,
   WCASH_NETWORK,
   WCASH_TICKER,

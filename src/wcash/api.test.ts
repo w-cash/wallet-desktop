@@ -120,8 +120,10 @@ describe("Wcash renderer boundary", () => {
       target_height: 160,
       fee_zat: "15000",
       internal_change_receiver_verified: true,
+      exact_tip_height: 160,
       broadcast: { txid, disposition: "already_known", status: { state: "mempool" } },
       recovery: null,
+      rejection: null,
     };
     expect(parseOperationResult(base, "send")).toMatchObject({
       outcome: "broadcast",
@@ -135,28 +137,150 @@ describe("Wcash renderer boundary", () => {
       ...base,
       outcome: "recovery_required",
       broadcast: null,
-      recovery: { code: "exact_transaction_rebroadcast_required", message: "Retry exact durable transaction." },
+      recovery: {
+        code: "exact_transaction_rebroadcast_required",
+        message: "The signed transaction is stored. Retry this exact transaction; do not create a replacement.",
+        txids: [txid],
+      },
     };
     expect(parseOperationResult(recovery, "send")).toMatchObject({
       outcome: "recovery_required",
       recovery: {
         code: "exact_transaction_rebroadcast_required",
         message: "The signed transaction is stored. Retry this exact transaction; do not create a replacement.",
+        txids: [txid],
       },
     });
     expect(() => parseOperationResult({ ...base, internal_change_receiver_verified: false }, "send")).toThrow();
+    expect(() => parseOperationResult({ ...base, expiry_height: 0 }, "send")).toThrow();
+    expect(() => parseOperationResult({ ...base, expiry_height: 160 }, "send")).toThrow();
+  });
+
+  it("strictly parses review, rejection, and expiry without trusting native diagnostics", () => {
+    const txid = "c".repeat(64);
+    const secondTxid = "d".repeat(64);
+    const common = {
+      schema_version: 1,
+      operation: "send",
+      txid,
+      branch_id: "b3cfd27e",
+      exact_tip_height: 200,
+      broadcast: null,
+      rejection: null,
+    };
+    const review = {
+      ...common,
+      outcome: "recovery_required",
+      expiry_height: null,
+      target_height: null,
+      fee_zat: null,
+      internal_change_receiver_verified: null,
+      recovery: {
+        code: "exact_transaction_review_required",
+        message:
+          "The signed transaction is stored but needs review. Refresh signed pending transactions; do not create a replacement.",
+        txids: [txid, secondTxid],
+      },
+    };
+    expect(parseOperationResult(review, "send")).toMatchObject({
+      outcome: "recovery_required",
+      expiryHeight: null,
+      exactTipHeight: 200,
+      recovery: { code: "exact_transaction_review_required", txids: [txid, secondTxid] },
+    });
+    expect(() =>
+      parseOperationResult({ ...review, recovery: { ...review.recovery, message: "private diagnostic" } }, "send"),
+    ).toThrow();
+
+    expect(
+      parseOperationResult(
+        {
+          ...review,
+          expiry_height: 240,
+          target_height: 200,
+          fee_zat: "15000",
+          internal_change_receiver_verified: true,
+          recovery: { ...review.recovery, txids: [txid] },
+        },
+        "send",
+      ),
+    ).toMatchObject({
+      outcome: "recovery_required",
+      expiryHeight: 240,
+      recovery: { code: "exact_transaction_review_required", txids: [txid] },
+    });
+
+    const rejected = {
+      ...common,
+      outcome: "rejected",
+      expiry_height: 240,
+      target_height: 200,
+      fee_zat: "15000",
+      internal_change_receiver_verified: true,
+      recovery: null,
+      rejection: {
+        code: "transaction_rejected",
+        node_code: -26,
+        message:
+          "The Wcash node rejected this signed transaction. Wait for it to expire before creating a replacement.",
+      },
+    };
+    expect(parseOperationResult(rejected, "send")).toMatchObject({
+      outcome: "rejected",
+      rejection: { code: "transaction_rejected", nodeCode: -26 },
+    });
+    expect(() =>
+      parseOperationResult({ ...rejected, rejection: { ...rejected.rejection, node_code: 0 } }, "send"),
+    ).toThrow();
+
+    const expired = {
+      ...common,
+      operation: "rebroadcast_pending",
+      outcome: "expired",
+      expiry_height: 200,
+      target_height: null,
+      fee_zat: null,
+      internal_change_receiver_verified: null,
+      recovery: null,
+    };
+    expect(parseOperationResult(expired, "rebroadcast_pending")).toMatchObject({
+      outcome: "expired",
+      expiryHeight: 200,
+      exactTipHeight: 200,
+    });
+    expect(() => parseOperationResult({ ...expired, exact_tip_height: 199 }, "rebroadcast_pending")).toThrow();
   });
 
   it("parses pending transaction metadata and rejects raw stored bytes", () => {
     const txid = "b".repeat(64);
     const pending = {
       schema_version: 1,
-      transactions: [{ txid, branch_id: "b3cfd27e", expiry_height: 240 }],
+      exact_tip_height: 200,
+      transactions: [
+        {
+          txid,
+          branch_id: "b3cfd27e",
+          expiry_height: 240,
+          lifecycle: "unexpired",
+          rebroadcast_allowed: true,
+          blocks_new_signing: true,
+        },
+      ],
       next_cursor: null,
     };
     expect(parsePendingTransactions(pending)).toEqual({
       schemaVersion: 1,
-      transactions: [{ txid, branchId: "b3cfd27e", expiryHeight: 240 }],
+      exactTipHeight: 200,
+      transactions: [
+        {
+          txid,
+          branchId: "b3cfd27e",
+          expiryHeight: 240,
+          lifecycle: "unexpired",
+          rebroadcastAllowed: true,
+          blocksNewSigning: true,
+        },
+      ],
       nextCursor: null,
     });
     expect(() =>
@@ -165,6 +289,45 @@ describe("Wcash renderer boundary", () => {
         transactions: [{ ...pending.transactions[0], raw_transaction_hex: "deadbeef" }],
       }),
     ).toThrow();
+    expect(() =>
+      parsePendingTransactions({
+        ...pending,
+        transactions: [{ ...pending.transactions[0], lifecycle: "expired", rebroadcast_allowed: false }],
+      }),
+    ).toThrow();
+
+    expect(
+      parsePendingTransactions({
+        schema_version: 1,
+        exact_tip_height: null,
+        transactions: [
+          {
+            ...pending.transactions[0],
+            lifecycle: "tip_unknown",
+            rebroadcast_allowed: false,
+            blocks_new_signing: true,
+          },
+        ],
+        next_cursor: "18446744073709551615",
+      }),
+    ).toMatchObject({ exactTipHeight: null, transactions: [{ lifecycle: "tip_unknown", blocksNewSigning: true }] });
+
+    expect(
+      parsePendingTransactions({
+        schema_version: 1,
+        exact_tip_height: 0xffff_ffff,
+        transactions: [
+          {
+            ...pending.transactions[0],
+            expiry_height: 0,
+            lifecycle: "unexpired",
+            rebroadcast_allowed: true,
+            blocks_new_signing: true,
+          },
+        ],
+        next_cursor: null,
+      }),
+    ).toMatchObject({ transactions: [{ expiryHeight: 0, lifecycle: "unexpired", rebroadcastAllowed: true }] });
   });
 
   it("requires a complete 24-word restore phrase", () => {

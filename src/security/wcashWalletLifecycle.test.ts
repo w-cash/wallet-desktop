@@ -178,7 +178,8 @@ describe("Wcash main-process wallet lifecycle", () => {
       authenticate.mockResolvedValueOnce(authenticationResult);
 
       await expect(lifecycle.sendAndBroadcast('{"payments":[]}')).rejects.toMatchObject({
-        code: "AUTHENTICATION_FAILED",
+        code: "TRANSACTION_NOT_STARTED",
+        cause: { code: "AUTHENTICATION_FAILED" },
       });
 
       expect(keytar.getPassword).not.toHaveBeenCalled();
@@ -190,7 +191,10 @@ describe("Wcash main-process wallet lifecycle", () => {
     const { authenticate, keytar, lifecycle } = harness({ status: { wallet: WALLET } });
     authenticate.mockRejectedValueOnce(failure);
 
-    await expect(lifecycle.sendAndBroadcast('{"payments":[]}')).rejects.toBe(failure);
+    await expect(lifecycle.sendAndBroadcast('{"payments":[]}')).rejects.toMatchObject({
+      code: "TRANSACTION_NOT_STARTED",
+      cause: failure,
+    });
 
     expect(keytar.getPassword).not.toHaveBeenCalled();
   });
@@ -608,7 +612,10 @@ describe("Wcash main-process wallet lifecycle", () => {
       status: { wallet: WALLET },
     });
     native.wcash_send_and_broadcast.mockRejectedValueOnce(
-      new Error(`${PHRASE} ${rawHex} https://wallet-testnet.wcashexplorer.com`),
+      Object.assign(new Error(`${PHRASE} ${rawHex} https://wallet-testnet.wcashexplorer.com`), {
+        name: "WcashWalletLifecycleError",
+        code: "TRANSACTION_NOT_STARTED",
+      }),
     );
 
     let failure: unknown;
@@ -633,9 +640,13 @@ describe("Wcash main-process wallet lifecycle", () => {
     });
 
     await expect(lifecycle.sendAndBroadcast('{"payments":[]}')).rejects.toMatchObject({
-      code: "WALLET_BACKUP_REQUIRED",
+      code: "TRANSACTION_NOT_STARTED",
+      cause: { code: "WALLET_BACKUP_REQUIRED" },
     });
-    await expect(lifecycle.shieldCoinbaseAndBroadcast()).rejects.toMatchObject({ code: "WALLET_BACKUP_REQUIRED" });
+    await expect(lifecycle.shieldCoinbaseAndBroadcast()).rejects.toMatchObject({
+      code: "TRANSACTION_NOT_STARTED",
+      cause: { code: "WALLET_BACKUP_REQUIRED" },
+    });
 
     expect(native.wcash_send_and_broadcast).not.toHaveBeenCalled();
     expect(native.wcash_shield_coinbase_and_broadcast).not.toHaveBeenCalled();

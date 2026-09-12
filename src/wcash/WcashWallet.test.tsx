@@ -19,19 +19,24 @@ const receivers = {
 const ironwoodRecipient = `wutest1${"q".repeat(80)}`;
 const txid = "a".repeat(64);
 
-const broadcastResult = (operation: "send" | "shield_coinbase" | "rebroadcast_pending" = "send") => ({
-  schema_version: 1,
-  operation,
-  outcome: "broadcast",
-  txid,
-  branch_id: "b3cfd27e",
-  expiry_height: 140,
-  target_height: 100,
-  fee_zat: "15000",
-  internal_change_receiver_verified: true,
-  broadcast: { txid, disposition: "submitted", status: { state: "mempool" } },
-  recovery: null,
-});
+const broadcastResult = (operation: "send" | "shield_coinbase" | "rebroadcast_pending" = "send") => {
+  const rebroadcast = operation === "rebroadcast_pending";
+  return {
+    schema_version: 1,
+    operation,
+    outcome: "broadcast",
+    txid,
+    branch_id: "b3cfd27e",
+    expiry_height: 140,
+    target_height: rebroadcast ? null : 100,
+    fee_zat: rebroadcast ? null : "15000",
+    internal_change_receiver_verified: rebroadcast ? null : true,
+    exact_tip_height: 100,
+    broadcast: { txid, disposition: "submitted", status: { state: "mempool" } },
+    recovery: null,
+    rejection: null,
+  };
+};
 
 const balanceAccount = {
   account_id: "account-1",
@@ -94,7 +99,9 @@ const installBridge = (overrides: Partial<Bridge> = {}): Bridge => {
     ),
     send: jest.fn().mockResolvedValue(broadcastResult()),
     shieldCoinbase: jest.fn().mockResolvedValue(broadcastResult("shield_coinbase")),
-    pendingTransactions: jest.fn().mockResolvedValue({ schema_version: 1, transactions: [], next_cursor: null }),
+    pendingTransactions: jest
+      .fn()
+      .mockResolvedValue({ schema_version: 1, exact_tip_height: 100, transactions: [], next_cursor: null }),
     rebroadcastPending: jest.fn().mockResolvedValue(broadcastResult("rebroadcast_pending")),
     ...overrides,
   };
@@ -423,6 +430,169 @@ describe("Wcash Testnet desktop wallet", () => {
     expect(bridge.send).not.toHaveBeenCalled();
   });
 
+  it("keeps signing locked when signed pending status cannot be verified", async () => {
+    const user = userEvent.setup();
+    installBridge({
+      status: jest.fn().mockResolvedValue({
+        network: "Wcash Testnet",
+        ticker: "TWC",
+        storage_namespace: "wcashtestnet-v5",
+        state: "database-and-secret-ready",
+        wallet,
+      }),
+      balance: jest.fn().mockResolvedValue(balance(100)),
+      pendingTransactions: jest.fn().mockRejectedValue(new Error("private endpoint diagnostic")),
+    });
+    render(<WcashWallet />);
+
+    await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    expect(await screen.findByText(/Signed pending status is unavailable/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review payment" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Review shielding" })).toBeDisabled();
+  });
+
+  it("rejects a pending snapshot whose tip changes between pages", async () => {
+    const user = userEvent.setup();
+    const pendingTxid = "f".repeat(64);
+    const pendingTransactions = jest
+      .fn()
+      .mockResolvedValueOnce({
+        schema_version: 1,
+        exact_tip_height: 100,
+        transactions: [
+          {
+            txid: pendingTxid,
+            branch_id: "b3cfd27e",
+            expiry_height: 140,
+            lifecycle: "unexpired",
+            rebroadcast_allowed: true,
+            blocks_new_signing: true,
+          },
+        ],
+        next_cursor: "1",
+      })
+      .mockResolvedValueOnce({ schema_version: 1, exact_tip_height: 101, transactions: [], next_cursor: null });
+    installBridge({
+      status: jest.fn().mockResolvedValue({
+        network: "Wcash Testnet",
+        ticker: "TWC",
+        storage_namespace: "wcashtestnet-v5",
+        state: "database-and-secret-ready",
+        wallet,
+      }),
+      balance: jest.fn().mockResolvedValue(balance(100)),
+      pendingTransactions,
+    });
+    render(<WcashWallet />);
+
+    await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    expect(await screen.findByText(/Signed pending status is unavailable/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review payment" })).toBeDisabled();
+    expect(pendingTransactions).toHaveBeenNthCalledWith(1, undefined);
+    expect(pendingTransactions).toHaveBeenNthCalledWith(2, "1");
+  });
+
+  it("allows new signing after every durable pending row is expired at the same exact tip", async () => {
+    const user = userEvent.setup();
+    const expiredTxid = "e".repeat(64);
+    installBridge({
+      status: jest.fn().mockResolvedValue({
+        network: "Wcash Testnet",
+        ticker: "TWC",
+        storage_namespace: "wcashtestnet-v5",
+        state: "database-and-secret-ready",
+        wallet,
+      }),
+      balance: jest.fn().mockResolvedValue(balance(100)),
+      pendingTransactions: jest.fn().mockResolvedValue({
+        schema_version: 1,
+        exact_tip_height: 100,
+        transactions: [
+          {
+            txid: expiredTxid,
+            branch_id: "b3cfd27e",
+            expiry_height: 100,
+            lifecycle: "expired",
+            rebroadcast_allowed: false,
+            blocks_new_signing: false,
+          },
+        ],
+        next_cursor: null,
+      }),
+    });
+    render(<WcashWallet />);
+
+    await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    expect(await screen.findByText(expiredTxid)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review payment" })).toBeEnabled();
+  });
+
+  it("reports definitive rejection without claiming that the transaction was accepted", async () => {
+    const user = userEvent.setup();
+    const bridge = installBridge({
+      status: jest.fn().mockResolvedValue({
+        network: "Wcash Testnet",
+        ticker: "TWC",
+        storage_namespace: "wcashtestnet-v5",
+        state: "database-and-secret-ready",
+        wallet,
+      }),
+      balance: jest.fn().mockResolvedValue(balance(100)),
+      send: jest.fn().mockResolvedValue({
+        ...broadcastResult(),
+        outcome: "rejected",
+        broadcast: null,
+        rejection: {
+          code: "transaction_rejected",
+          node_code: -26,
+          message:
+            "The Wcash node rejected this signed transaction. Wait for it to expire before creating a replacement.",
+        },
+      }),
+    });
+    render(<WcashWallet />);
+
+    await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    await user.type(screen.getByLabelText("Wcash Testnet recipient"), ironwoodRecipient);
+    await user.type(screen.getByLabelText("Amount (TWC)"), "1");
+    await user.click(screen.getByRole("button", { name: "Review payment" }));
+    await user.click(await screen.findByRole("button", { name: "Continue to system confirmation" }));
+
+    expect(await screen.findByText(/definitively rejected by the Wcash node \(code -26\)/i)).toBeInTheDocument();
+    expect(screen.queryByText(/was accepted for broadcast/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review payment" })).toBeDisabled();
+    expect(bridge.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("dismisses a reviewed payment after an unknown post-invocation status", async () => {
+    const user = userEvent.setup();
+    const bridge = installBridge({
+      status: jest.fn().mockResolvedValue({
+        network: "Wcash Testnet",
+        ticker: "TWC",
+        storage_namespace: "wcashtestnet-v5",
+        state: "database-and-secret-ready",
+        wallet,
+      }),
+      balance: jest.fn().mockResolvedValue(balance(100)),
+      send: jest.fn().mockRejectedValue(new Error("native response was lost after signing")),
+    });
+    render(<WcashWallet />);
+
+    await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    await user.type(screen.getByLabelText("Wcash Testnet recipient"), ironwoodRecipient);
+    await user.type(screen.getByLabelText("Amount (TWC)"), "1");
+    await user.click(screen.getByRole("button", { name: "Review payment" }));
+    await user.click(await screen.findByRole("button", { name: "Continue to system confirmation" }));
+
+    expect(await screen.findByText(/Transaction status is unknown/)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Check every payment detail" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Wcash Testnet recipient")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Review payment" })).toBeDisabled();
+    expect(screen.getByText(/Do not create a replacement transaction/)).toBeInTheDocument();
+    expect(bridge.send).toHaveBeenCalledTimes(1);
+  });
+
   it("requires mature coinbase before reviewing shielding and allows a local cancellation", async () => {
     const user = userEvent.setup();
     const matureAccount = {
@@ -466,9 +636,24 @@ describe("Wcash Testnet desktop wallet", () => {
       balance: jest.fn().mockResolvedValue(balance(100)),
       pendingTransactions: jest.fn().mockResolvedValue({
         schema_version: 1,
+        exact_tip_height: 100,
         transactions: [
-          { txid: activeTxid, branch_id: "b3cfd27e", expiry_height: 120 },
-          { txid: expiredTxid, branch_id: "b3cfd27e", expiry_height: 100 },
+          {
+            txid: activeTxid,
+            branch_id: "b3cfd27e",
+            expiry_height: 120,
+            lifecycle: "unexpired",
+            rebroadcast_allowed: true,
+            blocks_new_signing: true,
+          },
+          {
+            txid: expiredTxid,
+            branch_id: "b3cfd27e",
+            expiry_height: 100,
+            lifecycle: "expired",
+            rebroadcast_allowed: false,
+            blocks_new_signing: false,
+          },
         ],
         next_cursor: null,
       }),

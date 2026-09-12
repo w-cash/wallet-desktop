@@ -433,6 +433,14 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
     }
   }
 
+  function transactionNotStarted(cause) {
+    return new WcashWalletLifecycleError(
+      "TRANSACTION_NOT_STARTED",
+      "Wcash transaction authorization did not complete before signing",
+      cause,
+    );
+  }
+
   return Object.freeze({
     inspectState() {
       return serialize(async () => publicState(await classifyUnsafe()));
@@ -515,11 +523,16 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
 
     sendAndBroadcast(requestJson) {
       return serialize(async () => {
-        if (typeof requestJson !== "string" || requestJson.length === 0 || requestJson.length > 128 * 1024) {
-          throw new WcashWalletLifecycleError("TRANSACTION_REQUEST_INVALID", "Wcash transaction request is invalid");
+        let credential;
+        try {
+          if (typeof requestJson !== "string" || requestJson.length === 0 || requestJson.length > 128 * 1024) {
+            throw new WcashWalletLifecycleError("TRANSACTION_REQUEST_INVALID", "Wcash transaction request is invalid");
+          }
+          credential = requireReadyCredential(await classifyUnsafe({ authenticateCredential: true }));
+          assertFunction(native, "wcash_send_and_broadcast", "native");
+        } catch (cause) {
+          throw transactionNotStarted(cause);
         }
-        const credential = requireReadyCredential(await classifyUnsafe({ authenticateCredential: true }));
-        assertFunction(native, "wcash_send_and_broadcast", "native");
         return invokeSanitizedTransaction(
           "wcash_send_and_broadcast",
           () => native.wcash_send_and_broadcast(credential.phrase, requestJson),
@@ -530,8 +543,13 @@ function createWcashWalletLifecycle({ keytar, native, authenticate, service, acc
 
     shieldCoinbaseAndBroadcast() {
       return serialize(async () => {
-        const credential = requireReadyCredential(await classifyUnsafe({ authenticateCredential: true }));
-        assertFunction(native, "wcash_shield_coinbase_and_broadcast", "native");
+        let credential;
+        try {
+          credential = requireReadyCredential(await classifyUnsafe({ authenticateCredential: true }));
+          assertFunction(native, "wcash_shield_coinbase_and_broadcast", "native");
+        } catch (cause) {
+          throw transactionNotStarted(cause);
+        }
         return invokeSanitizedTransaction(
           "wcash_shield_coinbase_and_broadcast",
           () => native.wcash_shield_coinbase_and_broadcast(credential.phrase),

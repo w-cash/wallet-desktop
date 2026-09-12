@@ -3,6 +3,10 @@ const MAX_MONEY_ZAT = 21_000_000n * ZATOSHIS_PER_COIN;
 const WCASH_BRANCH_ID = "b3cfd27e";
 const TXID_PATTERN = /^[0-9a-f]{64}$/;
 const RECOVERY_MESSAGE = "The signed transaction is stored. Retry this exact transaction; do not create a replacement.";
+const REVIEW_MESSAGE =
+  "The signed transaction is stored but needs review. Refresh signed pending transactions; do not create a replacement.";
+const REJECTION_MESSAGE =
+  "The Wcash node rejected this signed transaction. Wait for it to expire before creating a replacement.";
 const WCASH_SEED_SCHEME = "bip39-english-24-empty-passphrase-v1";
 
 export interface WcashProductConfig {
@@ -104,10 +108,14 @@ export interface WcashPendingTransaction {
   readonly txid: string;
   readonly branchId: typeof WCASH_BRANCH_ID;
   readonly expiryHeight: number;
+  readonly lifecycle: "unexpired" | "expired" | "tip_unknown";
+  readonly rebroadcastAllowed: boolean;
+  readonly blocksNewSigning: boolean;
 }
 
 export interface WcashPendingTransactions {
   readonly schemaVersion: 1;
+  readonly exactTipHeight: number | null;
   readonly transactions: readonly WcashPendingTransaction[];
   readonly nextCursor: string | null;
 }
@@ -125,15 +133,25 @@ export type WcashOperationResult =
   | {
       readonly schemaVersion: 1;
       readonly operation: WcashOperation;
-      readonly outcome: "broadcast" | "recovery_required";
+      readonly outcome: "broadcast" | "rejected" | "recovery_required" | "expired";
       readonly txid: string;
       readonly branchId: typeof WCASH_BRANCH_ID;
-      readonly expiryHeight: number;
+      readonly expiryHeight: number | null;
       readonly targetHeight: number | null;
       readonly feeZat: bigint | null;
       readonly internalChangeReceiverVerified: boolean | null;
+      readonly exactTipHeight: number;
       readonly broadcast: WcashBroadcast | null;
-      readonly recovery: { readonly code: "exact_transaction_rebroadcast_required"; readonly message: string } | null;
+      readonly recovery: {
+        readonly code: "exact_transaction_rebroadcast_required" | "exact_transaction_review_required";
+        readonly message: string;
+        readonly txids: readonly string[];
+      } | null;
+      readonly rejection: {
+        readonly code: "transaction_rejected";
+        readonly nodeCode: number;
+        readonly message: string;
+      } | null;
     };
 
 type UnknownRecord = Record<string, unknown>;
@@ -417,6 +435,27 @@ const parseBroadcast = (value: unknown, txid: string, operation: string): WcashB
   throw new Error(`${operation} returned malformed data`);
 };
 
+const parseRecoveryTxids = (
+  value: unknown,
+  expectedTxid: string,
+  allowMultiple: boolean,
+  operation: string,
+): readonly string[] => {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 25) {
+    throw new Error(`${operation} returned malformed data`);
+  }
+  const txids = value.map((entry) => {
+    if (typeof entry !== "string" || !TXID_PATTERN.test(entry)) {
+      throw new Error(`${operation} returned malformed data`);
+    }
+    return entry;
+  });
+  if (txids[0] !== expectedTxid || new Set(txids).size !== txids.length || (!allowMultiple && txids.length !== 1)) {
+    throw new Error(`${operation} returned malformed data`);
+  }
+  return Object.freeze(txids);
+};
+
 export const parseOperationResult = (payload: unknown, expectedOperation: WcashOperation): WcashOperationResult => {
   const operation = "Transaction operation";
   const record = requireRecord(payload, operation);
@@ -440,106 +479,225 @@ export const parseOperationResult = (payload: unknown, expectedOperation: WcashO
       "target_height",
       "fee_zat",
       "internal_change_receiver_verified",
+      "exact_tip_height",
       "broadcast",
       "recovery",
+      "rejection",
     ],
     operation,
   );
   if (
     record.schema_version !== 1 ||
     record.operation !== expectedOperation ||
-    (record.outcome !== "broadcast" && record.outcome !== "recovery_required") ||
+    (record.outcome !== "broadcast" &&
+      record.outcome !== "rejected" &&
+      record.outcome !== "recovery_required" &&
+      record.outcome !== "expired") ||
     record.branch_id !== WCASH_BRANCH_ID
   ) {
     throw new Error(`${operation} returned malformed data`);
   }
   const txid = requireTxid(record, "txid", operation);
-  const expiryHeight = requireU32(record, "expiry_height", operation);
+  const exactTipHeight = requireU32(record, "exact_tip_height", operation);
+  const expiryHeight = record.expiry_height === null ? null : requireU32(record, "expiry_height", operation);
   const targetHeight = record.target_height === null ? null : requireU32(record, "target_height", operation);
-  const feeZat = record.fee_zat === null ? null : requireZatoshis(record, "fee_zat", operation);
+  const feeZat = (() => {
+    if (record.fee_zat === null) return null;
+    if (
+      typeof record.fee_zat !== "string" ||
+      record.fee_zat.length > 16 ||
+      !/^(?:0|[1-9][0-9]*)$/.test(record.fee_zat)
+    ) {
+      throw new Error(`${operation} returned malformed data`);
+    }
+    const value = BigInt(record.fee_zat);
+    if (value > MAX_MONEY_ZAT) throw new Error(`${operation} returned malformed data`);
+    return value;
+  })();
   if (
     record.internal_change_receiver_verified !== null &&
     typeof record.internal_change_receiver_verified !== "boolean"
   ) {
     throw new Error(`${operation} returned malformed data`);
   }
-  if (
-    (feeZat !== null && feeZat > MAX_MONEY_ZAT) ||
-    (expectedOperation === "rebroadcast_pending" &&
-      (targetHeight !== null || feeZat !== null || record.internal_change_receiver_verified !== null)) ||
-    (expectedOperation !== "rebroadcast_pending" &&
-      (targetHeight === null || feeZat === null || record.internal_change_receiver_verified !== true))
-  ) {
-    throw new Error(`${operation} returned malformed data`);
-  }
+
+  let broadcast: WcashBroadcast | null = null;
+  let recovery: Exclude<WcashOperationResult, { outcome: "cancelled" }>["recovery"] = null;
+  let rejection: Exclude<WcashOperationResult, { outcome: "cancelled" }>["rejection"] = null;
+  let persistedReview = false;
 
   if (record.outcome === "broadcast") {
-    if (record.recovery !== null) throw new Error(`${operation} returned malformed data`);
-    return {
-      schemaVersion: 1,
-      operation: expectedOperation,
-      outcome: "broadcast",
-      txid,
-      branchId: WCASH_BRANCH_ID,
-      expiryHeight,
-      targetHeight,
-      feeZat,
-      internalChangeReceiverVerified: record.internal_change_receiver_verified,
-      broadcast: parseBroadcast(record.broadcast, txid, operation),
-      recovery: null,
+    if (record.recovery !== null || record.rejection !== null || record.broadcast === null) {
+      throw new Error(`${operation} returned malformed data`);
+    }
+    broadcast = parseBroadcast(record.broadcast, txid, operation);
+  } else if (record.outcome === "recovery_required") {
+    if (!isRecord(record.recovery)) throw new Error(`${operation} returned malformed data`);
+    requireExactKeys(record.recovery, ["code", "message", "txids"], operation);
+    if (
+      record.broadcast !== null ||
+      record.rejection !== null ||
+      (record.recovery.code !== "exact_transaction_rebroadcast_required" &&
+        record.recovery.code !== "exact_transaction_review_required") ||
+      typeof record.recovery.message !== "string" ||
+      record.recovery.message.length === 0 ||
+      record.recovery.message.length > 4096 ||
+      new TextEncoder().encode(record.recovery.message).byteLength > 4096
+    ) {
+      throw new Error(`${operation} returned malformed data`);
+    }
+    const expectedMessage =
+      record.recovery.code === "exact_transaction_rebroadcast_required" ? RECOVERY_MESSAGE : REVIEW_MESSAGE;
+    if (record.recovery.message !== expectedMessage) throw new Error(`${operation} returned malformed data`);
+    persistedReview =
+      record.recovery.code === "exact_transaction_review_required" &&
+      expectedOperation !== "rebroadcast_pending" &&
+      expiryHeight === null &&
+      targetHeight === null &&
+      feeZat === null &&
+      record.internal_change_receiver_verified === null;
+    recovery = {
+      code: record.recovery.code,
+      message: expectedMessage,
+      txids: parseRecoveryTxids(record.recovery.txids, txid, persistedReview, operation),
     };
-  }
-
-  if (!isRecord(record.recovery)) throw new Error(`${operation} returned malformed data`);
-  requireExactKeys(record.recovery, ["code", "message"], operation);
-  if (
+  } else if (record.outcome === "rejected") {
+    if (!isRecord(record.rejection)) throw new Error(`${operation} returned malformed data`);
+    requireExactKeys(record.rejection, ["code", "node_code", "message"], operation);
+    if (
+      record.broadcast !== null ||
+      record.recovery !== null ||
+      record.rejection.code !== "transaction_rejected" ||
+      !Number.isInteger(record.rejection.node_code) ||
+      record.rejection.node_code === 0 ||
+      (record.rejection.node_code as number) < -0x8000_0000 ||
+      (record.rejection.node_code as number) > 0x7fff_ffff ||
+      record.rejection.message !== REJECTION_MESSAGE
+    ) {
+      throw new Error(`${operation} returned malformed data`);
+    }
+    rejection = {
+      code: "transaction_rejected",
+      nodeCode: record.rejection.node_code as number,
+      message: REJECTION_MESSAGE,
+    };
+  } else if (
+    expectedOperation !== "rebroadcast_pending" ||
     record.broadcast !== null ||
-    record.recovery.code !== "exact_transaction_rebroadcast_required" ||
-    typeof record.recovery.message !== "string" ||
-    record.recovery.message.length === 0 ||
-    record.recovery.message.length > 2048
+    record.recovery !== null ||
+    record.rejection !== null
   ) {
     throw new Error(`${operation} returned malformed data`);
   }
+
+  const rebroadcastMetadata =
+    expiryHeight !== null &&
+    targetHeight === null &&
+    feeZat === null &&
+    record.internal_change_receiver_verified === null;
+  const signedMetadata =
+    expiryHeight !== null &&
+    targetHeight !== null &&
+    feeZat !== null &&
+    record.internal_change_receiver_verified === true;
+  if (
+    (!persistedReview && expectedOperation === "rebroadcast_pending" && !rebroadcastMetadata) ||
+    (!persistedReview && expectedOperation !== "rebroadcast_pending" && !signedMetadata) ||
+    (persistedReview && recovery === null) ||
+    (!persistedReview &&
+      expectedOperation !== "rebroadcast_pending" &&
+      (expiryHeight === null || expiryHeight === 0 || exactTipHeight >= expiryHeight)) ||
+    (record.outcome === "expired" && (expiryHeight === null || expiryHeight === 0 || exactTipHeight < expiryHeight)) ||
+    (expectedOperation === "rebroadcast_pending" &&
+      record.outcome !== "expired" &&
+      expiryHeight !== null &&
+      expiryHeight !== 0 &&
+      exactTipHeight >= expiryHeight)
+  ) {
+    throw new Error(`${operation} returned malformed data`);
+  }
+
   return {
     schemaVersion: 1,
     operation: expectedOperation,
-    outcome: "recovery_required",
+    outcome: record.outcome,
     txid,
     branchId: WCASH_BRANCH_ID,
     expiryHeight,
     targetHeight,
     feeZat,
     internalChangeReceiverVerified: record.internal_change_receiver_verified,
-    broadcast: null,
-    recovery: { code: "exact_transaction_rebroadcast_required", message: RECOVERY_MESSAGE },
+    exactTipHeight,
+    broadcast,
+    recovery,
+    rejection,
   };
 };
 
 export const parsePendingTransactions = (payload: unknown): WcashPendingTransactions => {
   const operation = "Pending transactions";
   const record = requireRecord(payload, operation);
-  requireExactKeys(record, ["schema_version", "transactions", "next_cursor"], operation);
+  requireExactKeys(record, ["schema_version", "exact_tip_height", "transactions", "next_cursor"], operation);
   if (
     record.schema_version !== 1 ||
     !Array.isArray(record.transactions) ||
     record.transactions.length > 25 ||
+    (record.exact_tip_height !== null &&
+      (!Number.isInteger(record.exact_tip_height) ||
+        (record.exact_tip_height as number) < 0 ||
+        (record.exact_tip_height as number) > 0xffff_ffff)) ||
     (record.next_cursor !== null &&
-      (typeof record.next_cursor !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(record.next_cursor)))
+      (typeof record.next_cursor !== "string" ||
+        record.next_cursor.length > 20 ||
+        !/^(?:0|[1-9][0-9]*)$/.test(record.next_cursor) ||
+        BigInt(record.next_cursor) > 0xffff_ffff_ffff_ffffn))
   ) {
     throw new Error(`${operation} returned malformed data`);
   }
+  const exactTipHeight = record.exact_tip_height as number | null;
+  const seenTxids = new Set<string>();
   const transactions = record.transactions.map((value): WcashPendingTransaction => {
     if (!isRecord(value)) throw new Error(`${operation} returned malformed data`);
-    requireExactKeys(value, ["txid", "branch_id", "expiry_height"], operation);
+    requireExactKeys(
+      value,
+      ["txid", "branch_id", "expiry_height", "lifecycle", "rebroadcast_allowed", "blocks_new_signing"],
+      operation,
+    );
     if (value.branch_id !== WCASH_BRANCH_ID) throw new Error(`${operation} returned malformed data`);
+    const transactionId = requireTxid(value, "txid", operation);
+    if (seenTxids.has(transactionId)) throw new Error(`${operation} returned malformed data`);
+    seenTxids.add(transactionId);
+    const expiryHeight = requireU32(value, "expiry_height", operation);
+    const lifecycle =
+      exactTipHeight === null
+        ? "tip_unknown"
+        : expiryHeight !== 0 && exactTipHeight >= expiryHeight
+          ? "expired"
+          : "unexpired";
+    const rebroadcastAllowed = lifecycle === "unexpired";
+    const blocksNewSigning = lifecycle !== "expired";
+    if (
+      value.lifecycle !== lifecycle ||
+      value.rebroadcast_allowed !== rebroadcastAllowed ||
+      value.blocks_new_signing !== blocksNewSigning
+    ) {
+      throw new Error(`${operation} returned malformed data`);
+    }
     return {
-      txid: requireTxid(value, "txid", operation),
+      txid: transactionId,
       branchId: WCASH_BRANCH_ID,
-      expiryHeight: requireU32(value, "expiry_height", operation),
+      expiryHeight,
+      lifecycle,
+      rebroadcastAllowed,
+      blocksNewSigning,
     };
   });
-  return { schemaVersion: 1, transactions, nextCursor: record.next_cursor as string | null };
+  return {
+    schemaVersion: 1,
+    exactTipHeight,
+    transactions,
+    nextCursor: record.next_cursor as string | null,
+  };
 };
 
 export const normalizeRecoveryPhrase = (phrase: string): string => phrase.trim().toLowerCase().split(/\s+/).join(" ");
@@ -552,5 +710,5 @@ export const require24WordRecoveryPhrase = (phrase: string): string => {
 
 export const publicErrorMessage = (error: unknown): string => {
   if (error instanceof Error && error.message && !/abandon|seed|mnemonic/i.test(error.message)) return error.message;
-  return "The wallet operation failed. No wallet data was changed by this screen.";
+  return "The wallet operation failed. Verify the current wallet state before trying again.";
 };

@@ -37,6 +37,8 @@ type Screen =
   | "orphaned"
   | "unavailable";
 
+type PendingLoadState = "idle" | "loading" | "loaded" | "error";
+
 const CONFIRMATION_WORDS = [3, 11, 19] as const;
 
 const sum = (values: readonly bigint[]): bigint => values.reduce((total, value) => total + value, 0n);
@@ -106,25 +108,55 @@ const WcashWallet = () => {
   const [sendReview, setSendReview] = useState<SendReview | null>(null);
   const [shieldReview, setShieldReview] = useState(false);
   const [pendingTransactions, setPendingTransactions] = useState<readonly WcashPendingTransaction[]>([]);
+  const [pendingExactTipHeight, setPendingExactTipHeight] = useState<number | null>(null);
+  const [pendingLoadState, setPendingLoadState] = useState<PendingLoadState>("idle");
+  const [recoveryHoldTxids, setRecoveryHoldTxids] = useState<readonly string[]>([]);
+  const [transactionStatusUnknown, setTransactionStatusUnknown] = useState(false);
   const [transactionNote, setTransactionNote] = useState<string | null>(null);
 
   const refreshPendingTransactions = useCallback(async () => {
-    const transactions: WcashPendingTransaction[] = [];
-    const seenCursors = new Set<string>();
-    let cursor: string | undefined;
+    setPendingLoadState("loading");
+    try {
+      const transactions: WcashPendingTransaction[] = [];
+      const seenCursors = new Set<string>();
+      const seenTxids = new Set<string>();
+      let cursor: string | undefined;
+      let snapshotTip: number | null | undefined;
 
-    for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
-      const page = parsePendingTransactions(await window.wcash.pendingTransactions(cursor));
-      transactions.push(...page.transactions);
-      if (page.nextCursor === null) {
-        setPendingTransactions(transactions);
-        return;
+      for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+        const page = parsePendingTransactions(await window.wcash.pendingTransactions(cursor));
+        if (snapshotTip === undefined) snapshotTip = page.exactTipHeight;
+        if (snapshotTip !== page.exactTipHeight) {
+          throw new Error("The Wcash tip changed while signed pending transactions were being read");
+        }
+        for (const transaction of page.transactions) {
+          if (seenTxids.has(transaction.txid)) {
+            throw new Error("Signed pending transaction metadata contained a duplicate transaction");
+          }
+          seenTxids.add(transaction.txid);
+          transactions.push(transaction);
+        }
+        if (page.nextCursor === null) {
+          setPendingTransactions(Object.freeze(transactions));
+          setPendingExactTipHeight(snapshotTip ?? null);
+          setPendingLoadState("loaded");
+          setRecoveryHoldTxids((current) =>
+            current.length > 0 && current.every((txid) => seenTxids.has(txid)) ? [] : current,
+          );
+          return;
+        }
+        if (seenCursors.has(page.nextCursor) || (cursor !== undefined && BigInt(page.nextCursor) <= BigInt(cursor))) {
+          throw new Error("Pending transaction pagination did not advance");
+        }
+        seenCursors.add(page.nextCursor);
+        cursor = page.nextCursor;
       }
-      if (seenCursors.has(page.nextCursor)) throw new Error("Pending transaction pagination did not advance");
-      seenCursors.add(page.nextCursor);
-      cursor = page.nextCursor;
+      throw new Error("Pending transaction list exceeded its safety limit");
+    } catch (cause) {
+      setPendingExactTipHeight(null);
+      setPendingLoadState("error");
+      throw cause;
     }
-    throw new Error("Pending transaction list exceeded its safety limit");
   }, []);
 
   const bootstrap = useCallback(async () => {
@@ -196,6 +228,9 @@ const WcashWallet = () => {
   const enterWallet = async (metadata: WcashWalletMetadata) => {
     setReceivers(null);
     setBalance(null);
+    setPendingTransactions([]);
+    setPendingExactTipHeight(null);
+    setPendingLoadState("idle");
     setSyncNote("Checking wallet state…");
 
     const addresses = parseReceivers(await window.wcash.receivers());
@@ -218,7 +253,6 @@ const WcashWallet = () => {
     try {
       await refreshPendingTransactions();
     } catch (cause) {
-      setPendingTransactions([]);
       setError(publicErrorMessage(cause));
     }
   };
@@ -425,17 +459,50 @@ const WcashWallet = () => {
 
   const describeOperation = (result: Exclude<WcashOperationResult, { outcome: "cancelled" }>): string => {
     if (result.outcome === "recovery_required") {
-      return `Transaction ${result.txid} is signed and stored, but broadcast could not be confirmed. Retry this exact transaction below; do not create a replacement.`;
+      if (result.recovery?.code === "exact_transaction_rebroadcast_required") {
+        return `Transaction ${result.txid} is signed and stored, but broadcast could not be confirmed. Retry this exact transaction below; do not create a replacement.`;
+      }
+      const count = result.recovery?.txids.length ?? 0;
+      return `${count === 1 ? "One signed transaction needs" : `${count} signed transactions need`} review. Refresh the signed pending list and do not create a replacement.`;
+    }
+    if (result.outcome === "rejected") {
+      return `Transaction ${result.txid} was definitively rejected by the Wcash node (code ${result.rejection?.nodeCode ?? "unknown"}). It remains locked until expiry; do not create a replacement.`;
+    }
+    if (result.outcome === "expired") {
+      return `Transaction ${result.txid} expired and was not submitted. Refresh the exact-tip wallet state before creating a new transaction.`;
     }
     const state = result.broadcast?.status.state === "mined" ? "already mined" : "accepted for broadcast";
     const fee = result.feeZat === null ? "" : ` Fee: ${formatTwc(result.feeZat)} TWC.`;
     return `Transaction ${result.txid} was ${state}.${fee}`;
   };
 
+  const retainOperationSafetyState = (result: Exclude<WcashOperationResult, { outcome: "cancelled" }>) => {
+    setTransactionStatusUnknown(false);
+    const txids =
+      result.outcome === "recovery_required"
+        ? (result.recovery?.txids ?? [result.txid])
+        : result.outcome === "rejected"
+          ? [result.txid]
+          : [];
+    if (txids.length > 0) {
+      setRecoveryHoldTxids((current) => Object.freeze([...new Set([...current, ...txids])]));
+    }
+  };
+
   const reviewSend = async (event: FormEvent) => {
     event.preventDefault();
-    if (!balance || !isExactTipBalance(balance) || syncing || busy) {
-      setError("Synchronize to the exact Wcash Testnet tip before reviewing a payment.");
+    if (
+      !balance ||
+      !isExactTipBalance(balance) ||
+      pendingLoadState !== "loaded" ||
+      pendingExactTipHeight !== balance.chainTipHeight ||
+      pendingTransactions.some((transaction) => transaction.blocksNewSigning) ||
+      recoveryHoldTxids.length > 0 ||
+      transactionStatusUnknown ||
+      syncing ||
+      busy
+    ) {
+      setError("Synchronize and verify signed pending transactions at the exact Wcash Testnet tip first.");
       return;
     }
 
@@ -471,6 +538,19 @@ const WcashWallet = () => {
   const confirmReviewedSend = async () => {
     const reviewed = sendReview;
     if (!reviewed || busy || syncing) return;
+    if (
+      !balance ||
+      !isExactTipBalance(balance) ||
+      pendingLoadState !== "loaded" ||
+      pendingExactTipHeight !== balance.chainTipHeight ||
+      pendingTransactions.some((transaction) => transaction.blocksNewSigning) ||
+      recoveryHoldTxids.length > 0 ||
+      transactionStatusUnknown
+    ) {
+      setSendReview(null);
+      setError("Wallet or signed pending state changed. Synchronize and review the payment again.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -479,15 +559,21 @@ const WcashWallet = () => {
         setTransactionNote("Payment cancelled before signing. No transaction was created.");
         return;
       }
+      retainOperationSafetyState(result);
       setTransactionNote(describeOperation(result));
       setSendReview(null);
       setSendAddress("");
       setSendAmount("");
       setSendMemo("");
       await refreshAfterTransaction();
-    } catch (cause) {
-      setError(publicErrorMessage(cause));
+    } catch {
+      setTransactionStatusUnknown(true);
       await refreshAfterTransaction();
+      setSendReview(null);
+      setSendAddress("");
+      setSendAmount("");
+      setSendMemo("");
+      setError("Transaction status is unknown. Refresh signed pending transactions and do not create a replacement.");
     } finally {
       setBusy(false);
     }
@@ -495,6 +581,19 @@ const WcashWallet = () => {
 
   const confirmShieldCoinbase = async () => {
     if (!shieldReview || busy || syncing) return;
+    if (
+      !balance ||
+      !isExactTipBalance(balance) ||
+      pendingLoadState !== "loaded" ||
+      pendingExactTipHeight !== balance.chainTipHeight ||
+      pendingTransactions.some((transaction) => transaction.blocksNewSigning) ||
+      recoveryHoldTxids.length > 0 ||
+      transactionStatusUnknown
+    ) {
+      setShieldReview(false);
+      setError("Wallet or signed pending state changed. Synchronize and review shielding again.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -503,19 +602,31 @@ const WcashWallet = () => {
         setTransactionNote("Shielding cancelled before signing. No transaction was created.");
         return;
       }
+      retainOperationSafetyState(result);
       setTransactionNote(describeOperation(result));
       setShieldReview(false);
       await refreshAfterTransaction();
-    } catch (cause) {
-      setError(publicErrorMessage(cause));
+    } catch {
+      setTransactionStatusUnknown(true);
       await refreshAfterTransaction();
+      setShieldReview(false);
+      setError("Shielding status is unknown. Refresh signed pending transactions and do not create a replacement.");
     } finally {
       setBusy(false);
     }
   };
 
   const retryPendingTransaction = async (transaction: WcashPendingTransaction) => {
-    if (!balance || !isExactTipBalance(balance) || balance.chainTipHeight >= transaction.expiryHeight) return;
+    if (
+      !balance ||
+      !isExactTipBalance(balance) ||
+      pendingLoadState !== "loaded" ||
+      pendingExactTipHeight === null ||
+      pendingExactTipHeight !== balance.chainTipHeight ||
+      !transaction.rebroadcastAllowed
+    ) {
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -524,11 +635,13 @@ const WcashWallet = () => {
         "rebroadcast_pending",
       );
       if (result.outcome === "cancelled") throw new Error("Pending transaction retry was unexpectedly cancelled.");
+      retainOperationSafetyState(result);
       setTransactionNote(describeOperation(result));
       await refreshAfterTransaction();
-    } catch (cause) {
-      setError(publicErrorMessage(cause));
+    } catch {
+      setTransactionStatusUnknown(true);
       await refreshAfterTransaction();
+      setError("Rebroadcast status is unknown. Refresh signed pending transactions and do not create a replacement.");
     } finally {
       setBusy(false);
     }
@@ -548,11 +661,25 @@ const WcashWallet = () => {
 
   const exactTipReady = balance !== null && isExactTipBalance(balance);
   const transactionsBusy = busy || syncing;
-  const hasPendingTransaction = pendingTransactions.length > 0;
+  const pendingSnapshotReady =
+    exactTipReady &&
+    pendingLoadState === "loaded" &&
+    pendingExactTipHeight !== null &&
+    pendingExactTipHeight === balance.chainTipHeight;
+  const hasBlockingPendingTransaction = pendingTransactions.some((transaction) => transaction.blocksNewSigning);
+  const hasTransactionSafetyHold = recoveryHoldTxids.length > 0 || transactionStatusUnknown;
   const canReviewSend =
-    exactTipReady && !transactionsBusy && !hasPendingTransaction && (totals?.privateSpendable ?? 0n) > 0n;
+    pendingSnapshotReady &&
+    !transactionsBusy &&
+    !hasBlockingPendingTransaction &&
+    !hasTransactionSafetyHold &&
+    (totals?.privateSpendable ?? 0n) > 0n;
   const canReviewShield =
-    exactTipReady && !transactionsBusy && !hasPendingTransaction && (totals?.coinbaseSpendable ?? 0n) > 0n;
+    pendingSnapshotReady &&
+    !transactionsBusy &&
+    !hasBlockingPendingTransaction &&
+    !hasTransactionSafetyHold &&
+    (totals?.coinbaseSpendable ?? 0n) > 0n;
 
   const phraseWords = pendingPhrase?.split(" ") ?? [];
 
@@ -882,9 +1009,19 @@ const WcashWallet = () => {
                 <p className="warden-help">
                   The exact ZIP-317 fee is calculated during signing. Review does not sign or reserve funds.
                 </p>
-                {hasPendingTransaction ? (
+                {hasTransactionSafetyHold ? (
+                  <p className="warden-help">
+                    Transaction status requires recovery review. Do not create a replacement transaction. If every
+                    pending row has settled but this session remains locked, restart Wcash Warden to re-attest the
+                    wallet database.
+                  </p>
+                ) : hasBlockingPendingTransaction ? (
                   <p className="warden-help">
                     Resolve the signed pending transaction below before creating another transaction.
+                  </p>
+                ) : pendingLoadState !== "loaded" || !pendingSnapshotReady ? (
+                  <p className="warden-help">
+                    Transaction signing stays locked until signed pending status is verified at the same exact tip.
                   </p>
                 ) : null}
                 <button className="warden-button" type="submit" disabled={!canReviewSend}>
@@ -1003,33 +1140,45 @@ const WcashWallet = () => {
                 </div>
                 <span>{pendingTransactions.length}</span>
               </div>
-              {pendingTransactions.length === 0 ? (
+              {pendingLoadState === "loading" ? (
+                <BusyLine>Reading signed pending transactions…</BusyLine>
+              ) : pendingLoadState === "error" ? (
+                <p role="alert">
+                  Signed pending status is unavailable. New signing and exact-transaction retry remain locked.
+                </p>
+              ) : pendingLoadState === "loaded" && pendingTransactions.length === 0 ? (
                 <p>No durable pending transactions.</p>
-              ) : (
+              ) : pendingLoadState === "loaded" ? (
                 <ul className="warden-pending-list">
-                  {pendingTransactions.map((transaction) => {
-                    const expired = balance !== null && balance.chainTipHeight >= transaction.expiryHeight;
-                    return (
-                      <li key={transaction.txid}>
-                        <div>
-                          <code>{transaction.txid}</code>
-                          <span>
-                            Expires at block {transaction.expiryHeight.toLocaleString()}
-                            {expired ? " · expired for rebroadcast" : ""}
-                          </span>
-                        </div>
-                        <button
-                          className="warden-button warden-button--secondary"
-                          type="button"
-                          disabled={transactionsBusy || !exactTipReady || expired}
-                          onClick={() => void retryPendingTransaction(transaction)}
-                        >
-                          Retry exact transaction
-                        </button>
-                      </li>
-                    );
-                  })}
+                  {pendingTransactions.map((transaction) => (
+                    <li key={transaction.txid}>
+                      <div>
+                        <code>{transaction.txid}</code>
+                        <span>
+                          {transaction.expiryHeight === 0
+                            ? "No expiry height"
+                            : `Expires at block ${transaction.expiryHeight.toLocaleString()}`}{" "}
+                          ·{" "}
+                          {transaction.lifecycle === "expired"
+                            ? "expired; no rebroadcast"
+                            : transaction.lifecycle === "tip_unknown"
+                              ? "exact tip unknown; signing locked"
+                              : "active; blocks replacement signing"}
+                        </span>
+                      </div>
+                      <button
+                        className="warden-button warden-button--secondary"
+                        type="button"
+                        disabled={transactionsBusy || !pendingSnapshotReady || !transaction.rebroadcastAllowed}
+                        onClick={() => void retryPendingTransaction(transaction)}
+                      >
+                        Retry exact transaction
+                      </button>
+                    </li>
+                  ))}
                 </ul>
+              ) : (
+                <p>Signed pending status has not been verified.</p>
               )}
               <p className="warden-help">
                 Retry reuses the exact stored signed bytes. Wcash Warden never creates a replacement automatically and
