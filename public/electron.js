@@ -2,9 +2,35 @@ const { app, BrowserWindow, Menu, shell, ipcMain, dialog, session, clipboard } =
 const os = require("os");
 const path = require("path");
 const fs = require("fs");
+const { createWcashZingoNativeAdapter } = require("./wcashZingoNativeAdapter");
+const {
+  TESTNET_PACKAGED_PROFILE,
+  resolveWcashUserDataPath,
+  selectWcashRuntimeProfile,
+} = require("./wcashRuntimeProfile");
+
+const packageMetadata = require("../package.json");
+const wcashProfile = selectWcashRuntimeProfile({
+  isPackaged: app.isPackaged,
+  localnetRequested: process.env.WCASH_LOCALNET_DEV === "1",
+  packagedProfile: packageMetadata.wcashPackagedProfile || TESTNET_PACKAGED_PROFILE,
+});
+
+// Select the fixed Wcash profile and its isolated data directory before any
+// settings or wallet storage module is initialized.
+app.setName("Wcash Wallet");
+app.setPath(
+  "userData",
+  resolveWcashUserDataPath({
+    profile: wcashProfile,
+    appDataPath: app.getPath("appData"),
+    localnetDataDir: wcashProfile.localnet ? process.env.WCASH_LOCALNET_DATA_DIR : undefined,
+  }),
+);
+if (process.platform === "win32") app.setAppUserModelId(wcashProfile.appId);
+
 const settings = require("electron-settings");
 const storage = require("electron-json-storage");
-const { createServerRegistry } = require("./serverRegistry");
 
 const STORAGE_KEY = "wallets";
 const isDev = !app.isPackaged;
@@ -410,7 +436,7 @@ async function saveWallets(wallets) {
 let waitingForClose = false;
 let proceedToClose = false;
 
-// zcash: URI received before the renderer is ready (cold start or wallet not yet loaded)
+// wcash: URI received before the renderer is ready (cold start or wallet not yet loaded)
 let pendingZcashUri = null;
 
 // Last sourceDir confirmed by the user through the system "Open" dialog in
@@ -420,7 +446,7 @@ let pendingZcashUri = null;
 let _lastScanSourceDir = null;
 
 function handleZcashUri(uri) {
-  if (!uri || !uri.startsWith("zcash:")) return;
+  if (!uri || !uri.startsWith("wcash:")) return;
   const win = BrowserWindow.getAllWindows()[0];
   if (win) {
     win.webContents.send("payuri", uri);
@@ -471,7 +497,7 @@ if (process.platform === "linux") {
   }
 }
 
-// Mac/MAS only: the OS routes zcash: links here whether the app is open or closed.
+// Mac/MAS only: the OS routes wcash: links here whether the app is open or closed.
 // Must be registered before app.whenReady() to catch cold-start links.
 // On Windows/Linux, URIs arrive via second-instance argv — open-url is not fired there.
 if (process.platform === "darwin") {
@@ -486,7 +512,7 @@ if (process.platform === "darwin") {
 // but two copies of the app at different paths (e.g. DMG + MAS) can both run
 // and end up sharing native/GPU resources — which has caused shutdown crashes
 // in the InProc GPU thread (rust_png / fontations).
-// Windows/Linux also use this to receive zcash: URIs from second-instance argv.
+// Windows/Linux also use this to receive wcash: URIs from second-instance argv.
 {
   const gotLock = app.requestSingleInstanceLock();
   if (!gotLock) {
@@ -495,7 +521,7 @@ if (process.platform === "darwin") {
     app.exit(0);
   } else {
     app.on("second-instance", (_event, argv) => {
-      const uri = argv.find((a) => a.startsWith("zcash:"));
+      const uri = argv.find((a) => a.startsWith("wcash:"));
       if (uri) handleZcashUri(uri);
       const win = BrowserWindow.getAllWindows()[0];
       if (win) {
@@ -658,8 +684,19 @@ async function setRequireAuth(value) {
 // route them through IPC so the main process performs the action.
 ipcMain.handle("shell:openExternal", (_e, url) => {
   if (typeof url === "string" && url.startsWith("https://")) {
+    let hostname;
+    try {
+      hostname = new URL(url).hostname.toLowerCase();
+    } catch {
+      return false;
+    }
+    const inheritedZcashHost = ["zcashexplorer.app", "cipherscan.app", "zexplorer.app", "zcashnames.com"].some(
+      (domain) => hostname === domain || hostname.endsWith(`.${domain}`),
+    );
+    if (inheritedZcashHost) return false;
     return shell.openExternal(url);
   }
+  return false;
 });
 
 ipcMain.handle("clipboard:writeText", (_e, text) => {
@@ -668,63 +705,51 @@ ipcMain.handle("clipboard:writeText", (_e, text) => {
   }
 });
 
-// Live lightwalletd registry — the transport and cache live in serverRegistry.js
-// so they can be tested without Electron; see the reasoning in that file.
-const serverRegistry = createServerRegistry({
-  store: {
-    get: (key) => settings.getSync(key),
-    set: (key, value) => settings.setSync(key, value),
-  },
-});
-
 ipcMain.handle("servers:fetchList", async (_e, chain) => {
-  const servers = await serverRegistry.load(chain);
-  return servers ? { ok: true, servers } : { ok: false };
+  const profileChain = wcashProfile.localnet ? "regtest" : "test";
+  if (chain !== profileChain) return { ok: true, servers: [] };
+  const endpoint = new URL(wcashProfile.endpoint);
+  return {
+    ok: true,
+    servers: [
+      {
+        uri: wcashProfile.endpoint,
+        hostname: endpoint.hostname,
+        port: Number(endpoint.port || (endpoint.protocol === "https:" ? 443 : 80)),
+        online: true,
+        ping: 0,
+        uptime_30d: 1,
+      },
+    ],
+  };
 });
 
-// Zcash Names Service (ZNS) resolver.
-// Lives in the main process for three reasons that all apply on every platform:
-//   1. The renderer's CSP `connect-src 'self'` blocks fetch() to external hosts.
-//   2. CORS from a file:// origin breaks cross-origin requests.
-//   3. MAS / Flatpak sandboxes grant network access at the app level — main is
-//      the natural place to consume it.
-// The SDK auto-handles endpoint selection and the ZIP-321 protocol details.
-// Clients are cached per chain so we don't reconstruct on every keystroke.
-const znsClients = new Map();
-function getZnsClient(chain) {
-  if (znsClients.has(chain)) return znsClients.get(chain);
-  const network = chain === "main" ? "mainnet" : chain === "test" ? "testnet" : null;
-  if (!network) return null;
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { ZNS } = require("zcashname-sdk");
-  const client = new ZNS({ network });
-  znsClients.set(chain, client);
-  return client;
-}
-
-ipcMain.handle("zns:resolve", async (_e, name, chain) => {
-  if (typeof name !== "string" || !/^[a-z0-9]{1,62}$/.test(name)) {
-    return { ok: false, reason: "invalid-name" };
-  }
-  const client = getZnsClient(chain);
-  if (!client) return { ok: false, reason: "unsupported-chain" };
-  try {
-    const reg = await client.resolveName(name);
-    if (!reg || typeof reg.address !== "string") return { ok: false, reason: "not-found" };
-    return { ok: true, address: reg.address };
-  } catch {
-    return { ok: false, reason: "network" };
-  }
+// Wcash has no approved name-service mapping. Keep the upstream IPC shape but
+// never contact Zcash Names Service.
+ipcMain.handle("zns:resolve", async () => {
+  return { ok: false, reason: "unsupported-chain" };
 });
 
 ipcMain.handle("loadSettings", async () => {
   const all = settings.getSync("all");
   const requireDeviceAuth = await getRequireAuth();
-  return { ...(all ?? {}), requireDeviceAuth };
+  return {
+    ...(all ?? {}),
+    serveruri: wcashProfile.endpoint,
+    serverchain_name: wcashProfile.localnet ? "regtest" : "test",
+    serverselection: "custom",
+    requireDeviceAuth,
+  };
 });
 ipcMain.handle("saveSettings", async (_e, kv) => {
   if (kv.key === "requireDeviceAuth") {
     await setRequireAuth(kv.value);
+  } else if (kv.key === "serveruri") {
+    settings.setSync("all.serveruri", wcashProfile.endpoint);
+  } else if (kv.key === "serverchain_name") {
+    settings.setSync("all.serverchain_name", wcashProfile.localnet ? "regtest" : "test");
+  } else if (kv.key === "serverselection") {
+    settings.setSync("all.serverselection", "custom");
   } else {
     settings.setSync(`all.${kv.key}`, kv.value);
   }
@@ -823,6 +848,7 @@ let _mainNative = null;
 // says exactly what is wrong ("%1 is not a valid Win32 application" for an
 // arch mismatch); this keeps that sentence and puts it in front of the user.
 let _mainNativeError = null;
+let _wcashNativeAdapter = null;
 function getNative() {
   if (!_mainNative && !_mainNativeError) {
     try {
@@ -835,16 +861,29 @@ function getNative() {
   return _mainNative;
 }
 
-// Throws the load failure rather than letting callers trip over a null.
+function getWcashNativeAdapter() {
+  if (_wcashNativeAdapter === null) {
+    const native = getNative();
+    if (!native) {
+      if (_mainNativeError) {
+        throw new Error(`native module failed to load (${_nativePath}): ${_mainNativeError.message}`);
+      }
+      throw new Error("Wcash native module is unavailable");
+    }
+    _wcashNativeAdapter = createWcashZingoNativeAdapter({
+      native,
+      keytar: require("keytar"),
+      profile: wcashProfile,
+    });
+  }
+  return _wcashNativeAdapter;
+}
+
+// The renderer keeps the exact upstream method contract. Every method is
+// routed through the fixed-network Wcash adapter; there is no Zcash fallback.
 function requireNative(method) {
-  const native = getNative();
-  if (native && typeof native[method] === "function") {
-    return native;
-  }
-  if (_mainNativeError) {
-    throw new Error(`native module failed to load (${_nativePath}): ${_mainNativeError.message}`);
-  }
-  throw new Error(`native.${method} not available`);
+  const adapter = getWcashNativeAdapter();
+  return { [method]: (...args) => adapter.invoke(method, ...args) };
 }
 
 // Activates a security-scoped bookmark from the main process, which has
@@ -1008,11 +1047,14 @@ function nymProxyPath() {
 }
 
 const mixnet = {
-  intent: "on", // ForcedOn by default (ADR 0024); flipped by the Settings toggle
+  // Wcash currently uses its fixed profile endpoint directly. Keep the
+  // inherited transport state in its upstream-compatible explicit-off mode;
+  // no Nym process or Zcash network service may start in a Wcash build.
+  intent: wcashProfile.runtimeReady ? "off" : "on",
   child: null,
   socks5Addr: null,
   narration: null,
-  phase: "unattached", // unattached | bootstrapping | ready | switched_off | died
+  phase: wcashProfile.runtimeReady ? "switched_off" : "unattached", // unattached | bootstrapping | ready | switched_off | died
 };
 
 function mixnetStatusSnapshot() {
@@ -1112,6 +1154,11 @@ function killProxy() {
 
 ipcMain.handle("mixnet:get-status", () => mixnetStatusSnapshot());
 ipcMain.handle("mixnet:enable", async () => {
+  if (wcashProfile.runtimeReady) {
+    mixnet.intent = "off";
+    setMixnetPhase("switched_off");
+    return mixnetStatusSnapshot();
+  }
   mixnet.intent = "on";
   if (mixnet.socks5Addr) await attachCurrentWallet();
   else spawnProxy();
@@ -1172,6 +1219,10 @@ ipcMain.handle("native:execute_due_parts", (_e, spacing_ms) =>
 );
 
 ipcMain.handle("wallet-dir:request", async () => {
+  // Wcash stores its SQLite wallets inside the already isolated runtime-profile
+  // directory. It never shares or imports the inherited Zcash wallet folder.
+  if (wcashProfile.runtimeReady) return { path: app.getPath("userData") };
+
   const wdLog = (msg) => {
     try {
       const logPath = require("path").join(app.getPath("userData"), "startup.log");
@@ -1337,6 +1388,8 @@ ipcMain.handle("wallet-dir:request", async () => {
 // MAS only: let the user re-pick the wallet folder (e.g. they picked the wrong one).
 // Stores the new bookmark, then restarts so the wallet is reloaded from the new path.
 ipcMain.handle("wallet-dir:change", async () => {
+  if (wcashProfile.runtimeReady) return { ok: false, reason: "profile-managed" };
+
   if (process.platform !== "darwin" || !process.mas) return { ok: false, reason: "not-mas" };
 
   const mainWindow = BrowserWindow.getAllWindows()[0] ?? null;
@@ -1450,6 +1503,8 @@ ipcMain.handle("wallet-dir:change", async () => {
 // Import data from another installation: open folder picker and list which of the
 // 3 known files (settings.json, wallets.json, AddressBook.json) are present.
 ipcMain.handle("import:scan", async () => {
+  if (wcashProfile.runtimeReady) return { ok: false, reason: "unsupported-wallet-format" };
+
   const isInSandbox = process.mas || !!process.env.FLATPAK_ID;
   if (!isInSandbox) return { ok: false, reason: "not-sandboxed" };
 
@@ -1519,6 +1574,8 @@ ipcMain.handle("import:scan", async () => {
 
 // Apply user's per-file choices (replace / merge / skip). Restarts the app on success.
 ipcMain.handle("import:apply", async (_e, { sourceDir, choices }) => {
+  if (wcashProfile.runtimeReady) return { ok: false, reason: "unsupported-wallet-format" };
+
   const isInSandbox = process.mas || !!process.env.FLATPAK_ID;
   if (!isInSandbox) return { ok: false, reason: "not-sandboxed" };
 
@@ -1668,7 +1725,7 @@ ipcMain.handle("import:apply", async (_e, { sourceDir, choices }) => {
   return { ok: true, results };
 });
 
-// Renderer calls this once the wallet is loaded to claim any pending zcash: URI.
+// Renderer calls this once the wallet is loaded to claim any pending wcash: URI.
 ipcMain.handle("get-pending-uri", () => {
   const uri = pendingZcashUri;
   pendingZcashUri = null;
@@ -1829,14 +1886,14 @@ function createWindow() {
 // Removing it puts Chromium back on its default out-of-process GPU.
 // app.commandLine.appendSwitch("in-process-gpu");
 
-// Windows/Linux cold start: the zcash: URI arrives via env var (set by the
+// Windows/Linux cold start: the wcash: URI arrives via env var (set by the
 // zingo-pc-uri.sh wrapper on Linux, which avoids passing it as a positional
 // argv that Electron's runtime misinterprets as the app-module path) or as a
 // direct argv entry on Windows.
 if (process.platform !== "darwin") {
-  const envUri = process.env.ZINGO_PC_URI;
+  const envUri = process.env.WCASH_WALLET_URI;
   const coldStartUri =
-    envUri && envUri.startsWith("zcash:") ? envUri : process.argv.find((a) => a.startsWith("zcash:"));
+    envUri && envUri.startsWith("wcash:") ? envUri : process.argv.find((a) => a.startsWith("wcash:"));
   if (coldStartUri) pendingZcashUri = coldStartUri;
 }
 
@@ -1853,6 +1910,8 @@ function resolveDataFile(rootDir, name) {
 // MAS sandbox cannot read the DMG userData silently — the user picks the folder
 // via NSOpenPanel (the default path is pre-set so it's effectively one click).
 async function maybeRunDmgToMasMigration() {
+  if (wcashProfile.runtimeReady) return;
+
   if (process.platform !== "darwin" || !process.mas) return;
 
   const userData = app.getPath("userData");
@@ -2005,6 +2064,8 @@ async function maybeRunDmgToMasMigration() {
 // all.walletDirPath, so migrating it reconnects the app to the existing .dat
 // wallet files (reachable via --filesystem=home) with no copy of the wallets.
 async function maybeRunDebAppImageToFlatpakMigration() {
+  if (wcashProfile.runtimeReady) return;
+
   if (process.platform !== "linux" || !process.env.FLATPAK_ID) return;
 
   const userData = app.getPath("userData");
@@ -2104,7 +2165,22 @@ async function maybeRunDebAppImageToFlatpakMigration() {
 // function once the Electron application is initialized.
 // Install REACT_DEVELOPER_TOOLS as well if isDev
 app.whenReady().then(async () => {
-  // Register zcash: protocol handler at runtime.
+  try {
+    const native = getNative();
+    if (
+      !native ||
+      typeof native.set_wallet_base_dir !== "function" ||
+      native.set_wallet_base_dir(app.getPath("userData")) !== true
+    ) {
+      throw new Error("Wcash native wallet directory could not be configured");
+    }
+  } catch (error) {
+    dialog.showErrorBox("Wcash Wallet unavailable", error instanceof Error ? error.message : String(error));
+    app.quit();
+    return;
+  }
+
+  // Register wcash: protocol handler at runtime.
   // - MAS: handled declaratively via protocols in package.json (sandbox forbids this call).
   // - Flatpak: handled declaratively via the manifest .desktop file (sandbox forbids this call).
   // - Windows/Linux packaged: the installer registers it, but calling this too doesn't hurt.
@@ -2116,23 +2192,23 @@ app.whenReady().then(async () => {
       // Skipped on macOS: cold-start doesn't work in dev anyway, and registering here would
       // overwrite the installed app's (DMG/TF) handler in the Launch Services database.
       if (process.platform !== "darwin") {
-        app.setAsDefaultProtocolClient("zcash", process.execPath, [app.getAppPath()]);
+        app.setAsDefaultProtocolClient("wcash", process.execPath, [app.getAppPath()]);
       }
     } else {
       // On Linux, the packaged Electron binary treats any positional argument
-      // as the app-module path (defaultApp mode), so passing the zcash: URI
+      // as the app-module path (defaultApp mode), so passing the wcash: URI
       // directly as argv causes a crash.  Register the wrapper script instead;
       // it forwards the URI via the ZINGO_PC_URI env var and starts the binary
       // with no positional arguments.
       if (process.platform === "linux") {
         const wrapperPath = path.join(path.dirname(process.execPath), "resources", "zingo-pc-uri.sh");
         if (fs.existsSync(wrapperPath)) {
-          app.setAsDefaultProtocolClient("zcash", wrapperPath);
+          app.setAsDefaultProtocolClient("wcash", wrapperPath);
         } else {
-          app.setAsDefaultProtocolClient("zcash");
+          app.setAsDefaultProtocolClient("wcash");
         }
       } else {
-        app.setAsDefaultProtocolClient("zcash");
+        app.setAsDefaultProtocolClient("wcash");
       }
     }
   }
@@ -2141,7 +2217,8 @@ app.whenReady().then(async () => {
   // LoadingScreen asks, the request has usually already landed, so `auto` costs
   // the launch nothing. Testnet is fetched on demand — far rarer, and no reason
   // to spend a second clearnet request on every launch.
-  serverRegistry.load("main");
+  // Wcash builds use only the compiled profile endpoint above. Do not contact
+  // the inherited public Zcash server registry.
 
   if (isDev) {
     try {

@@ -687,7 +687,7 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
             <input
               aria-label="Wallet alias"
               disabled={mode === "delete"}
-              placeholder="Ex: My Zcash Wallet"
+              placeholder="Ex: My Wcash Wallet"
               type="text"
               className={cstyles.inputbox}
               style={{ width: "60%", marginLeft: "20px" }}
@@ -814,7 +814,7 @@ const AddNewWallet: React.FC<AddNewWalletProps> = ({
 
           {newWalletType === "file" && mode === "addnew" && (
             <div style={{ margin: "5px 10px" }}>
-              <div className={cstyles.sublight}>Please enter your Wallet File Name stored in the Zcash folder</div>
+              <div className={cstyles.sublight}>Please enter your Wallet File Name stored in the Wcash Wallet folder</div>
               <input
                 aria-label="Wallet file name"
                 placeholder="Ex: zingo-wallet-renamed....dat"

@@ -25,7 +25,7 @@ type Dataset = {
 
 const Insight: React.FC<InsightProps> = () => {
   const context = useContext(ContextApp);
-  const { addressBook } = context;
+  const { addressBook, info } = context;
 
   const [dataSent, setDataSent] = useState<Data>({} as Data);
   const [dataSends, setDataSends] = useState<Data>({} as Data);
@@ -237,7 +237,9 @@ const Insight: React.FC<InsightProps> = () => {
             </div>
             {type === "sent" ? (
               <div className={`${cstyles.sublight} ${cstyles.small} ${cstyles.padtopsmall}`}>
-                <div>ZEC {Utils.maxPrecisionTrimmed(value)}</div>
+                <div>
+                  {info.currencyName} {Utils.maxPrecisionTrimmed(value)}
+                </div>
               </div>
             ) : (
               <div className={`${cstyles.sublight} ${cstyles.small} ${cstyles.padtopsmall}`} style={{ marginLeft: 10 }}>

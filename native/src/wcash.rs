@@ -1,0 +1,2024 @@
+//! Narrow Neon boundary for one compile-time-selected Wcash wallet profile.
+//!
+//! This module deliberately does not reuse the Zingo `LightClient` global in
+//! `lib.rs`. The database path, endpoint, network and key derivation contract
+//! are fixed here. Spending authority is supplied only to explicit create,
+//! restore, send, and coinbase-shielding calls and never crosses back to JS.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use bip0039::{Count, English, Mnemonic};
+use neon::prelude::*;
+use once_cell::sync::Lazy;
+use secrecy::SecretVec;
+use serde_json::{Map, Value};
+use wcash_wallet::{
+    decode_recipient, derive_wallet_spending_key, encode_orchard_receiver,
+    encode_transparent_coinbase_receiver, WalletNetwork, WalletRpcError, WalletServiceError,
+    MAX_CONFIRMED_TRANSACTION_HISTORY_SIZE, MAX_PENDING_TRANSACTION_PAGE_SIZE,
+    MAX_TRANSFER_RECIPIENTS,
+};
+use zeroize::Zeroizing;
+#[cfg(feature = "wcash-regtest")]
+use zingolib::wcash::{
+    BroadcastResult, SignedTransaction, StoredSignedTransaction, WalletBalanceSummary,
+    WalletSyncCancellation, WcashRegtest as WcashProfile, WcashRegtestPayment as WcashPayment,
+    WcashRegtestRuntime as WcashRuntime, WcashRegtestRuntimeError as WcashRuntimeError,
+};
+#[cfg(feature = "wcash-testnet")]
+use zingolib::wcash::{
+    BroadcastResult, SignedTransaction, StoredSignedTransaction, WalletBalanceSummary,
+    WalletSyncCancellation, WcashTestnet as WcashProfile, WcashTestnetPayment as WcashPayment,
+    WcashTestnetRuntime as WcashRuntime, WcashTestnetRuntimeError as WcashRuntimeError,
+};
+
+use super::{with_panic_guard, ZingolibError, RT, WALLET_BASE_DIR};
+
+#[cfg(feature = "wcash-testnet")]
+const WCASH_PROFILE_ID: &str = "testnet";
+#[cfg(feature = "wcash-testnet")]
+const WCASH_ENDPOINT: &str = "https://wallet-testnet.wcashexplorer.com:443";
+#[cfg(feature = "wcash-testnet")]
+const WCASH_NETWORK: WalletNetwork = WalletNetwork::Testnet;
+#[cfg(feature = "wcash-testnet")]
+const WCASH_NETWORK_LABEL: &str = "Wcash Testnet";
+#[cfg(feature = "wcash-regtest")]
+const WCASH_PROFILE_ID: &str = "local-regtest";
+#[cfg(feature = "wcash-regtest")]
+const WCASH_ENDPOINT: &str = "http://127.0.0.1:48234";
+#[cfg(feature = "wcash-regtest")]
+const WCASH_NETWORK: WalletNetwork = WalletNetwork::Regtest;
+#[cfg(feature = "wcash-regtest")]
+const WCASH_NETWORK_LABEL: &str = "Wcash Regtest";
+const WCASH_WALLET_DATABASE: &str = "wallet.db";
+const WCASH_SEED_SCHEME: &str = "bip39-english-24-empty-passphrase-v1";
+const TRANSACTION_SCHEMA_VERSION: u8 = 1;
+const ZATOSHIS_PER_WEC: u64 = 100_000_000;
+const WCASH_MAX_SUPPLY_ZAT: u64 = 21_000_000 * ZATOSHIS_PER_WEC;
+const MAX_SEND_REQUEST_BYTES: usize = 128 * 1024;
+const MAX_RECIPIENT_ADDRESS_BYTES: usize = 1_024;
+const MAX_MEMO_BYTES: usize = 512;
+const RECOVERY_REQUIRED_CODE: &str = "exact_transaction_rebroadcast_required";
+const REVIEW_REQUIRED_CODE: &str = "exact_transaction_review_required";
+const REJECTED_CODE: &str = "transaction_rejected";
+const PUBLIC_REVIEW_MESSAGE: &str =
+    "The signed transaction is stored but needs review. Refresh signed pending transactions; do not create a replacement.";
+const MAX_PUBLIC_ERROR_MESSAGE_BYTES: usize = 4_096;
+const MAX_PUBLIC_RECOVERY_TXIDS: usize = MAX_PENDING_TRANSACTION_PAGE_SIZE;
+const RECOVERY_STATUS_UNKNOWN_MESSAGE: &str =
+    "signed transaction recovery status is unknown; inspect pending transactions and do not sign a replacement";
+
+static WCASH_RUNTIME: Lazy<Mutex<Option<WcashRuntime>>> = Lazy::new(|| Mutex::new(None));
+static ACTIVE_SYNC: Lazy<Mutex<ActiveSyncRegistry>> =
+    Lazy::new(|| Mutex::new(ActiveSyncRegistry::default()));
+
+pub(super) fn export(cx: &mut ModuleContext) -> NeonResult<()> {
+    cx.export_function("wcash_status", status)?;
+    cx.export_function("wcash_generate_mnemonic", generate_mnemonic)?;
+    cx.export_function("wcash_validate_mnemonic", validate_mnemonic)?;
+    cx.export_function("wcash_verify_mnemonic", verify_mnemonic)?;
+    cx.export_function("wcash_create", create)?;
+    cx.export_function("wcash_restore", restore)?;
+    cx.export_function("wcash_open", open)?;
+    cx.export_function("wcash_sync", sync)?;
+    cx.export_function("wcash_stop_sync", stop_sync)?;
+    cx.export_function("wcash_balance", balance)?;
+    cx.export_function("wcash_confirmed_transactions", confirmed_transactions)?;
+    cx.export_function("wcash_receivers", receivers)?;
+    cx.export_function("wcash_validate_recipient", validate_recipient)?;
+    cx.export_function("wcash_send_and_broadcast", send_and_broadcast)?;
+    cx.export_function(
+        "wcash_shield_coinbase_and_broadcast",
+        shield_coinbase_and_broadcast,
+    )?;
+    cx.export_function("wcash_pending_transactions", pending_transactions)?;
+    cx.export_function("wcash_rebroadcast_pending", rebroadcast_pending)?;
+    Ok(())
+}
+
+fn wallet_path() -> Result<PathBuf, ZingolibError> {
+    let base = WALLET_BASE_DIR.get().ok_or_else(|| {
+        ZingolibError::Init("Wcash wallet base directory is not configured".to_owned())
+    })?;
+    wallet_path_under(base)
+}
+
+fn wallet_path_under(base: &Path) -> Result<PathBuf, ZingolibError> {
+    let wallet_directory = base.join(WcashProfile.storage_namespace());
+    fs::create_dir_all(&wallet_directory)
+        .map_err(|error| ZingolibError::Init(format!("create Wcash wallet directory: {error}")))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(&wallet_directory, fs::Permissions::from_mode(0o700)).map_err(
+            |error| ZingolibError::Init(format!("secure Wcash wallet directory: {error}")),
+        )?;
+    }
+
+    Ok(wallet_directory.join(WCASH_WALLET_DATABASE))
+}
+
+fn store_runtime(runtime: WcashRuntime) -> Result<(), ZingolibError> {
+    let mut slot = WCASH_RUNTIME
+        .lock()
+        .map_err(|_| ZingolibError::Init("Wcash runtime lock poisoned".to_owned()))?;
+    *slot = Some(runtime);
+    Ok(())
+}
+
+fn json_promise<'a, F>(mut cx: FunctionContext<'a>, work: F) -> JsResult<'a, JsPromise>
+where
+    F: FnOnce() -> Result<String, ZingolibError> + Send + 'static,
+{
+    let promise = cx.task(work).promise(|mut cx, result| match result {
+        Ok(value) => Ok(cx.string(value)),
+        Err(error) => cx.throw_error(error.to_string()),
+    });
+    Ok(promise)
+}
+
+fn mnemonic_master_seed(mnemonic: &Mnemonic<English>) -> SecretVec<u8> {
+    // Preserve Zingo's established BIP39 recovery contract: the backend sees
+    // the standard 64-byte BIP39 seed produced with an empty passphrase. The
+    // Wcash domain KDF then binds those bytes to this chain and network.
+    let bip39_seed = Zeroizing::new(mnemonic.to_seed(""));
+    SecretVec::new(bip39_seed.as_slice().to_vec())
+}
+
+fn parse_mnemonic(seed_phrase: &str) -> Result<Mnemonic<English>, ZingolibError> {
+    if seed_phrase.split_whitespace().count() != Count::Words24.word_count() {
+        return Err(ZingolibError::Init(
+            "Wcash recovery phrase must contain exactly 24 words".to_owned(),
+        ));
+    }
+    let mnemonic = Mnemonic::<English>::from_phrase(seed_phrase)
+        .map_err(|error| ZingolibError::Init(format!("invalid BIP39 recovery phrase: {error}")))?;
+    Ok(mnemonic)
+}
+
+fn mnemonic_receivers(mnemonic: &Mnemonic<English>) -> Result<(String, String), ZingolibError> {
+    let master_seed = mnemonic_master_seed(mnemonic);
+    let ufvk = derive_wallet_spending_key(&master_seed, WCASH_NETWORK, 0)
+        .map_err(|error| ZingolibError::Read(format!("derive Wcash account identity: {error}")))?
+        .to_unified_full_viewing_key();
+    let ironwood = encode_orchard_receiver(&ufvk, WCASH_NETWORK)
+        .map_err(|error| ZingolibError::Read(format!("derive Wcash Ironwood receiver: {error}")))?;
+    let transparent =
+        encode_transparent_coinbase_receiver(&ufvk, WCASH_NETWORK).map_err(|error| {
+            ZingolibError::Read(format!("derive Wcash transparent receiver: {error}"))
+        })?;
+    Ok((ironwood, transparent))
+}
+
+fn receiver_pair_matches(
+    derived_ironwood: &str,
+    derived_transparent: &str,
+    stored_ironwood: &str,
+    stored_transparent: &str,
+) -> bool {
+    derived_ironwood == stored_ironwood && derived_transparent == stored_transparent
+}
+
+fn require_exact_object_keys(
+    object: &Map<String, Value>,
+    required: &[&str],
+    allowed: &[&str],
+    context: &str,
+) -> Result<(), String> {
+    if required.iter().any(|key| !object.contains_key(*key))
+        || object.keys().any(|key| !allowed.contains(&key.as_str()))
+    {
+        return Err(format!("{context} has missing or unknown fields"));
+    }
+    Ok(())
+}
+
+fn format_wcash_amount(amount_zat: u64) -> String {
+    let whole = amount_zat / ZATOSHIS_PER_WEC;
+    let fraction = amount_zat % ZATOSHIS_PER_WEC;
+    if fraction == 0 {
+        return whole.to_string();
+    }
+
+    let mut fraction = format!("{fraction:08}");
+    while fraction.ends_with('0') {
+        fraction.pop();
+    }
+    format!("{whole}.{fraction}")
+}
+
+/// Converts one canonical WEC decimal string to zatoshis without floating
+/// point. Canonical strings have no sign, exponent, whitespace, redundant
+/// leading zero, or redundant fractional trailing zero.
+fn parse_canonical_wcash_amount(amount: &str) -> Result<u64, String> {
+    if amount.is_empty() || !amount.is_ascii() {
+        return Err("amount must be a canonical ASCII decimal string".to_owned());
+    }
+
+    let mut pieces = amount.split('.');
+    let whole = pieces.next().unwrap_or_default();
+    let fraction = pieces.next();
+    if pieces.next().is_some()
+        || whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || (whole.len() > 1 && whole.starts_with('0'))
+    {
+        return Err("amount must be a canonical decimal string".to_owned());
+    }
+
+    let whole = whole
+        .parse::<u64>()
+        .map_err(|_| "amount is outside the supported accepted range".to_owned())?;
+    let fractional_zat = match fraction {
+        None => 0,
+        Some(digits)
+            if !digits.is_empty()
+                && digits.len() <= 8
+                && digits.bytes().all(|byte| byte.is_ascii_digit())
+                && !digits.ends_with('0') =>
+        {
+            let value = digits
+                .parse::<u64>()
+                .map_err(|_| "amount has an invalid fractional component".to_owned())?;
+            value * 10u64.pow(8 - digits.len() as u32)
+        }
+        Some(_) => return Err("amount must use at most 8 non-redundant decimal places".to_owned()),
+    };
+
+    let amount_zat = whole
+        .checked_mul(ZATOSHIS_PER_WEC)
+        .and_then(|value| value.checked_add(fractional_zat))
+        .ok_or_else(|| "amount is outside the accepted range".to_owned())?;
+    if amount_zat == 0 || amount_zat > WCASH_MAX_SUPPLY_ZAT {
+        return Err("amount must be between 0.00000001 and 21000000 WEC".to_owned());
+    }
+    if format_wcash_amount(amount_zat) != amount {
+        return Err("amount is not in canonical decimal form".to_owned());
+    }
+    Ok(amount_zat)
+}
+
+fn parse_send_request(request_json: &str) -> Result<Vec<WcashPayment>, String> {
+    if request_json.len() > MAX_SEND_REQUEST_BYTES {
+        return Err(format!(
+            "send request exceeds the {MAX_SEND_REQUEST_BYTES}-byte limit"
+        ));
+    }
+
+    let request: Value = serde_json::from_str(request_json)
+        .map_err(|error| format!("send request is not valid JSON: {error}"))?;
+    let request = request
+        .as_object()
+        .ok_or_else(|| "send request must be a JSON object".to_owned())?;
+    require_exact_object_keys(request, &["payments"], &["payments"], "send request")?;
+    let payments = request["payments"]
+        .as_array()
+        .ok_or_else(|| "payments must be a JSON array".to_owned())?;
+    if payments.is_empty() || payments.len() > MAX_TRANSFER_RECIPIENTS {
+        return Err(format!(
+            "payments must contain 1 through {MAX_TRANSFER_RECIPIENTS} entries"
+        ));
+    }
+
+    let mut total_zat = 0u64;
+    payments
+        .iter()
+        .enumerate()
+        .map(|(index, payment)| {
+            let context = format!("payments[{index}]");
+            let payment = payment
+                .as_object()
+                .ok_or_else(|| format!("{context} must be a JSON object"))?;
+            require_exact_object_keys(
+                payment,
+                &["address", "amount"],
+                &["address", "amount", "memo"],
+                &context,
+            )?;
+
+            let address = payment["address"]
+                .as_str()
+                .ok_or_else(|| format!("{context}.address must be a string"))?;
+            if address.is_empty() || address.len() > MAX_RECIPIENT_ADDRESS_BYTES {
+                return Err(format!(
+                    "{context}.address must contain 1 through {MAX_RECIPIENT_ADDRESS_BYTES} bytes"
+                ));
+            }
+            decode_recipient(address, WCASH_NETWORK).map_err(|error| {
+                format!(
+                    "{context}.address is not a {} Ironwood recipient: {error}",
+                    WCASH_NETWORK_LABEL
+                )
+            })?;
+
+            let amount = payment["amount"]
+                .as_str()
+                .ok_or_else(|| format!("{context}.amount must be a string"))?;
+            let amount_zat = parse_canonical_wcash_amount(amount)
+                .map_err(|error| format!("{context}.amount: {error}"))?;
+            total_zat = total_zat
+                .checked_add(amount_zat)
+                .ok_or_else(|| "payment total is outside the accepted range".to_owned())?;
+            if total_zat > WCASH_MAX_SUPPLY_ZAT {
+                return Err("payment total exceeds the 21000000 WEC supply cap".to_owned());
+            }
+
+            let memo = match payment.get("memo") {
+                None => Vec::new(),
+                Some(value) => {
+                    let memo = value
+                        .as_str()
+                        .ok_or_else(|| format!("{context}.memo must be a UTF-8 string"))?;
+                    if memo.len() > MAX_MEMO_BYTES {
+                        return Err(format!(
+                            "{context}.memo exceeds the {MAX_MEMO_BYTES}-byte limit"
+                        ));
+                    }
+                    memo.as_bytes().to_vec()
+                }
+            };
+
+            Ok(WcashPayment {
+                address: address.to_owned(),
+                amount_zat,
+                memo,
+            })
+        })
+        .collect()
+}
+
+fn is_canonical_cursor(cursor: &str) -> bool {
+    !cursor.is_empty()
+        && cursor.bytes().all(|byte| byte.is_ascii_digit())
+        && (cursor == "0" || !cursor.starts_with('0'))
+}
+
+fn parse_pending_cursor(cursor: &str) -> Result<u64, String> {
+    if !is_canonical_cursor(cursor) {
+        return Err(
+            "pending transaction cursor must be a canonical unsigned decimal string".to_owned(),
+        );
+    }
+    cursor
+        .parse::<u64>()
+        .map_err(|_| "pending transaction cursor is outside the accepted range".to_owned())
+}
+
+fn is_canonical_txid(txid: &str) -> bool {
+    txid.len() == 64
+        && txid
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn require_mnemonic_owns_wallet(mnemonic: &Mnemonic<English>) -> Result<(), ZingolibError> {
+    let (ironwood, transparent) = mnemonic_receivers(mnemonic)?;
+    let wallet = WcashRuntime::inspect(wallet_path()?).map_err(|error| {
+        ZingolibError::Read(format!("inspect {} wallet: {error}", WCASH_NETWORK_LABEL))
+    })?;
+    if !receiver_pair_matches(
+        &ironwood,
+        &transparent,
+        &wallet.address,
+        &wallet.transparent_coinbase_address,
+    ) {
+        return Err(ZingolibError::Init(format!(
+            "recovery phrase does not control this {} wallet",
+            WCASH_NETWORK_LABEL
+        )));
+    }
+    Ok(())
+}
+
+fn exact_tip_from_summary(summary: &WalletBalanceSummary) -> Option<u32> {
+    (summary.synchronized && summary.fully_scanned_height == summary.chain_tip_height)
+        .then_some(summary.chain_tip_height)
+}
+
+fn require_exact_wallet_tip(runtime: &WcashRuntime) -> Result<u32, ZingolibError> {
+    let summary = runtime
+        .balance()
+        .map_err(|error| ZingolibError::Read(format!("read Wcash exact tip: {error}")))?;
+    exact_tip_from_summary(&summary).ok_or_else(|| {
+        ZingolibError::Read(
+            "Wcash wallet must synchronize to the exact chain tip before transaction recovery or signing"
+                .to_owned(),
+        )
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingLifecycle {
+    Unexpired,
+    Expired,
+    TipUnknown,
+}
+
+impl PendingLifecycle {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unexpired => "unexpired",
+            Self::Expired => "expired",
+            Self::TipUnknown => "tip_unknown",
+        }
+    }
+
+    const fn rebroadcast_allowed(self) -> bool {
+        matches!(self, Self::Unexpired)
+    }
+
+    const fn blocks_new_signing(self) -> bool {
+        !matches!(self, Self::Expired)
+    }
+}
+
+fn pending_lifecycle(expiry_height: u32, exact_tip_height: Option<u32>) -> PendingLifecycle {
+    match exact_tip_height {
+        None => PendingLifecycle::TipUnknown,
+        Some(tip) if expiry_height != 0 && tip >= expiry_height => PendingLifecycle::Expired,
+        Some(_) => PendingLifecycle::Unexpired,
+    }
+}
+
+fn next_pending_cursor(
+    current: Option<u64>,
+    next: Option<u64>,
+) -> Result<Option<u64>, ZingolibError> {
+    match next {
+        Some(next) if current.is_none_or(|previous| next > previous) => Ok(Some(next)),
+        Some(_) => Err(ZingolibError::Read(
+            "pending transaction pagination did not advance".to_owned(),
+        )),
+        None => Ok(None),
+    }
+}
+
+fn active_pending_transaction(
+    runtime: &WcashRuntime,
+    expected_tip_height: Option<u32>,
+) -> Result<(u32, Option<String>), ZingolibError> {
+    // This snapshot improves recovery UX. The backend independently repeats
+    // the active-row check while holding its exclusive signing lock, which
+    // remains the decisive protection against a concurrent signer or reorg.
+    let page = runtime
+        .active_pending_transactions(None, None, 1)
+        .map_err(|error| {
+            ZingolibError::Read(format!(
+                "inspect active pending Wcash transactions: {error}"
+            ))
+        })?;
+    let attested_tip = page.exact_tip.ok_or_else(|| {
+        ZingolibError::Read(
+            "Wcash transaction recovery did not return an exact chain tip".to_owned(),
+        )
+    })?;
+    if let Some(expected_tip_height) = expected_tip_height {
+        if attested_tip.height != expected_tip_height {
+            return Err(ZingolibError::Read(
+                "Wcash chain tip changed while transaction recovery was being checked; synchronize and retry"
+                    .to_owned(),
+            ));
+        }
+    }
+    Ok((
+        attested_tip.height,
+        page.transactions
+            .first()
+            .map(|transaction| transaction.txid.clone()),
+    ))
+}
+
+fn attest_backend_active_transaction(
+    runtime: &WcashRuntime,
+    rejected_txid: &str,
+) -> Result<u32, ZingolibError> {
+    let (exact_tip_height, active_txid) = active_pending_transaction(runtime, None)?;
+    if active_txid.as_deref() != Some(rejected_txid) {
+        return Err(ZingolibError::Read(
+            RECOVERY_STATUS_UNKNOWN_MESSAGE.to_owned(),
+        ));
+    }
+    Ok(exact_tip_height)
+}
+
+fn bounded_public_message(message: impl AsRef<str>) -> String {
+    let message = message.as_ref();
+    if message.len() <= MAX_PUBLIC_ERROR_MESSAGE_BYTES {
+        return message.to_owned();
+    }
+
+    let mut end = MAX_PUBLIC_ERROR_MESSAGE_BYTES.saturating_sub('…'.len_utf8());
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &message[..end])
+}
+
+enum NativeBroadcastOutcome {
+    Broadcast(BroadcastResult),
+    Rejected { node_code: i32, message: String },
+    RecoveryRequired { code: &'static str, message: String },
+    Expired,
+}
+
+fn classify_broadcast_result(
+    result: Result<BroadcastResult, WcashRuntimeError>,
+) -> NativeBroadcastOutcome {
+    match result {
+        Ok(broadcast) => NativeBroadcastOutcome::Broadcast(broadcast),
+        Err(WcashRuntimeError::Rpc(WalletRpcError::Rejected { code, message })) => {
+            NativeBroadcastOutcome::Rejected {
+                node_code: code,
+                message: bounded_public_message(message),
+            }
+        }
+        Err(WcashRuntimeError::Rpc(WalletRpcError::AmbiguousBroadcast { reason, .. })) => {
+            NativeBroadcastOutcome::RecoveryRequired {
+                code: RECOVERY_REQUIRED_CODE,
+                message: bounded_public_message(reason),
+            }
+        }
+        Err(error) => NativeBroadcastOutcome::RecoveryRequired {
+            code: REVIEW_REQUIRED_CODE,
+            message: bounded_public_message(error.to_string()),
+        },
+    }
+}
+
+struct PublicTransactionMetadata<'a> {
+    txid: &'a str,
+    branch_id: &'a str,
+    expiry_height: u32,
+    target_height: Option<u32>,
+    fee_zat: Option<u64>,
+    internal_change_receiver_verified: Option<bool>,
+    exact_tip_height: u32,
+}
+
+fn transaction_result_json(
+    operation: &str,
+    transaction: PublicTransactionMetadata<'_>,
+    outcome: NativeBroadcastOutcome,
+) -> String {
+    let PublicTransactionMetadata {
+        txid,
+        branch_id,
+        expiry_height,
+        target_height,
+        fee_zat,
+        internal_change_receiver_verified,
+        exact_tip_height,
+    } = transaction;
+    let common = || {
+        serde_json::json!({
+            "schema_version": TRANSACTION_SCHEMA_VERSION,
+            "operation": operation,
+            "txid": txid,
+            "branch_id": branch_id,
+            "expiry_height": expiry_height,
+            "target_height": target_height,
+            "fee_zat": fee_zat.map(|fee| fee.to_string()),
+            "internal_change_receiver_verified": internal_change_receiver_verified,
+            "exact_tip_height": exact_tip_height,
+        })
+    };
+
+    match outcome {
+        NativeBroadcastOutcome::Broadcast(broadcast) if broadcast.txid == txid => {
+            let mut result = common();
+            result["outcome"] = Value::String("broadcast".to_owned());
+            result["broadcast"] = serde_json::json!(broadcast);
+            result["recovery"] = Value::Null;
+            result["rejection"] = Value::Null;
+            result.to_string()
+        }
+        NativeBroadcastOutcome::Broadcast(_) => transaction_result_json(
+            operation,
+            PublicTransactionMetadata {
+                txid,
+                branch_id,
+                expiry_height,
+                target_height,
+                fee_zat,
+                internal_change_receiver_verified,
+                exact_tip_height,
+            },
+            NativeBroadcastOutcome::RecoveryRequired {
+                code: REVIEW_REQUIRED_CODE,
+                message: "broadcast result returned a different transaction identifier".to_owned(),
+            },
+        ),
+        NativeBroadcastOutcome::Rejected { node_code, message } => {
+            let mut result = common();
+            result["outcome"] = Value::String("rejected".to_owned());
+            result["broadcast"] = Value::Null;
+            result["recovery"] = Value::Null;
+            result["rejection"] = serde_json::json!({
+                "code": REJECTED_CODE,
+                "node_code": node_code,
+                "message": message,
+            });
+            result.to_string()
+        }
+        NativeBroadcastOutcome::RecoveryRequired { code, message } => {
+            let mut result = common();
+            result["outcome"] = Value::String("recovery_required".to_owned());
+            result["broadcast"] = Value::Null;
+            result["recovery"] = serde_json::json!({
+                "code": code,
+                "message": message,
+                "txids": [txid],
+            });
+            result["rejection"] = Value::Null;
+            result.to_string()
+        }
+        NativeBroadcastOutcome::Expired => {
+            let mut result = common();
+            result["outcome"] = Value::String("expired".to_owned());
+            result["broadcast"] = Value::Null;
+            result["recovery"] = Value::Null;
+            result["rejection"] = Value::Null;
+            result.to_string()
+        }
+    }
+}
+
+fn public_recovery_txids(txids: &[String]) -> Result<Vec<&str>, ZingolibError> {
+    if txids.is_empty() || txids.len() > MAX_PUBLIC_RECOVERY_TXIDS {
+        return Err(ZingolibError::Read(
+            RECOVERY_STATUS_UNKNOWN_MESSAGE.to_owned(),
+        ));
+    }
+
+    let mut public = Vec::with_capacity(txids.len());
+    for txid in txids {
+        if !is_canonical_txid(txid) || public.contains(&txid.as_str()) {
+            return Err(ZingolibError::Read(
+                RECOVERY_STATUS_UNKNOWN_MESSAGE.to_owned(),
+            ));
+        }
+        public.push(txid.as_str());
+    }
+    Ok(public)
+}
+
+fn persisted_transactions_review_result_json(
+    operation: &str,
+    txids: &[String],
+    exact_tip_height: u32,
+) -> Result<String, ZingolibError> {
+    let txids = public_recovery_txids(txids)?;
+    let primary_txid = txids[0];
+    Ok(serde_json::json!({
+        "schema_version": TRANSACTION_SCHEMA_VERSION,
+        "operation": operation,
+        "outcome": "recovery_required",
+        "txid": primary_txid,
+        "branch_id": WCASH_NETWORK.branch_id_hex(),
+        "expiry_height": null,
+        "target_height": null,
+        "fee_zat": null,
+        "internal_change_receiver_verified": null,
+        "exact_tip_height": exact_tip_height,
+        "broadcast": null,
+        "recovery": {
+            "code": REVIEW_REQUIRED_CODE,
+            "message": PUBLIC_REVIEW_MESSAGE,
+            "txids": txids,
+        },
+        "rejection": null,
+    })
+    .to_string())
+}
+
+fn active_pending_review_result_json(
+    operation: &str,
+    txid: &str,
+    exact_tip_height: u32,
+) -> Result<String, ZingolibError> {
+    persisted_transactions_review_result_json(operation, &[txid.to_owned()], exact_tip_height)
+}
+
+fn signed_transaction_result_json(
+    operation: &str,
+    signed: &SignedTransaction,
+    exact_tip_height: u32,
+    broadcast: Result<BroadcastResult, WcashRuntimeError>,
+) -> String {
+    transaction_result_json(
+        operation,
+        PublicTransactionMetadata {
+            txid: &signed.txid,
+            branch_id: &signed.branch_id,
+            expiry_height: signed.expiry_height,
+            target_height: Some(signed.target_height),
+            fee_zat: Some(signed.fee_zat),
+            internal_change_receiver_verified: Some(signed.internal_change_receiver_verified),
+            exact_tip_height,
+        },
+        classify_broadcast_result(broadcast),
+    )
+}
+
+fn stored_transaction_result_json(
+    signed: &StoredSignedTransaction,
+    exact_tip_height: u32,
+    broadcast: Result<BroadcastResult, WcashRuntimeError>,
+) -> String {
+    transaction_result_json(
+        "rebroadcast_pending",
+        PublicTransactionMetadata {
+            txid: &signed.txid,
+            branch_id: &signed.branch_id,
+            expiry_height: signed.expiry_height,
+            target_height: None,
+            fee_zat: None,
+            internal_change_receiver_verified: None,
+            exact_tip_height,
+        },
+        classify_broadcast_result(broadcast),
+    )
+}
+
+fn expired_transaction_result_json(
+    signed: &StoredSignedTransaction,
+    exact_tip_height: u32,
+) -> String {
+    transaction_result_json(
+        "rebroadcast_pending",
+        PublicTransactionMetadata {
+            txid: &signed.txid,
+            branch_id: &signed.branch_id,
+            expiry_height: signed.expiry_height,
+            target_height: None,
+            fee_zat: None,
+            internal_change_receiver_verified: None,
+            exact_tip_height,
+        },
+        NativeBroadcastOutcome::Expired,
+    )
+}
+
+fn public_pending_page_json(
+    transactions: &[StoredSignedTransaction],
+    next_after_row_id: Option<u64>,
+    exact_tip_height: Option<u32>,
+) -> String {
+    let transactions = transactions
+        .iter()
+        .map(|transaction| {
+            let lifecycle = pending_lifecycle(transaction.expiry_height, exact_tip_height);
+            serde_json::json!({
+                "txid": transaction.txid,
+                "branch_id": transaction.branch_id,
+                "expiry_height": transaction.expiry_height,
+                "lifecycle": lifecycle.as_str(),
+                "rebroadcast_allowed": lifecycle.rebroadcast_allowed(),
+                "blocks_new_signing": lifecycle.blocks_new_signing(),
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schema_version": TRANSACTION_SCHEMA_VERSION,
+        "exact_tip_height": exact_tip_height,
+        "transactions": transactions,
+        "next_cursor": next_after_row_id.map(|cursor| cursor.to_string()),
+    })
+    .to_string()
+}
+
+fn find_pending_transaction(
+    runtime: &WcashRuntime,
+    txid: &str,
+) -> Result<StoredSignedTransaction, ZingolibError> {
+    let mut after_row_id = None;
+    loop {
+        let page = runtime
+            .pending_transactions(after_row_id, MAX_PENDING_TRANSACTION_PAGE_SIZE)
+            .map_err(|error| {
+                ZingolibError::Read(format!("inspect pending Wcash transactions: {error}"))
+            })?;
+        if let Some(transaction) = page
+            .transactions
+            .into_iter()
+            .find(|transaction| transaction.txid == txid)
+        {
+            return Ok(transaction);
+        }
+
+        match next_pending_cursor(after_row_id, page.next_after_row_id)? {
+            Some(next) => after_row_id = Some(next),
+            None => {
+                return Err(ZingolibError::Read(format!(
+                    "pending signed transaction {txid} was not found"
+                )));
+            }
+        }
+    }
+}
+
+fn generate_mnemonic(mut cx: FunctionContext) -> JsResult<JsString> {
+    let mnemonic = Mnemonic::<English>::generate(Count::Words24);
+    let phrase = Zeroizing::new(mnemonic.phrase().to_owned());
+    Ok(cx.string(phrase.as_str()))
+}
+
+fn validate_mnemonic(mut cx: FunctionContext) -> JsResult<JsString> {
+    let seed_phrase = Zeroizing::new(cx.argument::<JsString>(0)?.value(&mut cx));
+    match parse_mnemonic(seed_phrase.as_str()) {
+        Ok(mnemonic) => {
+            let normalized = Zeroizing::new(mnemonic.phrase().to_owned());
+            Ok(cx.string(normalized.as_str()))
+        }
+        Err(error) => cx.throw_error(error.to_string()),
+    }
+}
+
+/// Proves that one main-process-only recovery phrase owns the account stored
+/// in the fixed compile-time profile database. Only the boolean comparison result
+/// crosses the Neon boundary; neither keys nor derived addresses are exposed.
+fn verify_mnemonic(mut cx: FunctionContext) -> JsResult<JsBoolean> {
+    let seed_phrase = Zeroizing::new(cx.argument::<JsString>(0)?.value(&mut cx));
+    match with_panic_guard(|| {
+        let mnemonic = parse_mnemonic(seed_phrase.as_str())?;
+        let (ironwood, transparent) = mnemonic_receivers(&mnemonic)?;
+        let wallet = WcashRuntime::inspect(wallet_path()?).map_err(|error| {
+            ZingolibError::Read(format!("inspect {} wallet: {error}", WCASH_NETWORK_LABEL))
+        })?;
+        Ok(receiver_pair_matches(
+            &ironwood,
+            &transparent,
+            &wallet.address,
+            &wallet.transparent_coinbase_address,
+        ))
+    }) {
+        Ok(matches) => Ok(cx.boolean(matches)),
+        Err(error) => cx.throw_error(error.to_string()),
+    }
+}
+
+fn status(cx: FunctionContext) -> JsResult<JsPromise> {
+    json_promise(cx, || {
+        with_panic_guard(|| {
+            let path = wallet_path()?;
+            let wallet = if path.exists() {
+                Some(WcashRuntime::inspect(&path).map_err(|error| {
+                    ZingolibError::Read(format!("{} wallet: {error}", WCASH_NETWORK_LABEL))
+                })?)
+            } else {
+                None
+            };
+            Ok(serde_json::json!({
+                "profile": WCASH_PROFILE_ID,
+                "network": WCASH_NETWORK_LABEL,
+                "ticker": WcashProfile.ticker(),
+                "endpoint": WCASH_ENDPOINT,
+                "storage_namespace": WcashProfile.storage_namespace(),
+                "branch_id": WCASH_NETWORK.branch_id_hex(),
+                "wallet": wallet,
+            })
+            .to_string())
+        })
+    })
+}
+
+fn create(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    let seed_phrase = Zeroizing::new(cx.argument::<JsString>(0)?.value(&mut cx));
+    json_promise(cx, move || {
+        with_panic_guard(|| {
+            let mnemonic = parse_mnemonic(seed_phrase.as_str())?;
+            let master_seed = mnemonic_master_seed(&mnemonic);
+            let path = wallet_path()?;
+            let (runtime, wallet) = RT
+                .block_on(WcashRuntime::create(WCASH_ENDPOINT, &path, &master_seed))
+                .map_err(|error| {
+                    ZingolibError::Init(format!("{} create: {error}", WCASH_NETWORK_LABEL))
+                })?;
+            store_runtime(runtime)?;
+            Ok(serde_json::json!({
+                "wallet": wallet,
+                "seed_scheme": WCASH_SEED_SCHEME,
+            })
+            .to_string())
+        })
+    })
+}
+
+fn restore(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    let seed_phrase = Zeroizing::new(cx.argument::<JsString>(0)?.value(&mut cx));
+    let birthday = cx.argument::<JsNumber>(1)?.value(&mut cx);
+    if !birthday.is_finite()
+        || birthday.fract() != 0.0
+        || birthday < 1.0
+        || birthday > u32::MAX as f64
+    {
+        return cx.throw_range_error(
+            "Wcash wallet birthday must be an integer from 1 through 4294967295",
+        );
+    }
+    let birthday = birthday as u32;
+
+    json_promise(cx, move || {
+        with_panic_guard(|| {
+            let mnemonic = parse_mnemonic(seed_phrase.as_str())?;
+            let master_seed = mnemonic_master_seed(&mnemonic);
+            let path = wallet_path()?;
+            let (runtime, wallet) = RT
+                .block_on(WcashRuntime::restore(
+                    WCASH_ENDPOINT,
+                    &path,
+                    &master_seed,
+                    birthday,
+                ))
+                .map_err(|error| {
+                    ZingolibError::Init(format!("{} restore: {error}", WCASH_NETWORK_LABEL))
+                })?;
+            store_runtime(runtime)?;
+            Ok(serde_json::json!({
+                "wallet": wallet,
+                "seed_scheme": WCASH_SEED_SCHEME,
+            })
+            .to_string())
+        })
+    })
+}
+
+fn open(cx: FunctionContext) -> JsResult<JsPromise> {
+    json_promise(cx, || {
+        with_panic_guard(|| {
+            let path = wallet_path()?;
+            let (runtime, wallet) = RT
+                .block_on(WcashRuntime::open(WCASH_ENDPOINT, &path))
+                .map_err(|error| {
+                    ZingolibError::Init(format!("{} open: {error}", WCASH_NETWORK_LABEL))
+                })?;
+            store_runtime(runtime)?;
+            Ok(serde_json::json!({ "wallet": wallet }).to_string())
+        })
+    })
+}
+
+#[derive(Default)]
+struct ActiveSyncRegistry {
+    next_generation: u64,
+    active: Option<ActiveSyncHandle>,
+}
+
+struct ActiveSyncHandle {
+    generation: u64,
+    cancellation: WalletSyncCancellation,
+}
+
+struct ActiveSyncReservation<'a> {
+    registry: &'a Mutex<ActiveSyncRegistry>,
+    generation: u64,
+    cancellation: WalletSyncCancellation,
+}
+
+impl Drop for ActiveSyncReservation<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut registry) = self.registry.lock() {
+            let owns_active_generation = registry
+                .active
+                .as_ref()
+                .is_some_and(|active| active.generation == self.generation);
+            if owns_active_generation {
+                registry.active = None;
+            }
+        }
+    }
+}
+
+fn reserve_active_sync(
+    registry: &Mutex<ActiveSyncRegistry>,
+) -> Result<ActiveSyncReservation<'_>, ZingolibError> {
+    let mut registry_guard = registry
+        .lock()
+        .map_err(|_| ZingolibError::Sync("Wcash sync cancellation lock poisoned".to_owned()))?;
+    if registry_guard.active.is_some() {
+        return Err(ZingolibError::Sync(
+            "Wcash sync is already running".to_owned(),
+        ));
+    }
+    let generation = registry_guard
+        .next_generation
+        .checked_add(1)
+        .ok_or_else(|| ZingolibError::Sync("Wcash sync generation exhausted".to_owned()))?;
+    let cancellation = WalletSyncCancellation::new();
+    registry_guard.next_generation = generation;
+    registry_guard.active = Some(ActiveSyncHandle {
+        generation,
+        cancellation: cancellation.clone(),
+    });
+    drop(registry_guard);
+
+    Ok(ActiveSyncReservation {
+        registry,
+        generation,
+        cancellation,
+    })
+}
+
+fn cancel_active_sync(registry: &Mutex<ActiveSyncRegistry>) -> bool {
+    registry
+        .lock()
+        .ok()
+        .and_then(|registry| {
+            registry.active.as_ref().map(|active| {
+                active.cancellation.cancel();
+                true
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn sync(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    // Reserve cancellation synchronously before returning the promise. The
+    // Electron main process can therefore stop a sync immediately after the
+    // native call returns, even if Neon's worker has not started yet.
+    let reservation = match reserve_active_sync(&ACTIVE_SYNC) {
+        Ok(reservation) => reservation,
+        Err(error) => return cx.throw_error(error.to_string()),
+    };
+
+    json_promise(cx, move || {
+        let result = with_panic_guard(|| {
+            let mut slot = WCASH_RUNTIME
+                .lock()
+                .map_err(|_| ZingolibError::Sync("Wcash runtime lock poisoned".to_owned()))?;
+            let runtime = slot
+                .as_mut()
+                .ok_or_else(|| ZingolibError::Sync("Wcash wallet is not open".to_owned()))?;
+            let summary = RT
+                .block_on(runtime.sync(&reservation.cancellation))
+                .map_err(|error| {
+                    ZingolibError::Sync(format!("{} sync: {error}", WCASH_NETWORK_LABEL))
+                })?;
+            serde_json::to_string(&summary)
+                .map_err(|error| ZingolibError::Sync(format!("serialize Wcash balance: {error}")))
+        });
+        drop(reservation);
+        result
+    })
+}
+
+fn stop_sync(mut cx: FunctionContext) -> JsResult<JsBoolean> {
+    let stopped = cancel_active_sync(&ACTIVE_SYNC);
+    Ok(cx.boolean(stopped))
+}
+
+fn balance(cx: FunctionContext) -> JsResult<JsPromise> {
+    json_promise(cx, || {
+        with_panic_guard(|| {
+            let slot = WCASH_RUNTIME
+                .lock()
+                .map_err(|_| ZingolibError::Read("Wcash runtime lock poisoned".to_owned()))?;
+            let runtime = slot
+                .as_ref()
+                .ok_or_else(|| ZingolibError::Read("Wcash wallet is not open".to_owned()))?;
+            let summary = runtime.balance().map_err(|error| {
+                ZingolibError::Read(format!("{} balance: {error}", WCASH_NETWORK_LABEL))
+            })?;
+            serde_json::to_string(&summary)
+                .map_err(|error| ZingolibError::Read(format!("serialize Wcash balance: {error}")))
+        })
+    })
+}
+
+fn confirmed_transactions(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    if !cx.is_empty() {
+        return cx.throw_type_error("wcash_confirmed_transactions expects no arguments");
+    }
+    json_promise(cx, || {
+        with_panic_guard(|| {
+            let slot = WCASH_RUNTIME
+                .lock()
+                .map_err(|_| ZingolibError::Read("Wcash runtime lock poisoned".to_owned()))?;
+            let runtime = slot
+                .as_ref()
+                .ok_or_else(|| ZingolibError::Read("Wcash wallet is not open".to_owned()))?;
+            let history = runtime
+                .confirmed_transactions(MAX_CONFIRMED_TRANSACTION_HISTORY_SIZE)
+                .map_err(|error| {
+                    ZingolibError::Read(format!(
+                        "{} confirmed transaction history: {error}",
+                        WCASH_NETWORK_LABEL
+                    ))
+                })?;
+            serde_json::to_string(&history).map_err(|error| {
+                ZingolibError::Read(format!("serialize Wcash transaction history: {error}"))
+            })
+        })
+    })
+}
+
+fn receivers(cx: FunctionContext) -> JsResult<JsPromise> {
+    json_promise(cx, || {
+        with_panic_guard(|| {
+            let slot = WCASH_RUNTIME
+                .lock()
+                .map_err(|_| ZingolibError::Read("Wcash runtime lock poisoned".to_owned()))?;
+            let runtime = slot
+                .as_ref()
+                .ok_or_else(|| ZingolibError::Read("Wcash wallet is not open".to_owned()))?;
+            let addresses = runtime.receive().map_err(|error| {
+                ZingolibError::Read(format!("{} receivers: {error}", WCASH_NETWORK_LABEL))
+            })?;
+            serde_json::to_string(&addresses)
+                .map_err(|error| ZingolibError::Read(format!("serialize Wcash receivers: {error}")))
+        })
+    })
+}
+
+fn validate_recipient(mut cx: FunctionContext) -> JsResult<JsString> {
+    if cx.len() != 1 {
+        return cx.throw_type_error("wcash_validate_recipient expects exactly one address string");
+    }
+    let address = cx.argument::<JsString>(0)?.value(&mut cx);
+    let result = if !address.is_empty() && address.len() <= MAX_RECIPIENT_ADDRESS_BYTES {
+        match decode_recipient(&address, WCASH_NETWORK) {
+            Ok(_) => serde_json::json!({
+                "schema_version": TRANSACTION_SCHEMA_VERSION,
+                "valid": true,
+                "network": WCASH_NETWORK_LABEL,
+                "recipient_kind": "ironwood",
+                "canonical_address": address,
+                "error": null,
+            }),
+            Err(error) => serde_json::json!({
+                "schema_version": TRANSACTION_SCHEMA_VERSION,
+                "valid": false,
+                "network": WCASH_NETWORK_LABEL,
+                "recipient_kind": null,
+                "canonical_address": null,
+                "error": {
+                    "code": "invalid_recipient",
+                    "message": error.to_string(),
+                },
+            }),
+        }
+    } else {
+        serde_json::json!({
+            "schema_version": TRANSACTION_SCHEMA_VERSION,
+            "valid": false,
+            "network": WCASH_NETWORK_LABEL,
+            "recipient_kind": null,
+            "canonical_address": null,
+            "error": {
+                "code": "invalid_recipient",
+                "message": format!("recipient address must contain 1 through {MAX_RECIPIENT_ADDRESS_BYTES} bytes"),
+            },
+        })
+    };
+    Ok(cx.string(result.to_string()))
+}
+
+fn send_and_broadcast(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    if cx.len() != 2 {
+        return cx.throw_type_error(
+            "wcash_send_and_broadcast expects a recovery phrase and one strict request JSON string",
+        );
+    }
+    let seed_phrase = Zeroizing::new(cx.argument::<JsString>(0)?.value(&mut cx));
+    let request_json = cx.argument::<JsString>(1)?.value(&mut cx);
+    json_promise(cx, move || {
+        with_panic_guard(|| {
+            let payments = parse_send_request(&request_json).map_err(|error| {
+                ZingolibError::Init(format!("invalid Wcash send request: {error}"))
+            })?;
+            let mnemonic = parse_mnemonic(seed_phrase.as_str())?;
+            require_mnemonic_owns_wallet(&mnemonic)?;
+            let master_seed = mnemonic_master_seed(&mnemonic);
+            let mut slot = WCASH_RUNTIME
+                .lock()
+                .map_err(|_| ZingolibError::Init("Wcash runtime lock poisoned".to_owned()))?;
+            let runtime = slot
+                .as_mut()
+                .ok_or_else(|| ZingolibError::Init("Wcash wallet is not open".to_owned()))?;
+            let exact_tip_height = require_exact_wallet_tip(runtime)?;
+            let (_, active_txid) = active_pending_transaction(runtime, Some(exact_tip_height))?;
+            if let Some(txid) = active_txid {
+                return active_pending_review_result_json("send", &txid, exact_tip_height);
+            }
+
+            let signed = match RT.block_on(runtime.send(&master_seed, payments)) {
+                Ok(signed) => signed,
+                Err(WcashRuntimeError::Wallet(
+                    WalletServiceError::PersistedTransactionsRequireReview { txids, .. },
+                )) => {
+                    return persisted_transactions_review_result_json(
+                        "send",
+                        &txids,
+                        exact_tip_height,
+                    );
+                }
+                Err(WcashRuntimeError::Wallet(WalletServiceError::ActivePendingTransaction {
+                    txid,
+                    ..
+                })) => {
+                    let recovery_tip_height = attest_backend_active_transaction(runtime, &txid)?;
+                    return active_pending_review_result_json("send", &txid, recovery_tip_height);
+                }
+                Err(error) => {
+                    return Err(ZingolibError::Init(format!(
+                        "{} send: {error}",
+                        WCASH_NETWORK_LABEL
+                    )));
+                }
+            };
+            let broadcast = RT.block_on(runtime.broadcast(&signed));
+            Ok(signed_transaction_result_json(
+                "send",
+                &signed,
+                exact_tip_height,
+                broadcast,
+            ))
+        })
+    })
+}
+
+fn shield_coinbase_and_broadcast(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    if cx.len() != 1 {
+        return cx.throw_type_error(
+            "wcash_shield_coinbase_and_broadcast expects exactly one recovery phrase",
+        );
+    }
+    let seed_phrase = Zeroizing::new(cx.argument::<JsString>(0)?.value(&mut cx));
+    json_promise(cx, move || {
+        with_panic_guard(|| {
+            let mnemonic = parse_mnemonic(seed_phrase.as_str())?;
+            require_mnemonic_owns_wallet(&mnemonic)?;
+            let master_seed = mnemonic_master_seed(&mnemonic);
+            let mut slot = WCASH_RUNTIME
+                .lock()
+                .map_err(|_| ZingolibError::Init("Wcash runtime lock poisoned".to_owned()))?;
+            let runtime = slot
+                .as_mut()
+                .ok_or_else(|| ZingolibError::Init("Wcash wallet is not open".to_owned()))?;
+            let exact_tip_height = require_exact_wallet_tip(runtime)?;
+            let (_, active_txid) = active_pending_transaction(runtime, Some(exact_tip_height))?;
+            if let Some(txid) = active_txid {
+                return active_pending_review_result_json(
+                    "shield_coinbase",
+                    &txid,
+                    exact_tip_height,
+                );
+            }
+
+            let signed = match RT.block_on(runtime.shield_coinbase(&master_seed)) {
+                Ok(signed) => signed,
+                Err(WcashRuntimeError::Wallet(
+                    WalletServiceError::PersistedTransactionsRequireReview { txids, .. },
+                )) => {
+                    return persisted_transactions_review_result_json(
+                        "shield_coinbase",
+                        &txids,
+                        exact_tip_height,
+                    );
+                }
+                Err(WcashRuntimeError::Wallet(WalletServiceError::ActivePendingTransaction {
+                    txid,
+                    ..
+                })) => {
+                    let recovery_tip_height = attest_backend_active_transaction(runtime, &txid)?;
+                    return active_pending_review_result_json(
+                        "shield_coinbase",
+                        &txid,
+                        recovery_tip_height,
+                    );
+                }
+                Err(error) => {
+                    return Err(ZingolibError::Init(format!(
+                        "{} coinbase shielding: {error}",
+                        WCASH_NETWORK_LABEL
+                    )));
+                }
+            };
+            let broadcast = RT.block_on(runtime.broadcast(&signed));
+            Ok(signed_transaction_result_json(
+                "shield_coinbase",
+                &signed,
+                exact_tip_height,
+                broadcast,
+            ))
+        })
+    })
+}
+
+fn pending_transactions(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    if cx.len() > 1 {
+        return cx.throw_type_error(
+            "wcash_pending_transactions expects zero arguments or one string cursor",
+        );
+    }
+    let after_row_id = match cx.argument_opt(0) {
+        None => None,
+        Some(value)
+            if value.is_a::<JsNull, _>(&mut cx) || value.is_a::<JsUndefined, _>(&mut cx) =>
+        {
+            None
+        }
+        Some(value) => {
+            let value = value
+                .downcast_or_throw::<JsString, _>(&mut cx)?
+                .value(&mut cx);
+            match parse_pending_cursor(&value) {
+                Ok(cursor) => Some(cursor),
+                Err(error) => return cx.throw_range_error(error),
+            }
+        }
+    };
+
+    json_promise(cx, move || {
+        with_panic_guard(|| {
+            let slot = WCASH_RUNTIME
+                .lock()
+                .map_err(|_| ZingolibError::Read("Wcash runtime lock poisoned".to_owned()))?;
+            let runtime = slot
+                .as_ref()
+                .ok_or_else(|| ZingolibError::Read("Wcash wallet is not open".to_owned()))?;
+            let exact_tip_height = runtime
+                .balance()
+                .ok()
+                .as_ref()
+                .and_then(exact_tip_from_summary);
+            let page = runtime
+                .pending_transactions(after_row_id, MAX_PENDING_TRANSACTION_PAGE_SIZE)
+                .map_err(|error| {
+                    ZingolibError::Read(format!("Wcash pending transactions: {error}"))
+                })?;
+            Ok(public_pending_page_json(
+                &page.transactions,
+                page.next_after_row_id,
+                exact_tip_height,
+            ))
+        })
+    })
+}
+
+fn rebroadcast_pending(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    if cx.len() != 1 {
+        return cx.throw_type_error("wcash_rebroadcast_pending expects exactly one transaction ID");
+    }
+    let txid = cx.argument::<JsString>(0)?.value(&mut cx);
+    if !is_canonical_txid(&txid) {
+        return cx.throw_type_error(
+            "Wcash transaction ID must be exactly 64 lowercase hexadecimal characters",
+        );
+    }
+
+    json_promise(cx, move || {
+        with_panic_guard(|| {
+            let mut slot = WCASH_RUNTIME
+                .lock()
+                .map_err(|_| ZingolibError::Read("Wcash runtime lock poisoned".to_owned()))?;
+            let runtime = slot
+                .as_mut()
+                .ok_or_else(|| ZingolibError::Read("Wcash wallet is not open".to_owned()))?;
+            let signed = find_pending_transaction(runtime, &txid)?;
+            let exact_tip_height = require_exact_wallet_tip(runtime)?;
+            if pending_lifecycle(signed.expiry_height, Some(exact_tip_height))
+                == PendingLifecycle::Expired
+            {
+                return Ok(expired_transaction_result_json(&signed, exact_tip_height));
+            }
+            let broadcast = RT.block_on(runtime.broadcast_pending(&signed));
+            Ok(stored_transaction_result_json(
+                &signed,
+                exact_tip_height,
+                broadcast,
+            ))
+        })
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wcash_wallet::{BroadcastDisposition, TransactionStatus};
+
+    #[cfg(feature = "wcash-testnet")]
+    const PROFILE_IRONWOOD_RECIPIENT: &str = "wutest18rmpm4xcm2d54xg5mg00lac9pg4txaladyp6pacqhm355n5scpn5gja6hy43uqassvr63g6xuephu8r0qju92778lg4v5nkxfu7j3la6";
+    #[cfg(feature = "wcash-regtest")]
+    const PROFILE_IRONWOOD_RECIPIENT: &str = "wuregtest12gdmq9xlu6er8vxzvfk27kmvrpn3h7jvw5euywhkf0wusdn85qgwm0evx5cj63yc8pe8cyy3rajjl2chwlgm94ecs7jtkdlaz5a67rd6";
+    #[cfg(feature = "wcash-testnet")]
+    const PROFILE_TRANSPARENT_RECEIVER: &str = "WTMMWgVvepdG58zdNjePbtyoh4aSwb4kP3E";
+    #[cfg(feature = "wcash-regtest")]
+    const PROFILE_TRANSPARENT_RECEIVER: &str = "WRSJjaJAZ75QkqbJoa244F21QmkPHEqhYu8";
+    #[cfg(feature = "wcash-testnet")]
+    const WRONG_NETWORK: WalletNetwork = WalletNetwork::Regtest;
+    #[cfg(feature = "wcash-regtest")]
+    const WRONG_NETWORK: WalletNetwork = WalletNetwork::Testnet;
+
+    fn send_request(payments: Value) -> String {
+        serde_json::json!({ "payments": payments }).to_string()
+    }
+
+    #[test]
+    fn active_sync_reservation_is_immediately_cancellable_and_exclusive() {
+        let registry = Mutex::new(ActiveSyncRegistry::default());
+        let first = reserve_active_sync(&registry).unwrap();
+
+        assert!(!first.cancellation.is_cancelled());
+        assert!(cancel_active_sync(&registry));
+        assert!(first.cancellation.is_cancelled());
+        assert!(matches!(
+            reserve_active_sync(&registry),
+            Err(ZingolibError::Sync(message)) if message == "Wcash sync is already running"
+        ));
+
+        drop(first);
+        let second = reserve_active_sync(&registry).unwrap();
+        assert_eq!(second.generation, 2);
+        assert!(!second.cancellation.is_cancelled());
+    }
+
+    #[test]
+    fn stale_sync_reservation_cannot_clear_a_new_generation() {
+        let registry = Mutex::new(ActiveSyncRegistry::default());
+        let stale = reserve_active_sync(&registry).unwrap();
+        let replacement_cancellation = WalletSyncCancellation::new();
+        let replacement_generation = stale.generation + 1;
+        {
+            let mut state = registry.lock().unwrap();
+            state.next_generation = replacement_generation;
+            state.active = Some(ActiveSyncHandle {
+                generation: replacement_generation,
+                cancellation: replacement_cancellation.clone(),
+            });
+        }
+
+        drop(stale);
+
+        assert_eq!(
+            registry
+                .lock()
+                .unwrap()
+                .active
+                .as_ref()
+                .map(|active| active.generation),
+            Some(replacement_generation)
+        );
+        assert!(cancel_active_sync(&registry));
+        assert!(replacement_cancellation.is_cancelled());
+    }
+
+    #[test]
+    fn wallet_path_is_namespaced_under_the_product_data_directory() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = wallet_path_under(temporary.path()).unwrap();
+
+        assert_eq!(
+            path,
+            temporary
+                .path()
+                .join(WcashProfile.storage_namespace())
+                .join(WCASH_WALLET_DATABASE)
+        );
+    }
+
+    #[test]
+    fn mnemonic_contract_is_stable_and_derives_a_wcash_address_vector() {
+        use secrecy::ExposeSecret;
+
+        const ZERO_ENTROPY_PHRASE: &str =
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";
+        let mnemonic = parse_mnemonic(ZERO_ENTROPY_PHRASE).unwrap();
+        let seed = mnemonic_master_seed(&mnemonic);
+        let (ironwood, transparent) = mnemonic_receivers(&mnemonic).unwrap();
+
+        assert_eq!(seed.expose_secret().len(), 64);
+        assert_eq!(WCASH_SEED_SCHEME, "bip39-english-24-empty-passphrase-v1");
+        assert_eq!(ironwood, PROFILE_IRONWOOD_RECIPIENT);
+        assert_eq!(transparent, PROFILE_TRANSPARENT_RECEIVER);
+    }
+
+    #[test]
+    fn mnemonic_identity_comparison_requires_both_fixed_profile_receivers() {
+        const ZERO_ENTROPY_PHRASE: &str =
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";
+        let mnemonic = parse_mnemonic(ZERO_ENTROPY_PHRASE).unwrap();
+        let (ironwood, transparent) = mnemonic_receivers(&mnemonic).unwrap();
+
+        assert!(receiver_pair_matches(
+            &ironwood,
+            &transparent,
+            &ironwood,
+            &transparent
+        ));
+        assert!(!receiver_pair_matches(
+            &ironwood,
+            &transparent,
+            "wutest1wrong",
+            &transparent
+        ));
+        assert!(!receiver_pair_matches(
+            &ironwood,
+            &transparent,
+            &ironwood,
+            "WTWrong"
+        ));
+    }
+
+    #[test]
+    fn canonical_wcash_amounts_use_exact_eight_decimal_base_units() {
+        assert_eq!(parse_canonical_wcash_amount("0.00000001").unwrap(), 1);
+        assert_eq!(parse_canonical_wcash_amount("0.1").unwrap(), 10_000_000);
+        assert_eq!(parse_canonical_wcash_amount("1").unwrap(), 100_000_000);
+        assert_eq!(
+            parse_canonical_wcash_amount("21000000").unwrap(),
+            WCASH_MAX_SUPPLY_ZAT
+        );
+        assert_eq!(format_wcash_amount(1), "0.00000001");
+        assert_eq!(format_wcash_amount(123_450_000), "1.2345");
+        assert_eq!(format_wcash_amount(WCASH_MAX_SUPPLY_ZAT), "21000000");
+    }
+
+    #[test]
+    fn noncanonical_or_out_of_range_wcash_amounts_are_rejected() {
+        for amount in [
+            "",
+            "0",
+            "00.1",
+            "01",
+            "1.",
+            ".1",
+            "1.0",
+            "1.230",
+            "0.000000001",
+            "+1",
+            "-1",
+            "1e2",
+            " 1",
+            "1 ",
+            "21000000.00000001",
+            "18446744073709551615",
+        ] {
+            assert!(
+                parse_canonical_wcash_amount(amount).is_err(),
+                "unexpectedly accepted {amount:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_send_request_accepts_only_selected_wcash_profile_payments() {
+        let request = send_request(serde_json::json!([{
+            "address": PROFILE_IRONWOOD_RECIPIENT,
+            "amount": "1.25",
+            "memo": "private memo",
+        }]));
+        let payments = parse_send_request(&request).unwrap();
+
+        assert_eq!(payments.len(), 1);
+        assert_eq!(payments[0].address, PROFILE_IRONWOOD_RECIPIENT);
+        assert_eq!(payments[0].amount_zat, 125_000_000);
+        assert_eq!(payments[0].memo, b"private memo");
+
+        for address in [
+            "WTMMWgVvepdG58zdNjePbtyoh4aSwb4kP3E",
+            "tmQvJu83NwioWyV852dPCzNXhzdtXVJwMAJ",
+            "",
+        ] {
+            let request = send_request(serde_json::json!([{
+                "address": address,
+                "amount": "1",
+            }]));
+            assert!(parse_send_request(&request).is_err());
+        }
+
+        let mnemonic = parse_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+        )
+        .unwrap();
+        let master_seed = mnemonic_master_seed(&mnemonic);
+        let wrong_network_ufvk = derive_wallet_spending_key(&master_seed, WRONG_NETWORK, 0)
+            .unwrap()
+            .to_unified_full_viewing_key();
+        let wrong_network_address =
+            encode_orchard_receiver(&wrong_network_ufvk, WRONG_NETWORK).unwrap();
+        let wrong_network = send_request(serde_json::json!([{
+            "address": wrong_network_address,
+            "amount": "1",
+        }]));
+        assert!(parse_send_request(&wrong_network).is_err());
+    }
+
+    #[test]
+    fn strict_send_request_rejects_unknown_missing_and_wrong_typed_fields() {
+        for request in [
+            "null".to_owned(),
+            "[]".to_owned(),
+            "{}".to_owned(),
+            serde_json::json!({ "payments": [], "extra": true }).to_string(),
+            serde_json::json!({ "payments": "not-an-array" }).to_string(),
+            send_request(serde_json::json!([null])),
+            send_request(serde_json::json!([{
+                "address": PROFILE_IRONWOOD_RECIPIENT,
+            }])),
+            send_request(serde_json::json!([{
+                "address": PROFILE_IRONWOOD_RECIPIENT,
+                "amount": 1,
+            }])),
+            send_request(serde_json::json!([{
+                "address": PROFILE_IRONWOOD_RECIPIENT,
+                "amount": "1",
+                "memo": 7,
+            }])),
+            send_request(serde_json::json!([{
+                "address": PROFILE_IRONWOOD_RECIPIENT,
+                "amount": "1",
+                "extra": true,
+            }])),
+        ] {
+            assert!(
+                parse_send_request(&request).is_err(),
+                "unexpectedly accepted {request}"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_send_request_enforces_count_total_and_utf8_memo_byte_limits() {
+        let one_payment = || {
+            serde_json::json!({
+                "address": PROFILE_IRONWOOD_RECIPIENT,
+                "amount": "0.00000001",
+            })
+        };
+        assert!(parse_send_request(&send_request(Value::Array(vec![]))).is_err());
+        assert!(parse_send_request(&send_request(Value::Array(
+            (0..=MAX_TRANSFER_RECIPIENTS)
+                .map(|_| one_payment())
+                .collect()
+        )))
+        .is_err());
+        assert!(parse_send_request(&send_request(Value::Array(
+            (0..MAX_TRANSFER_RECIPIENTS)
+                .map(|_| one_payment())
+                .collect()
+        )))
+        .is_ok());
+
+        let over_supply = send_request(serde_json::json!([
+            { "address": PROFILE_IRONWOOD_RECIPIENT, "amount": "21000000" },
+            { "address": PROFILE_IRONWOOD_RECIPIENT, "amount": "0.00000001" },
+        ]));
+        assert!(parse_send_request(&over_supply).is_err());
+
+        let exactly_512_utf8_bytes = "é".repeat(256);
+        let too_many_utf8_bytes = "é".repeat(257);
+        let accepted = send_request(serde_json::json!([{
+            "address": PROFILE_IRONWOOD_RECIPIENT,
+            "amount": "1",
+            "memo": exactly_512_utf8_bytes,
+        }]));
+        let rejected = send_request(serde_json::json!([{
+            "address": PROFILE_IRONWOOD_RECIPIENT,
+            "amount": "1",
+            "memo": too_many_utf8_bytes,
+        }]));
+        assert_eq!(parse_send_request(&accepted).unwrap()[0].memo.len(), 512);
+        assert!(parse_send_request(&rejected).is_err());
+    }
+
+    #[test]
+    fn pending_cursors_and_transaction_ids_are_canonical_strings() {
+        assert_eq!(parse_pending_cursor("0").unwrap(), 0);
+        assert_eq!(parse_pending_cursor("42").unwrap(), 42);
+        for cursor in ["", "00", "01", "+1", "-1", "1.0", " 1"] {
+            assert!(parse_pending_cursor(cursor).is_err());
+        }
+
+        assert!(is_canonical_txid(&"a".repeat(64)));
+        assert!(is_canonical_txid(&"09".repeat(32)));
+        assert!(!is_canonical_txid(&"A".repeat(64)));
+        assert!(!is_canonical_txid(&"a".repeat(63)));
+        assert!(!is_canonical_txid(&"g".repeat(64)));
+    }
+
+    #[test]
+    fn pending_page_never_serializes_signed_transaction_bytes() {
+        let pending = StoredSignedTransaction {
+            txid: "ab".repeat(32),
+            raw_transaction_hex: "sensitive-raw-transaction-bytes".to_owned(),
+            branch_id: "b3cfd27e".to_owned(),
+            expiry_height: 123,
+        };
+        let output = public_pending_page_json(&[pending], Some(7), Some(122));
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["exact_tip_height"], 122);
+        assert_eq!(parsed["next_cursor"], "7");
+        assert_eq!(parsed["transactions"][0]["txid"], "ab".repeat(32));
+        assert_eq!(parsed["transactions"][0]["lifecycle"], "unexpired");
+        assert_eq!(parsed["transactions"][0]["rebroadcast_allowed"], true);
+        assert_eq!(parsed["transactions"][0]["blocks_new_signing"], true);
+        assert!(parsed["transactions"][0]
+            .get("raw_transaction_hex")
+            .is_none());
+        assert!(!output.contains("sensitive-raw-transaction-bytes"));
+    }
+
+    #[test]
+    fn pending_lifecycle_unblocks_only_at_a_known_exact_expiry_tip() {
+        assert_eq!(
+            pending_lifecycle(140, Some(139)),
+            PendingLifecycle::Unexpired
+        );
+        assert_eq!(pending_lifecycle(140, Some(140)), PendingLifecycle::Expired);
+        assert_eq!(pending_lifecycle(140, Some(141)), PendingLifecycle::Expired);
+        assert_eq!(pending_lifecycle(140, None), PendingLifecycle::TipUnknown);
+        assert_eq!(
+            pending_lifecycle(0, Some(u32::MAX)),
+            PendingLifecycle::Unexpired
+        );
+
+        assert!(PendingLifecycle::Unexpired.blocks_new_signing());
+        assert!(PendingLifecycle::TipUnknown.blocks_new_signing());
+        assert!(!PendingLifecycle::Expired.blocks_new_signing());
+        assert!(PendingLifecycle::Unexpired.rebroadcast_allowed());
+        assert!(!PendingLifecycle::Expired.rebroadcast_allowed());
+        assert!(!PendingLifecycle::TipUnknown.rebroadcast_allowed());
+    }
+
+    #[test]
+    fn pending_pagination_requires_strict_forward_progress() {
+        assert_eq!(next_pending_cursor(None, Some(1)).unwrap(), Some(1));
+        assert_eq!(next_pending_cursor(Some(1), Some(2)).unwrap(), Some(2));
+        assert_eq!(next_pending_cursor(Some(2), None).unwrap(), None);
+        assert!(next_pending_cursor(Some(2), Some(2)).is_err());
+        assert!(next_pending_cursor(Some(2), Some(1)).is_err());
+    }
+
+    #[test]
+    fn pending_page_marks_expired_and_unknown_tip_rows_fail_closed() {
+        let pending = StoredSignedTransaction {
+            txid: "ab".repeat(32),
+            raw_transaction_hex: "never-export-lifecycle-bytes".to_owned(),
+            branch_id: "b3cfd27e".to_owned(),
+            expiry_height: 123,
+        };
+
+        let expired: Value = serde_json::from_str(&public_pending_page_json(
+            std::slice::from_ref(&pending),
+            None,
+            Some(123),
+        ))
+        .unwrap();
+        assert_eq!(expired["transactions"][0]["lifecycle"], "expired");
+        assert_eq!(expired["transactions"][0]["rebroadcast_allowed"], false);
+        assert_eq!(expired["transactions"][0]["blocks_new_signing"], false);
+
+        let unknown: Value =
+            serde_json::from_str(&public_pending_page_json(&[pending], None, None)).unwrap();
+        assert_eq!(unknown["exact_tip_height"], Value::Null);
+        assert_eq!(unknown["transactions"][0]["lifecycle"], "tip_unknown");
+        assert_eq!(unknown["transactions"][0]["rebroadcast_allowed"], false);
+        assert_eq!(unknown["transactions"][0]["blocks_new_signing"], true);
+        assert!(!unknown.to_string().contains("never-export-lifecycle-bytes"));
+    }
+
+    #[test]
+    fn exact_tip_requires_synchronized_contiguous_scanning() {
+        let summary = |tip, scanned, synchronized| WalletBalanceSummary {
+            chain_tip_height: tip,
+            fully_scanned_height: scanned,
+            synchronized,
+            accounts: vec![],
+        };
+
+        assert_eq!(exact_tip_from_summary(&summary(50, 50, true)), Some(50));
+        assert_eq!(exact_tip_from_summary(&summary(50, 49, true)), None);
+        assert_eq!(exact_tip_from_summary(&summary(50, 50, false)), None);
+    }
+
+    #[test]
+    fn broadcast_error_after_signing_returns_recovery_required_not_raw_bytes() {
+        let signed = SignedTransaction {
+            txid: "cd".repeat(32),
+            raw_transaction_hex: "sensitive-signed-transaction-bytes".to_owned(),
+            branch_id: "b3cfd27e".to_owned(),
+            target_height: 100,
+            expiry_height: 140,
+            fee_zat: 10_000,
+            internal_change_receiver_verified: true,
+        };
+        let output = signed_transaction_result_json(
+            "send",
+            &signed,
+            100,
+            Err(WcashRuntimeError::Rpc(WalletRpcError::AmbiguousBroadcast {
+                txid: signed.txid.clone(),
+                reason: "network acknowledgement lost".to_owned(),
+            })),
+        );
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["operation"], "send");
+        assert_eq!(parsed["outcome"], "recovery_required");
+        assert_eq!(parsed["txid"], signed.txid);
+        assert_eq!(parsed["fee_zat"], "10000");
+        assert_eq!(parsed["exact_tip_height"], 100);
+        assert_eq!(parsed["broadcast"], Value::Null);
+        assert_eq!(parsed["recovery"]["code"], RECOVERY_REQUIRED_CODE);
+        assert_eq!(parsed["rejection"], Value::Null);
+        assert!(parsed.get("raw_transaction_hex").is_none());
+        assert!(!output.contains("sensitive-signed-transaction-bytes"));
+    }
+
+    #[test]
+    fn successful_broadcast_envelope_exposes_only_public_transaction_metadata() {
+        let txid = "ef".repeat(32);
+        let signed = SignedTransaction {
+            txid: txid.clone(),
+            raw_transaction_hex: "never-export-this-serialization".to_owned(),
+            branch_id: "b3cfd27e".to_owned(),
+            target_height: 101,
+            expiry_height: 141,
+            fee_zat: 20_000,
+            internal_change_receiver_verified: true,
+        };
+        let broadcast = BroadcastResult {
+            txid: txid.clone(),
+            disposition: BroadcastDisposition::Submitted,
+            status: TransactionStatus::Mempool,
+        };
+        let output = signed_transaction_result_json("shield_coinbase", &signed, 100, Ok(broadcast));
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["operation"], "shield_coinbase");
+        assert_eq!(parsed["outcome"], "broadcast");
+        assert_eq!(parsed["txid"], txid);
+        assert_eq!(parsed["broadcast"]["disposition"], "submitted");
+        assert_eq!(parsed["broadcast"]["status"]["state"], "mempool");
+        assert_eq!(parsed["recovery"], Value::Null);
+        assert_eq!(parsed["rejection"], Value::Null);
+        assert!(parsed.get("raw_transaction_hex").is_none());
+        assert!(!output.contains("never-export-this-serialization"));
+    }
+
+    #[test]
+    fn definitive_node_rejection_is_not_reported_as_ambiguous_recovery() {
+        let signed = SignedTransaction {
+            txid: "12".repeat(32),
+            raw_transaction_hex: "never-export-rejected-bytes".to_owned(),
+            branch_id: "b3cfd27e".to_owned(),
+            target_height: 101,
+            expiry_height: 141,
+            fee_zat: 10_000,
+            internal_change_receiver_verified: true,
+        };
+        let output = signed_transaction_result_json(
+            "send",
+            &signed,
+            100,
+            Err(WcashRuntimeError::Rpc(WalletRpcError::Rejected {
+                code: -26,
+                message: "consensus-invalid".to_owned(),
+            })),
+        );
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["outcome"], "rejected");
+        assert_eq!(parsed["recovery"], Value::Null);
+        assert_eq!(parsed["rejection"]["code"], REJECTED_CODE);
+        assert_eq!(parsed["rejection"]["node_code"], -26);
+        assert_eq!(parsed["rejection"]["message"], "consensus-invalid");
+        assert!(!output.contains("never-export-rejected-bytes"));
+    }
+
+    #[test]
+    fn expired_rebroadcast_returns_terminal_outcome_without_signed_bytes() {
+        let signed = StoredSignedTransaction {
+            txid: "34".repeat(32),
+            raw_transaction_hex: "never-rebroadcast-expired-bytes".to_owned(),
+            branch_id: "b3cfd27e".to_owned(),
+            expiry_height: 140,
+        };
+        let output = expired_transaction_result_json(&signed, 140);
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["operation"], "rebroadcast_pending");
+        assert_eq!(parsed["outcome"], "expired");
+        assert_eq!(parsed["exact_tip_height"], 140);
+        assert_eq!(parsed["broadcast"], Value::Null);
+        assert_eq!(parsed["recovery"], Value::Null);
+        assert_eq!(parsed["rejection"], Value::Null);
+        assert!(!output.contains("never-rebroadcast-expired-bytes"));
+    }
+
+    #[test]
+    fn nonbroadcast_post_signing_error_requires_review_not_blind_replacement() {
+        let signed = SignedTransaction {
+            txid: "56".repeat(32),
+            raw_transaction_hex: "never-export-review-bytes".to_owned(),
+            branch_id: "b3cfd27e".to_owned(),
+            target_height: 100,
+            expiry_height: 140,
+            fee_zat: 10_000,
+            internal_change_receiver_verified: true,
+        };
+        let output = signed_transaction_result_json(
+            "send",
+            &signed,
+            99,
+            Err(WcashRuntimeError::SignedTransactionMetadataMismatch),
+        );
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["outcome"], "recovery_required");
+        assert_eq!(parsed["recovery"]["code"], REVIEW_REQUIRED_CODE);
+        assert_eq!(parsed["recovery"]["txids"][0], signed.txid);
+        assert_eq!(parsed["rejection"], Value::Null);
+        assert!(!output.contains("never-export-review-bytes"));
+    }
+
+    #[test]
+    fn persisted_signing_error_returns_all_canonical_txids_without_throwing() {
+        let first = "78".repeat(32);
+        let second = "9a".repeat(32);
+        let output = persisted_transactions_review_result_json(
+            "send",
+            &[first.clone(), second.clone()],
+            200,
+        )
+        .unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["outcome"], "recovery_required");
+        assert_eq!(parsed["txid"], first);
+        assert_eq!(parsed["branch_id"], WCASH_NETWORK.branch_id_hex());
+        assert_eq!(parsed["expiry_height"], Value::Null);
+        assert_eq!(parsed["exact_tip_height"], 200);
+        assert_eq!(parsed["recovery"]["code"], REVIEW_REQUIRED_CODE);
+        assert_eq!(parsed["recovery"]["message"], PUBLIC_REVIEW_MESSAGE);
+        assert_eq!(
+            parsed["recovery"]["txids"],
+            serde_json::json!([first, second])
+        );
+        assert_eq!(parsed["rejection"], Value::Null);
+        assert!(!output.contains("raw_transaction"));
+    }
+
+    #[test]
+    fn malformed_persisted_review_metadata_fails_with_status_unknown() {
+        let malformed = vec!["NOT-A-CANONICAL-TXID".to_owned()];
+        let duplicate = "bc".repeat(32);
+        let duplicate_pair = vec![duplicate.clone(), duplicate];
+        let too_many = (0..=MAX_PUBLIC_RECOVERY_TXIDS)
+            .map(|index| format!("{index:064x}"))
+            .collect::<Vec<_>>();
+
+        for txids in [
+            &[][..],
+            malformed.as_slice(),
+            duplicate_pair.as_slice(),
+            too_many.as_slice(),
+        ] {
+            let error = persisted_transactions_review_result_json("send", txids, 200).unwrap_err();
+            assert!(matches!(
+                error,
+                ZingolibError::Read(message) if message == RECOVERY_STATUS_UNKNOWN_MESSAGE
+            ));
+        }
+    }
+
+    #[test]
+    fn active_pending_review_is_structured_for_send_and_shielding() {
+        let txid = "de".repeat(32);
+
+        for operation in ["send", "shield_coinbase"] {
+            let output = active_pending_review_result_json(operation, &txid, 321).unwrap();
+            let parsed: Value = serde_json::from_str(&output).unwrap();
+
+            assert_eq!(parsed["operation"], operation);
+            assert_eq!(parsed["outcome"], "recovery_required");
+            assert_eq!(parsed["txid"], txid);
+            assert_eq!(parsed["exact_tip_height"], 321);
+            assert_eq!(parsed["expiry_height"], Value::Null);
+            assert_eq!(parsed["target_height"], Value::Null);
+            assert_eq!(parsed["fee_zat"], Value::Null);
+            assert_eq!(parsed["recovery"]["code"], REVIEW_REQUIRED_CODE);
+            assert_eq!(parsed["recovery"]["message"], PUBLIC_REVIEW_MESSAGE);
+            assert_eq!(parsed["recovery"]["txids"], serde_json::json!([txid]));
+            assert!(parsed.get("raw_transaction_hex").is_none());
+        }
+    }
+
+    #[test]
+    fn public_error_messages_are_utf8_safe_and_bounded() {
+        let message = format!("{}é", "x".repeat(MAX_PUBLIC_ERROR_MESSAGE_BYTES));
+        let bounded = bounded_public_message(message);
+
+        assert!(bounded.is_char_boundary(bounded.len()));
+        assert!(bounded.ends_with('…'));
+        assert!(bounded.len() <= MAX_PUBLIC_ERROR_MESSAGE_BYTES);
+    }
+}

@@ -85,9 +85,10 @@ describe("describeSendRoute", () => {
     );
   });
 
-  it("names clearnet when the user switched the mixnet off", () => {
+  it("names the configured Wcash connection when inherited mixnet transport is off", () => {
     const text = describeSendRoute(deriveMixnetView({ mode: "switched_off" }));
-    expect(text).toMatch(/over clearnet/);
+    expect(text).toBe("This send uses the configured Wcash server connection.");
+    expect(text).not.toMatch(/Nym/i);
     expect(text).not.toMatch(/waits/);
   });
 

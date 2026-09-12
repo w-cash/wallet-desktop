@@ -36,7 +36,7 @@ export const parseZcashURI = async (
   }
 
   const parsedUri = new Url(uri, true);
-  if (!parsedUri || parsedUri.protocol !== "zcash:") {
+  if (!parsedUri || parsedUri.protocol !== "wcash:") {
     return "Error: Invalid URI or protocol";
   }
 
@@ -47,7 +47,7 @@ export const parseZcashURI = async (
   if (address) {
     addressKind = await Utils.getAddressKind(address, serverChainName);
     if (addressKind === undefined) {
-      return `Error: "${address || ""}" was not a valid zcash address`;
+      return `Error: "${address || ""}" was not a valid Wcash address`;
     }
   }
 
@@ -89,7 +89,7 @@ export const parseZcashURI = async (
 
         const addressKind: AddressKindEnum | undefined = await Utils.getAddressKind(value, serverChainName);
         if (addressKind === undefined) {
-          return `Error: ${value} was not a recognized zcash address`;
+          return `Error: ${value} was not a recognized Wcash address`;
         }
         target.address = value;
         break;

@@ -154,7 +154,9 @@ const VtItemBlock: React.FC<VtItemBlockProps> = ({
               <div className={`${styles.txfee} ${cstyles.right}`}>
                 <div>Transaction Fee</div>
                 <div className={`${cstyles.small} ${cstyles.padtopsmall}`}>
-                  <div>ZEC {Utils.maxPrecisionTrimmed(fees)}</div>
+                  <div>
+                    {currencyName} {Utils.maxPrecisionTrimmed(fees)}
+                  </div>
                   {currencyName === "ZEC" && (
                     <div className={cstyles.sublight}>{Utils.getZecToUsdString(price, fees)}</div>
                   )}

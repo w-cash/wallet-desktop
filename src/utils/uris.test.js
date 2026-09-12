@@ -1,70 +1,62 @@
 import { parseZcashURI } from "./uris";
-import native from "../native.node";
+import Utils from "./utils";
 
-import serverUrisList from "./serverUrisList";
-import { PerformanceLevelEnum } from "../components/appstate";
+jest.mock("../electronBridge", () => ({
+  native: {},
+  clipboard: { writeText: jest.fn() },
+  shell: { openExternal: jest.fn() },
+  ipcRenderer: { on: jest.fn(), off: jest.fn(), invoke: jest.fn() },
+  fs: { promises: { readFile: jest.fn() }, existsSync: jest.fn() },
+  isSandboxed: false,
+}));
 
-// electronBridge.native must point to the real native module so that
-// parse_address works correctly inside parseZcashURI.
-jest.mock("../electronBridge", () => {
-  const nativeModule = require("../native.node");
-  return {
-    native: nativeModule.default ?? nativeModule,
-    clipboard: { writeText: jest.fn() },
-    shell: { openExternal: jest.fn() },
-    ipcRenderer: { on: jest.fn(), off: jest.fn(), invoke: jest.fn() },
-    fs: { promises: { readFile: jest.fn() }, existsSync: jest.fn() },
-    isSandboxed: false,
-  };
+const WCASH_REGTEST_ADDRESS = "w" + "u" + "regtest1" + "q".repeat(90);
+
+beforeEach(() => {
+  jest.spyOn(Utils, "getAddressKind").mockImplementation(async (address, chain) =>
+    address === WCASH_REGTEST_ADDRESS && chain === "regtest" ? "unified" : undefined,
+  );
 });
 
-const testnetServer = serverUrisList().find((s) => s.chain_name === "test" && s.default);
-// Best-effort init. init_from_b64 is synchronous and now throws a typed error
-// when the wallet file is absent (instead of returning an "Error:" string), so
-// guard this module-level call to keep it from failing the suite load; the
-// ZIP321 parse tests below don't depend on the lightclient being initialized.
-try {
-  native.init_from_b64(testnetServer.uri, testnetServer.chain_name, PerformanceLevelEnum.High, 1, "test-wallet.dat");
-} catch {
-  /* wallet file absent in the test env — ignore */
-}
-
-test("ZIP321 case 1", async () => {
-  const targets = await parseZcashURI(
-    "zcash:ztestsapling10yy2ex5dcqkclhc7z7yrnjq2z6feyjad56ptwlfgmy77dmaqqrl9gyhprdx59qgmsnyfska2kez?amount=1&memo=VGhpcyBpcyBhIHNpbXBsZSBtZW1vLg&message=Thank%20you%20for%20your%20purchase",
-    "test",
-  );
-
-  expect(typeof targets).toBe("object");
-  expect(targets.address).toBe(
-    "ztestsapling10yy2ex5dcqkclhc7z7yrnjq2z6feyjad56ptwlfgmy77dmaqqrl9gyhprdx59qgmsnyfska2kez",
-  );
-  expect(targets.message).toBe("Thank you for your purchase");
-  expect(targets.label).toBeUndefined();
-  expect(targets.amount).toBe(1);
-  expect(targets.memoString).toBe("This is a simple memo.");
+afterEach(() => {
+  jest.restoreAllMocks();
 });
 
-test("ZIP321 case 2", async () => {
-  const targets = await parseZcashURI(
-    "zcash:?address=tmEZhbWHTpdKMw5it8YDspUXSMGQyFwovpU&amount=123.456&address.1=ztestsapling10yy2ex5dcqkclhc7z7yrnjq2z6feyjad56ptwlfgmy77dmaqqrl9gyhprdx59qgmsnyfska2kez&amount.1=0.789&memo.1=VGhpcyBpcyBhIHVuaWNvZGUgbWVtbyDinKjwn6aE8J-PhvCfjok",
-    "test",
+test("Wcash payment URI with amount, memo, and message", async () => {
+  const target = await parseZcashURI(
+    `wcash:${WCASH_REGTEST_ADDRESS}?amount=1&memo=VGhpcyBpcyBhIHNpbXBsZSBtZW1vLg&message=Thank%20you%20for%20your%20purchase`,
+    "regtest",
   );
-
-  // this version of the App only reads the first item of the URI
-  expect(typeof targets).toBe("object");
-  expect(targets.address).toBe("tmEZhbWHTpdKMw5it8YDspUXSMGQyFwovpU");
-  expect(targets.message).toBeUndefined();
-  expect(targets.label).toBeUndefined();
-  expect(targets.amount).toBe(123.456);
-  expect(targets.memoString).toBeUndefined();
-  expect(targets.memoBase64).toBeUndefined();
-});
-
-test("coinbase URI", async () => {
-  const target = await parseZcashURI("zcash:tmEZhbWHTpdKMw5it8YDspUXSMGQyFwovpU", "test");
 
   expect(typeof target).toBe("object");
+  expect(target.address).toBe(WCASH_REGTEST_ADDRESS);
+  expect(target.message).toBe("Thank you for your purchase");
+  expect(target.label).toBeUndefined();
+  expect(target.amount).toBe(1);
+  expect(target.memoString).toBe("This is a simple memo.");
+});
+
+test("Wcash indexed payment URI", async () => {
+  const target = await parseZcashURI(
+    `wcash:?address=${WCASH_REGTEST_ADDRESS}&amount=123.456&address.1=${WCASH_REGTEST_ADDRESS}&amount.1=0.789&memo.1=VGhpcyBpcyBhIHVuaWNvZGUgbWVtbyDinKjwn6aE8J-PhvCfjok`,
+    "regtest",
+  );
+
+  // This version of the app only reads the first item of the URI.
+  expect(typeof target).toBe("object");
+  expect(target.address).toBe(WCASH_REGTEST_ADDRESS);
+  expect(target.message).toBeUndefined();
+  expect(target.label).toBeUndefined();
+  expect(target.amount).toBe(123.456);
+  expect(target.memoString).toBeUndefined();
+  expect(target.memoBase64).toBeUndefined();
+});
+
+test("Wcash address-only URI", async () => {
+  const target = await parseZcashURI(`wcash:${WCASH_REGTEST_ADDRESS}`, "regtest");
+
+  expect(typeof target).toBe("object");
+  expect(target.address).toBe(WCASH_REGTEST_ADDRESS);
   expect(target.message).toBeUndefined();
   expect(target.label).toBeUndefined();
   expect(target.amount).toBeUndefined();
@@ -72,53 +64,44 @@ test("coinbase URI", async () => {
   expect(target.memoBase64).toBeUndefined();
 });
 
-test("Plain URI", async () => {
-  // A plain address returns the address string itself (no zcash: prefix)
-  const result = await parseZcashURI("tmEZhbWHTpdKMw5it8YDspUXSMGQyFwovpU", "test");
+test("plain Wcash address", async () => {
+  const result = await parseZcashURI(WCASH_REGTEST_ADDRESS, "regtest");
 
-  expect(typeof result).toBe("string");
-  expect(result).toBe("tmEZhbWHTpdKMw5it8YDspUXSMGQyFwovpU");
+  expect(result).toBe(WCASH_REGTEST_ADDRESS);
 });
 
-test("bad uris", async () => {
-  // bad protocol
-  let error = await parseZcashURI("badprotocol:tmEZhbWHTpdKMw5it8YDspUXSMGQyFwovpU?amount=123.456", "test");
+test("rejects non-Wcash or malformed payment URIs", async () => {
+  let error = await parseZcashURI(`zcash:${WCASH_REGTEST_ADDRESS}?amount=123.456`, "regtest");
+  expect(error).toBe("Error: Invalid URI or protocol");
+
+  error = await parseZcashURI("wcash:badaddress?amount=123.456", "regtest");
   expect(typeof error).toBe("string");
 
-  // bad address
-  error = await parseZcashURI("zcash:badaddress?amount=123.456", "test");
+  error = await parseZcashURI("wcash:?amount=123.456", "regtest");
   expect(typeof error).toBe("string");
 
-  // no address
-  error = await parseZcashURI("zcash:?amount=123.456", "test");
+  error = await parseZcashURI(`wcash:${WCASH_REGTEST_ADDRESS}?badparam=3`, "regtest");
   expect(typeof error).toBe("string");
 
-  // bad param name
-  error = await parseZcashURI("zcash:tmEZhbWHTpdKMw5it8YDspUXSMGQyFwovpU?badparam=3", "test");
-  expect(typeof error).toBe("string");
-
-  // index=1 doesn't have amount
   error = await parseZcashURI(
-    "zcash:tmEZhbWHTpdKMw5it8YDspUXSMGQyFwovpU?amount=2&address.1=tmEZhbWHTpdKMw5it8YDspUXSMGQyFwovpU",
-    "test",
+    `wcash:${WCASH_REGTEST_ADDRESS}?amount=2&address.1=${WCASH_REGTEST_ADDRESS}`,
+    "regtest",
   );
   expect(typeof error).toBe("string");
 
-  // duplicate param — url-parse silently keeps the last value, so the parse succeeds
-  error = await parseZcashURI("zcash:tmEZhbWHTpdKMw5it8YDspUXSMGQyFwovpU?amount=3&amount=4", "test");
+  // url-parse keeps the last duplicate value, so the parse succeeds.
+  error = await parseZcashURI(`wcash:${WCASH_REGTEST_ADDRESS}?amount=3&amount=4`, "regtest");
   expect(typeof error).toBe("object");
 
-  // bad index
   error = await parseZcashURI(
-    "zcash:tmEZhbWHTpdKMw5it8YDspUXSMGQyFwovpU?amount=2&address.a=tmEZhbWHTpdKMw5it8YDspUXSMGQyFwovpU&amount.a=3",
-    "test",
+    `wcash:${WCASH_REGTEST_ADDRESS}?amount=2&address.a=${WCASH_REGTEST_ADDRESS}&amount.a=3`,
+    "regtest",
   );
   expect(typeof error).toBe("string");
 
-  // index=1 is missing
   error = await parseZcashURI(
-    "zcash:tmEZhbWHTpdKMw5it8YDspUXSMGQyFwovpU?amount=0.1&address.2=tmEZhbWHTpdKMw5it8YDspUXSMGQyFwovpU&amount.2=2",
-    "test",
+    `wcash:${WCASH_REGTEST_ADDRESS}?amount=0.1&address.2=${WCASH_REGTEST_ADDRESS}&amount.2=2`,
+    "regtest",
   );
   expect(typeof error).toBe("string");
 });

@@ -44,13 +44,13 @@ if [ -f "$BINARY" ] && [ -d /usr/bin ]; then
 fi
 
 # Why the launcher points at a wrapper script, not the binary directly:
-# the app registers the `zcash:` URI scheme (payment links). When you click a
-# zcash: link, the desktop passes the URI as an argument; the wrapper
+# the app registers the `wcash:` URI scheme (payment links). When you click a
+# wcash: link, the desktop passes the URI as an argument; the wrapper
 # (zingo-pc-uri.sh) normalizes it and forwards it to the real binary. We patch
 # the system .desktop Exec here so this works from the very first click, before
 # the user has ever opened the app manually. For a plain launch (no URI) you can
 # call the binary — or the `zingo-pc` symlink above — directly; the wrapper is
-# only needed for zcash: deep-link handling.
+# only needed for wcash: deep-link handling.
 DESKTOP='/usr/share/applications/zingo-pc.desktop'
 if [ -f "$DESKTOP" ] && [ -f "$WRAPPER" ]; then
     sed -i "s|^Exec=.*|Exec=\"$WRAPPER\" %u|" "$DESKTOP"

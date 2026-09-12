@@ -10,7 +10,9 @@
     "email": "zingo@zingolabs.com",
     "url": "https://github.com/zingolabs/zingo-pc"
   },
-  "contributors": ["Wcash Wallet contributors"],
+  "contributors": [
+    "Wcash Wallet contributors"
+  ],
   "engines": {
     "node": ">=18"
   },
@@ -49,7 +51,8 @@
     "release:prep": "node bin/prep-release.js",
     "lint": "cross-env NODE_ENV=production eslint . --fix --ext .js,.jsx,.ts,.tsx",
     "prettier": "prettier './**/*.{js,jsx,ts,tsx}' -w",
-    "start": "cross-env RUST_BACKTRACE=1 ELECTRON_ENABLE_LOGGING=1 NODE_OPTIONS=--trace-uncaught concurrently -k \"cross-env NODE_ENV=production BROWSER=none yarn react-start\" \"wait-on http://localhost:3000 && electronmon .\"",
+    "verify:upstream-ui-parity": "node scripts/assert-upstream-ui-parity.js",
+    "start": "cross-env RUST_BACKTRACE=1 ELECTRON_ENABLE_LOGGING=1 NODE_OPTIONS=--trace-uncaught concurrently -k \"cross-env NODE_ENV=production BROWSER=none yarn react-start\" \"wait-on http-get://localhost:3000/static/js/bundle.js && electronmon .\"",
     "script:build": "cross-env node scripts/build.js",
     "mixnet": "node scripts/stage-nym-proxy.js --host",
     "cargo:clean": "cd native && cargo clean && cd ..",
@@ -77,7 +80,12 @@
     "neon-mac-x64": "rimraf src/native.node && cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --release --target x86_64-apple-darwin --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
     "neon-mac-arm64": "rimraf src/native.node && LZMA_API_STATIC=1 cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --release --target aarch64-apple-darwin --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
     "neon-win-x64": "rimraf src/native.node && cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --release --target x86_64-pc-windows-msvc --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
-    "neon-win-arm64": "rimraf src/native.node && cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --release --target aarch64-pc-windows-msvc --manifest-path native/Cargo.toml --message-format=json-render-diagnostics"
+    "neon-win-arm64": "rimraf src/native.node && cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --release --target aarch64-pc-windows-msvc --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
+    "test:wcash-adapter": "node scripts/test-wcash-zingo-native-adapter.js",
+    "neon:wcash-regtest": "rimraf src/native.node && cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --release --no-default-features --features wcash-regtest --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
+    "neon:wcash-regtest:mac-arm64": "rimraf src/native.node && LZMA_API_STATIC=1 cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --locked --release --target aarch64-apple-darwin --no-default-features --features wcash-regtest --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
+    "build:local-regtest-qa:mac-arm64": "yarn verify:upstream-ui-parity && yarn neon:wcash-regtest:mac-arm64 && cross-env node scripts/build.js",
+    "package:local-regtest-qa:mac-arm64": "node scripts/assert-wcash-local-regtest-qa-package.js && rimraf dist/local-regtest-qa && yarn build:local-regtest-qa:mac-arm64 && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config config/electron-builder.local-regtest-qa.json --mac zip --arm64 -c.extraMetadata.main=build/electron.js --publish never"
   },
   "electronmon": {
     "patterns": [

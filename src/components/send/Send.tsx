@@ -98,13 +98,13 @@ const Send: React.FC<SendProps> = ({ sendTransaction, setSendPageState }) => {
       Utils.splitZecAmountIntoBigSmall(unconfirmed);
 
     if (unconfirmed > 0) {
-      _tooltip = `Waiting for confirmation of ZEC ${bigPart + smallPart} with 3 block (approx 5 minutes)`;
+      _tooltip = `Waiting for confirmation of ${info.currencyName} ${bigPart + smallPart} with 3 block (approx 5 minutes)`;
     }
     if (unconfirmed === 0 && pending > 0) {
       _tooltip = `Waiting for confirmation with 3 block (approx 5 minutes)`;
     }
     setTooltip(_tooltip);
-  }, [addressesUnified, totalBalance, valueTransfers]);
+  }, [addressesUnified, info.currencyName, totalBalance, valueTransfers]);
 
   const clearToAddrs = () => {
     // Create the new state object

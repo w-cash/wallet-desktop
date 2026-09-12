@@ -442,7 +442,9 @@ const VtModalInternal: React.FC<VtModalInternalProps> = ({
           {fees > 0 && (
             <div>
               <div className={cstyles.sublight}>Transaction Fee</div>
-              <div>ZEC {Utils.maxPrecisionTrimmed(fees)}</div>
+              <div>
+                {currencyName} {Utils.maxPrecisionTrimmed(fees)}
+              </div>
               {currencyName === "ZEC" && <div className={cstyles.sublight}>{Utils.getZecToUsdString(price, fees)}</div>}
             </div>
           )}

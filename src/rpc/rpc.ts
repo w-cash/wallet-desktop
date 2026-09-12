@@ -320,7 +320,8 @@ export default class RPC {
       info.serverUri = infoJSON.server_uri;
       info.version = `${infoJSON.vendor}/${infoJSON.git_commit ? infoJSON.git_commit.substring(0, 6) : ""}/${infoJSON.version}`;
       info.zcashdVersion = "Not Available";
-      info.currencyName = info.chainName === ServerChainNameEnum.mainChainName ? "ZEC" : "TAZ";
+      info.currencyName = (infoJSON as RPCInfoType & { currency_name?: string }).currency_name ??
+        (info.chainName === ServerChainNameEnum.mainChainName ? "ZEC" : "TAZ");
       info.solps = 0;
 
       // ZEC price lives outside InfoClass (see `getZecPrice` below) and is
