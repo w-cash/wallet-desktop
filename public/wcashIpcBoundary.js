@@ -37,13 +37,25 @@ function createWcashIpcBoundary({ trustedUrl, getTrustedWebContents }) {
   }
 
   let operationTail = Promise.resolve();
+  let pendingOperations = 0;
+  let shuttingDown = false;
+
+  function assertAcceptingOperations() {
+    if (shuttingDown) {
+      throw new Error("Wcash wallet IPC rejected an operation during shutdown");
+    }
+  }
+
   function serialize(operation) {
-    const pending = operationTail.then(operation, operation);
+    pendingOperations += 1;
+    const pending = operationTail.then(operation, operation).finally(() => {
+      pendingOperations -= 1;
+    });
     operationTail = pending.catch(() => undefined);
     return pending;
   }
 
-  function register(ipcMain, channel, operation, { outOfBand = false } = {}) {
+  function register(ipcMain, channel, operation, { outOfBand = false, cancelOnShutdown = false } = {}) {
     if (!ipcMain || typeof ipcMain.handle !== "function") {
       throw new TypeError("ipcMain.handle must be a function");
     }
@@ -52,11 +64,32 @@ function createWcashIpcBoundary({ trustedUrl, getTrustedWebContents }) {
     }
     ipcMain.handle(channel, (event, ...args) => {
       assertTrustedEvent(event);
-      return outOfBand ? operation(...args) : serialize(() => operation(...args));
+      assertAcceptingOperations();
+      if (outOfBand) return operation(...args);
+      return serialize(() => {
+        if (cancelOnShutdown) assertAcceptingOperations();
+        return operation(...args);
+      });
     });
   }
 
-  return Object.freeze({ assertTrustedEvent, isTrustedUrl, register });
+  function beginShutdown() {
+    shuttingDown = true;
+  }
+
+  function drain() {
+    beginShutdown();
+    return operationTail.then(() => undefined);
+  }
+
+  function resume() {
+    if (pendingOperations !== 0) {
+      throw new Error("Wcash wallet IPC cannot resume before shutdown operations drain");
+    }
+    shuttingDown = false;
+  }
+
+  return Object.freeze({ assertTrustedEvent, beginShutdown, drain, isTrustedUrl, register, resume });
 }
 
 module.exports = { createWcashIpcBoundary, normalizeRendererUrl };

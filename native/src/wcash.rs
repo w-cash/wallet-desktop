@@ -48,7 +48,8 @@ const RECOVERY_STATUS_UNKNOWN_MESSAGE: &str =
     "signed transaction recovery status is unknown; inspect pending transactions and do not sign a replacement";
 
 static WCASH_RUNTIME: Lazy<Mutex<Option<WcashTestnetRuntime>>> = Lazy::new(|| Mutex::new(None));
-static ACTIVE_SYNC: Lazy<Mutex<Option<WalletSyncCancellation>>> = Lazy::new(|| Mutex::new(None));
+static ACTIVE_SYNC: Lazy<Mutex<ActiveSyncRegistry>> =
+    Lazy::new(|| Mutex::new(ActiveSyncRegistry::default()));
 
 pub(super) fn export(cx: &mut ModuleContext) -> NeonResult<()> {
     cx.export_function("wcash_status", status)?;
@@ -927,22 +928,91 @@ fn open(cx: FunctionContext) -> JsResult<JsPromise> {
     })
 }
 
-fn sync(cx: FunctionContext) -> JsResult<JsPromise> {
-    json_promise(cx, || {
-        with_panic_guard(|| {
-            let cancellation = WalletSyncCancellation::new();
-            {
-                let mut active = ACTIVE_SYNC.lock().map_err(|_| {
-                    ZingolibError::Sync("Wcash sync cancellation lock poisoned".to_owned())
-                })?;
-                if active.is_some() {
-                    return Err(ZingolibError::Sync(
-                        "Wcash sync is already running".to_owned(),
-                    ));
-                }
-                *active = Some(cancellation.clone());
+#[derive(Default)]
+struct ActiveSyncRegistry {
+    next_generation: u64,
+    active: Option<ActiveSyncHandle>,
+}
+
+struct ActiveSyncHandle {
+    generation: u64,
+    cancellation: WalletSyncCancellation,
+}
+
+struct ActiveSyncReservation<'a> {
+    registry: &'a Mutex<ActiveSyncRegistry>,
+    generation: u64,
+    cancellation: WalletSyncCancellation,
+}
+
+impl Drop for ActiveSyncReservation<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut registry) = self.registry.lock() {
+            let owns_active_generation = registry
+                .active
+                .as_ref()
+                .is_some_and(|active| active.generation == self.generation);
+            if owns_active_generation {
+                registry.active = None;
             }
-            let _active_sync = ActiveSyncGuard;
+        }
+    }
+}
+
+fn reserve_active_sync(
+    registry: &Mutex<ActiveSyncRegistry>,
+) -> Result<ActiveSyncReservation<'_>, ZingolibError> {
+    let mut registry_guard = registry
+        .lock()
+        .map_err(|_| ZingolibError::Sync("Wcash sync cancellation lock poisoned".to_owned()))?;
+    if registry_guard.active.is_some() {
+        return Err(ZingolibError::Sync(
+            "Wcash sync is already running".to_owned(),
+        ));
+    }
+    let generation = registry_guard
+        .next_generation
+        .checked_add(1)
+        .ok_or_else(|| ZingolibError::Sync("Wcash sync generation exhausted".to_owned()))?;
+    let cancellation = WalletSyncCancellation::new();
+    registry_guard.next_generation = generation;
+    registry_guard.active = Some(ActiveSyncHandle {
+        generation,
+        cancellation: cancellation.clone(),
+    });
+    drop(registry_guard);
+
+    Ok(ActiveSyncReservation {
+        registry,
+        generation,
+        cancellation,
+    })
+}
+
+fn cancel_active_sync(registry: &Mutex<ActiveSyncRegistry>) -> bool {
+    registry
+        .lock()
+        .ok()
+        .and_then(|registry| {
+            registry.active.as_ref().map(|active| {
+                active.cancellation.cancel();
+                true
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn sync(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    // Reserve cancellation synchronously before returning the promise. The
+    // Electron main process can therefore stop a sync immediately after the
+    // native call returns, even if Neon's worker has not started yet.
+    let reservation = match reserve_active_sync(&ACTIVE_SYNC) {
+        Ok(reservation) => reservation,
+        Err(error) => return cx.throw_error(error.to_string()),
+    };
+
+    json_promise(cx, move || {
+        let result = with_panic_guard(|| {
             let mut slot = WCASH_RUNTIME
                 .lock()
                 .map_err(|_| ZingolibError::Sync("Wcash runtime lock poisoned".to_owned()))?;
@@ -950,34 +1020,18 @@ fn sync(cx: FunctionContext) -> JsResult<JsPromise> {
                 .as_mut()
                 .ok_or_else(|| ZingolibError::Sync("Wcash wallet is not open".to_owned()))?;
             let summary = RT
-                .block_on(runtime.sync(&cancellation))
+                .block_on(runtime.sync(&reservation.cancellation))
                 .map_err(|error| ZingolibError::Sync(format!("Wcash Testnet sync: {error}")))?;
             serde_json::to_string(&summary)
                 .map_err(|error| ZingolibError::Sync(format!("serialize Wcash balance: {error}")))
-        })
+        });
+        drop(reservation);
+        result
     })
 }
 
-struct ActiveSyncGuard;
-
-impl Drop for ActiveSyncGuard {
-    fn drop(&mut self) {
-        if let Ok(mut active) = ACTIVE_SYNC.lock() {
-            *active = None;
-        }
-    }
-}
-
 fn stop_sync(mut cx: FunctionContext) -> JsResult<JsBoolean> {
-    let stopped = ACTIVE_SYNC
-        .lock()
-        .ok()
-        .and_then(|active| active.as_ref().cloned())
-        .map(|cancellation| {
-            cancellation.cancel();
-            true
-        })
-        .unwrap_or(false);
+    let stopped = cancel_active_sync(&ACTIVE_SYNC);
     Ok(cx.boolean(stopped))
 }
 
@@ -1282,6 +1336,55 @@ mod tests {
 
     fn send_request(payments: Value) -> String {
         serde_json::json!({ "payments": payments }).to_string()
+    }
+
+    #[test]
+    fn active_sync_reservation_is_immediately_cancellable_and_exclusive() {
+        let registry = Mutex::new(ActiveSyncRegistry::default());
+        let first = reserve_active_sync(&registry).unwrap();
+
+        assert!(!first.cancellation.is_cancelled());
+        assert!(cancel_active_sync(&registry));
+        assert!(first.cancellation.is_cancelled());
+        assert!(matches!(
+            reserve_active_sync(&registry),
+            Err(ZingolibError::Sync(message)) if message == "Wcash sync is already running"
+        ));
+
+        drop(first);
+        let second = reserve_active_sync(&registry).unwrap();
+        assert_eq!(second.generation, 2);
+        assert!(!second.cancellation.is_cancelled());
+    }
+
+    #[test]
+    fn stale_sync_reservation_cannot_clear_a_new_generation() {
+        let registry = Mutex::new(ActiveSyncRegistry::default());
+        let stale = reserve_active_sync(&registry).unwrap();
+        let replacement_cancellation = WalletSyncCancellation::new();
+        let replacement_generation = stale.generation + 1;
+        {
+            let mut state = registry.lock().unwrap();
+            state.next_generation = replacement_generation;
+            state.active = Some(ActiveSyncHandle {
+                generation: replacement_generation,
+                cancellation: replacement_cancellation.clone(),
+            });
+        }
+
+        drop(stale);
+
+        assert_eq!(
+            registry
+                .lock()
+                .unwrap()
+                .active
+                .as_ref()
+                .map(|active| active.generation),
+            Some(replacement_generation)
+        );
+        assert!(cancel_active_sync(&registry));
+        assert!(replacement_cancellation.is_cancelled());
     }
 
     #[test]

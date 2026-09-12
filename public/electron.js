@@ -4,6 +4,7 @@ const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
 const { createWcashIpcBoundary } = require("./wcashIpcBoundary");
+const { createWcashWindowDrainState } = require("./wcashWindowDrainState");
 const { verifyWcashDeviceOwner } = require("./wcashDeviceAuth");
 const { LIFECYCLE_STATES, createWcashWalletLifecycle } = require("./wcashWalletLifecycle");
 const { createWcashTransactionController } = require("./wcashTransactionBoundary");
@@ -885,7 +886,7 @@ handleWcash("wcash:open", async () => {
   }
   return invokeWcashJson("wcash_open");
 });
-handleWcash("wcash:sync", () => invokeWcashJson("wcash_sync"));
+handleWcash("wcash:sync", () => invokeWcashJson("wcash_sync"), { cancelOnShutdown: true });
 handleWcash("wcash:stop-sync", () => requireWcashNative("wcash_stop_sync").wcash_stop_sync(), { outOfBand: true });
 handleWcash("wcash:balance", () => invokeWcashJson("wcash_balance"));
 handleWcash("wcash:receivers", () => invokeWcashJson("wcash_receivers"));
@@ -894,6 +895,68 @@ handleWcash("wcash:send", (request) => wcashTransactionController.send(request))
 handleWcash("wcash:shield-coinbase", () => wcashTransactionController.shieldCoinbase());
 handleWcash("wcash:pending-transactions", (afterCursor) => wcashTransactionController.pendingTransactions(afterCursor));
 handleWcash("wcash:rebroadcast-pending", (txid) => wcashTransactionController.rebroadcastPending(txid));
+
+function requestWcashSyncStop() {
+  // Do not load native.node merely because the app is closing. If a Wcash
+  // operation is active, the module is already loaded and sync cancellation is
+  // a synchronous, out-of-band signal into that exact runtime.
+  const native = _mainNative;
+  if (!native || typeof native.wcash_stop_sync !== "function") return false;
+  try {
+    return native.wcash_stop_sync() === true;
+  } catch {
+    // Draining remains fail-closed even if cancellation cannot be signalled.
+    return false;
+  }
+}
+
+function drainWcashOperations() {
+  wcashIpcBoundary.beginShutdown();
+  requestWcashSyncStop();
+  return wcashIpcBoundary.drain();
+}
+
+function prepareWcashForSessionEnd() {
+  // Windows can terminate the process immediately after its session-end
+  // notifications. Close the renderer gate and signal native sync directly,
+  // but do not pretend an asynchronous drain can be guaranteed by the OS.
+  wcashIpcBoundary.beginShutdown();
+  requestWcashSyncStop();
+}
+
+let wcashQuitAllowed = false;
+let wcashQuitDrain = null;
+app.on("before-quit", (event) => {
+  if (LEGACY_ZCASH_RUNTIME_ENABLED || !WCASH_RUNTIME_READY || wcashQuitAllowed) return;
+
+  // Electron normally destroys windows immediately after before-quit. Keep
+  // them alive until signing/broadcast or other already-authorized work has
+  // settled. There is deliberately no timeout: forcing the process down while
+  // transaction status is unknown could invite an unsafe replacement spend.
+  event.preventDefault();
+  if (wcashQuitDrain !== null) return;
+  wcashQuitDrain = drainWcashOperations();
+  void wcashQuitDrain.then(
+    () => {
+      wcashQuitAllowed = true;
+      app.quit();
+    },
+    () => {
+      // drain() is designed to resolve after rejected operations too. If an
+      // unexpected implementation failure escapes, retain the process and do
+      // not trade transaction safety for shutdown convenience.
+      wcashQuitDrain = null;
+    },
+  );
+});
+
+if (!LEGACY_ZCASH_RUNTIME_ENABLED && WCASH_RUNTIME_READY) {
+  // SIGINT and SIGTERM are graceful requests while JavaScript is still being
+  // scheduled. Route them through before-quit so accepted wallet work drains.
+  // An external forced termination remains outside the app's control.
+  process.on("SIGINT", () => app.quit());
+  process.on("SIGTERM", () => app.quit());
+}
 
 function configureWcashWalletBaseDir() {
   const native = requireWcashNative("set_wallet_base_dir");
@@ -1713,26 +1776,47 @@ ipcMain.handle("import:apply", async (_e, { sourceDir, choices }) => {
   return { ok: true, results };
 });
 
-ipcMain.on("apprestart", () => {
-  app.relaunch({ args: process.argv.slice(1).concat(["--relaunch"]) });
-  app.exit(0);
-});
+if (LEGACY_ZCASH_RUNTIME_ENABLED) {
+  ipcMain.on("apprestart", () => {
+    app.relaunch({ args: process.argv.slice(1).concat(["--relaunch"]) });
+    app.exit(0);
+  });
 
-ipcMain.on("appquitdone", () => {
-  waitingForClose = false;
-  proceedToClose = true;
-  // app.quit() triggers the full Electron teardown, which in Electron 40 crashes
-  // the InProc GPU thread during cleanup of the rust_png/fontations subsystem
-  // (a known upstream bug). The wallet has already been saved by the renderer
-  // before sending appquitdone, so a hard exit here is safe and avoids the
-  // user-visible crash dialog.
-  app.exit(0);
-});
+  ipcMain.on("appquitdone", () => {
+    waitingForClose = false;
+    proceedToClose = true;
+    // app.quit() triggers the full Electron teardown, which in Electron 40 crashes
+    // the InProc GPU thread during cleanup of the rust_png/fontations subsystem
+    // (a known upstream bug). The legacy wallet has already been saved by the
+    // renderer before sending appquitdone, so this hard exit is legacy-only.
+    app.exit(0);
+  });
+}
+
+const wcashWindowDrainState = createWcashWindowDrainState();
 
 function createWindow() {
   // Reset close state for the new window
   waitingForClose = false;
   proceedToClose = false;
+
+  if (!LEGACY_ZCASH_RUNTIME_ENABLED && WCASH_RUNTIME_READY) {
+    // A normal macOS window close shuts the gate while the old renderer drains.
+    // Activation creates a fresh trusted renderer only after that drain, so it
+    // is safe to accept Wcash IPC again here.
+    wcashIpcBoundary.resume();
+  }
+
+  let wcashWindowCloseAllowed = false;
+  let wcashWindowCloseDrain = null;
+
+  const startWcashWindowDrain = () => {
+    if (wcashWindowCloseDrain === null) {
+      wcashWindowDrainState.beginDrain();
+      wcashWindowCloseDrain = drainWcashOperations();
+    }
+    return wcashWindowCloseDrain;
+  };
 
   const mainWindow = new BrowserWindow({
     width: 1350,
@@ -1756,6 +1840,34 @@ function createWindow() {
       wcashTrustedWebContents = null;
     }
   });
+  mainWindow.once("closed", () => {
+    if (LEGACY_ZCASH_RUNTIME_ENABLED || !WCASH_RUNTIME_READY || wcashWindowCloseDrain === null) return;
+    const shouldReopen = wcashWindowDrainState.finishClose();
+    if (shouldReopen && !wcashQuitAllowed && wcashQuitDrain === null && BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+  mainWindow.webContents.once("render-process-gone", () => {
+    if (LEGACY_ZCASH_RUNTIME_ENABLED || !WCASH_RUNTIME_READY || wcashWindowCloseAllowed || wcashQuitAllowed) {
+      return;
+    }
+    if (wcashTrustedWebContents === mainWindow.webContents) {
+      wcashTrustedWebContents = null;
+    }
+    void startWcashWindowDrain().then(() => {
+      wcashWindowCloseAllowed = true;
+      if (!mainWindow.isDestroyed()) mainWindow.destroy();
+    });
+  });
+
+  if (process.platform === "win32" && !LEGACY_ZCASH_RUNTIME_ENABLED && WCASH_RUNTIME_READY) {
+    // WM_QUERYENDSESSION can still be cancelled by a different application.
+    // Stop sync early, but keep the IPC gate usable unless Windows confirms
+    // that the session is ending. Microsoft recommends returning immediately
+    // here and deferring cleanup to WM_ENDSESSION.
+    mainWindow.on("query-session-end", requestWcashSyncStop);
+    mainWindow.on("session-end", prepareWcashForSessionEnd);
+  }
 
   const ignore = process.platform !== "darwin";
   mainWindow.webContents.setIgnoreMenuShortcuts(ignore);
@@ -1833,9 +1945,18 @@ function createWindow() {
   }
 
   mainWindow.on("close", (event) => {
-    // The pre-core renderer has no wallet state to flush and intentionally has
-    // no wallet IPC bridge, so close normally without the legacy save handshake.
-    if (!LEGACY_ZCASH_RUNTIME_ENABLED) return;
+    if (!LEGACY_ZCASH_RUNTIME_ENABLED) {
+      if (!WCASH_RUNTIME_READY || wcashWindowCloseAllowed || wcashQuitAllowed) return;
+
+      event.preventDefault();
+      if (wcashWindowCloseDrain === null) {
+        void startWcashWindowDrain().then(() => {
+          wcashWindowCloseAllowed = true;
+          if (!mainWindow.isDestroyed()) mainWindow.close();
+        });
+      }
+      return;
+    }
 
     // If we are clear to close, then return and allow everything to close
     if (proceedToClose) {
@@ -2247,8 +2368,15 @@ app.on("window-all-closed", () => {
 // For example, after launching the application for the first time,
 // or re-launching the already running application.
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
+  const windows = BrowserWindow.getAllWindows();
+  if (windows.length === 0) {
+    if (!LEGACY_ZCASH_RUNTIME_ENABLED && WCASH_RUNTIME_READY && (wcashQuitAllowed || wcashQuitDrain !== null)) return;
     createWindow();
+  } else if (!LEGACY_ZCASH_RUNTIME_ENABLED && WCASH_RUNTIME_READY) {
+    // macOS can deliver activate while the sole window still exists only
+    // because its close is waiting on wallet operations. Preserve that intent
+    // and recreate after the drained window has actually closed.
+    wcashWindowDrainState.requestReopenOnActivation();
   }
 });
 

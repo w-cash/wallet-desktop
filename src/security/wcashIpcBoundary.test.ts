@@ -105,4 +105,112 @@ describe("Wcash privileged IPC boundary", () => {
     release();
     await slow;
   });
+
+  it("closes the gate before draining accepted serialized operations", async () => {
+    const { boundary, handlers, ipcMain, trustedEvent } = harness();
+    let release!: () => void;
+    const events: string[] = [];
+    boundary.register(ipcMain, "wcash:slow", async () => {
+      events.push("start");
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      events.push("end");
+      return "complete";
+    });
+    const rejected = jest.fn();
+    boundary.register(ipcMain, "wcash:rejected-during-shutdown", rejected);
+
+    const slow = handlers.get("wcash:slow")!(trustedEvent);
+    await Promise.resolve();
+    const drained = boundary.drain();
+    let drainFinished = false;
+    void drained.then(() => {
+      drainFinished = true;
+    });
+
+    expect(() => handlers.get("wcash:rejected-during-shutdown")!(trustedEvent)).toThrow(
+      "rejected an operation during shutdown",
+    );
+    expect(rejected).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(drainFinished).toBe(false);
+    expect(events).toEqual(["start"]);
+
+    release();
+    await expect(slow).resolves.toBe("complete");
+    await expect(drained).resolves.toBeUndefined();
+    expect(drainFinished).toBe(true);
+    expect(events).toEqual(["start", "end"]);
+  });
+
+  it("drains rejected work and resumes only after every accepted operation settles", async () => {
+    const { boundary, handlers, ipcMain, trustedEvent } = harness();
+    let rejectOperation!: (error: Error) => void;
+    const operation = jest.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectOperation = reject;
+        }),
+    );
+    boundary.register(ipcMain, "wcash:operation", operation);
+    const handler = handlers.get("wcash:operation")!;
+
+    const failed = handler(trustedEvent);
+    await Promise.resolve();
+    boundary.beginShutdown();
+    expect(() => boundary.resume()).toThrow("cannot resume before shutdown operations drain");
+
+    const drained = boundary.drain();
+    rejectOperation(new Error("native operation failed"));
+    await expect(failed).rejects.toThrow("native operation failed");
+    await expect(drained).resolves.toBeUndefined();
+
+    expect(() => boundary.resume()).not.toThrow();
+    operation.mockResolvedValueOnce(undefined);
+    await expect(handler(trustedEvent)).resolves.toBeUndefined();
+    expect(operation).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects out-of-band operations after shutdown begins", () => {
+    const { boundary, handlers, ipcMain, trustedEvent } = harness();
+    const stop = jest.fn(() => true);
+    boundary.register(ipcMain, "wcash:stop", stop, { outOfBand: true });
+
+    boundary.beginShutdown();
+
+    expect(() => handlers.get("wcash:stop")!(trustedEvent)).toThrow("rejected an operation during shutdown");
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("cancels a queued sync at shutdown without abandoning queued durable work", async () => {
+    const { boundary, handlers, ipcMain, trustedEvent } = harness();
+    let release!: () => void;
+    boundary.register(
+      ipcMain,
+      "wcash:blocking",
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const durable = jest.fn(() => "durable-complete");
+    const sync = jest.fn(() => "sync-started");
+    boundary.register(ipcMain, "wcash:durable", durable);
+    boundary.register(ipcMain, "wcash:sync", sync, { cancelOnShutdown: true });
+
+    const blocking = handlers.get("wcash:blocking")!(trustedEvent);
+    const durableResult = handlers.get("wcash:durable")!(trustedEvent);
+    const syncResult = handlers.get("wcash:sync")!(trustedEvent);
+    await Promise.resolve();
+    const drained = boundary.drain();
+    release();
+
+    await expect(blocking).resolves.toBeUndefined();
+    await expect(durableResult).resolves.toBe("durable-complete");
+    await expect(syncResult).rejects.toThrow("rejected an operation during shutdown");
+    await expect(drained).resolves.toBeUndefined();
+    expect(durable).toHaveBeenCalledTimes(1);
+    expect(sync).not.toHaveBeenCalled();
+  });
 });
