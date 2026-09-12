@@ -9,6 +9,8 @@ const { verifyWcashDeviceOwner } = require("./wcashDeviceAuth");
 const { LIFECYCLE_STATES, createWcashWalletLifecycle } = require("./wcashWalletLifecycle");
 const { createWcashTransactionController } = require("./wcashTransactionBoundary");
 const {
+  LOCAL_REGTEST_QA_PACKAGED_PROFILE,
+  TESTNET_PACKAGED_PROFILE,
   TESTNET_RUNTIME_PROFILE,
   publicRuntimeConfig,
   resolveWcashUserDataPath,
@@ -16,10 +18,13 @@ const {
 } = require("./wcashRuntimeProfile");
 
 const WCASH_PACKAGED_RUNTIME = require("../config/wcash-runtime.json");
+const WCASH_PACKAGE_METADATA = require("../package.json");
 const WCASH_LOCALNET_REQUESTED = process.env.WCASH_LOCALNET_DEV === "1";
+const WCASH_PACKAGED_PROFILE = WCASH_PACKAGE_METADATA.wcashPackagedProfile ?? TESTNET_PACKAGED_PROFILE;
 const WCASH_RUNTIME = selectWcashRuntimeProfile({
   isPackaged: app.isPackaged,
   localnetRequested: WCASH_LOCALNET_REQUESTED,
+  packagedProfile: WCASH_PACKAGED_PROFILE,
 });
 if (
   WCASH_PACKAGED_RUNTIME.appId !== TESTNET_RUNTIME_PROFILE.appId ||
@@ -30,6 +35,17 @@ if (
   WCASH_PACKAGED_RUNTIME.coreRevision !== TESTNET_RUNTIME_PROFILE.coreRevision
 ) {
   throw new Error("Packaged Wcash runtime metadata diverged from the fixed Testnet profile");
+}
+if (!app.isPackaged && WCASH_PACKAGED_PROFILE !== TESTNET_PACKAGED_PROFILE) {
+  throw new Error("The Local Regtest QA package marker is not allowed in a development source checkout");
+}
+if (
+  app.isPackaged &&
+  WCASH_PACKAGED_PROFILE === LOCAL_REGTEST_QA_PACKAGED_PROFILE &&
+  (WCASH_PACKAGE_METADATA.name !== "wcash-warden-local-regtest-qa" ||
+    WCASH_PACKAGE_METADATA.productName !== WCASH_RUNTIME.productName)
+) {
+  throw new Error("The packaged Local Regtest QA identity is incomplete");
 }
 const WCASH_PUBLIC_RUNTIME = publicRuntimeConfig(WCASH_RUNTIME);
 const WCASH_RUNTIME_READY = WCASH_RUNTIME.runtimeReady;
@@ -47,7 +63,9 @@ app.setPath(
   resolveWcashUserDataPath({
     profile: WCASH_RUNTIME,
     appDataPath: app.getPath("appData"),
-    localnetDataDir: WCASH_RUNTIME.localnet ? process.env.WCASH_LOCALNET_DATA_DIR : undefined,
+    // The packaged QA app always uses its dedicated application-data namespace.
+    // Only an unpackaged developer launch may supply an explicit isolated path.
+    localnetDataDir: WCASH_RUNTIME.localnet && !app.isPackaged ? process.env.WCASH_LOCALNET_DATA_DIR : undefined,
   }),
 );
 if (process.platform === "win32") app.setAppUserModelId(WCASH_APP_ID);

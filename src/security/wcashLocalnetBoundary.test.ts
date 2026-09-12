@@ -5,7 +5,9 @@ import path from "path";
 export {};
 
 const {
+  LOCAL_REGTEST_QA_PACKAGED_PROFILE,
   LOCAL_REGTEST_RUNTIME_PROFILE,
+  TESTNET_PACKAGED_PROFILE,
   TESTNET_RUNTIME_PROFILE,
   publicRuntimeConfig,
   resolveWcashUserDataPath,
@@ -27,12 +29,33 @@ const thrownMessage = (work: () => unknown): string => {
 };
 
 describe("Wcash local Regtest build boundary", () => {
-  it("selects localnet only for an explicit non-packaged launch", () => {
+  it("selects localnet only for an explicit developer launch or dedicated packaged QA marker", () => {
     expect(selectWcashRuntimeProfile({ isPackaged: false, localnetRequested: true })).toBe(
       LOCAL_REGTEST_RUNTIME_PROFILE,
     );
     expect(selectWcashRuntimeProfile({ isPackaged: false, localnetRequested: false })).toBe(TESTNET_RUNTIME_PROFILE);
     expect(selectWcashRuntimeProfile({ isPackaged: true, localnetRequested: true })).toBe(TESTNET_RUNTIME_PROFILE);
+    expect(
+      selectWcashRuntimeProfile({
+        isPackaged: true,
+        localnetRequested: false,
+        packagedProfile: LOCAL_REGTEST_QA_PACKAGED_PROFILE,
+      }),
+    ).toBe(LOCAL_REGTEST_RUNTIME_PROFILE);
+    expect(
+      selectWcashRuntimeProfile({
+        isPackaged: true,
+        localnetRequested: true,
+        packagedProfile: TESTNET_PACKAGED_PROFILE,
+      }),
+    ).toBe(TESTNET_RUNTIME_PROFILE);
+    expect(() =>
+      selectWcashRuntimeProfile({
+        isPackaged: true,
+        localnetRequested: false,
+        packagedProfile: "local-regtest",
+      }),
+    ).toThrow("runtime profile selection");
     expect(publicRuntimeConfig(LOCAL_REGTEST_RUNTIME_PROFILE)).toEqual({
       profile: "local-regtest",
       productName: "Wcash Warden Local Regtest",
@@ -52,6 +75,8 @@ describe("Wcash local Regtest build boundary", () => {
     expect(LOCAL_REGTEST_RUNTIME_PROFILE.storageNamespace).not.toBe(TESTNET_RUNTIME_PROFILE.storageNamespace);
     expect(LOCAL_REGTEST_RUNTIME_PROFILE.keytarService).not.toBe(TESTNET_RUNTIME_PROFILE.keytarService);
     expect(LOCAL_REGTEST_RUNTIME_PROFILE.keytarAccount).not.toBe(TESTNET_RUNTIME_PROFILE.keytarAccount);
+    expect(LOCAL_REGTEST_RUNTIME_PROFILE.appId).toBe("com.wcashwallet.warden.local-regtest");
+    expect(LOCAL_REGTEST_RUNTIME_PROFILE.productName).toBe("Wcash Warden Local Regtest");
 
     expect(
       resolveWcashUserDataPath({
@@ -238,6 +263,9 @@ describe("Wcash local Regtest build boundary", () => {
       }),
     ).toBe(true);
     expect(packageJson.scripts["neon-mac-arm64-localnet"]).toContain("--no-default-features --features wcash-regtest");
+    expect(packageJson.scripts["package:local-regtest-qa:mac-arm64"]).toContain(
+      "config/electron-builder.local-regtest-qa.json",
+    );
 
     const unsafeProductionScripts = Object.entries<string>(packageJson.scripts)
       .filter(([name]) => {
@@ -253,7 +281,8 @@ describe("Wcash local Regtest build boundary", () => {
     expect(native).toContain('const WCASH_ENDPOINT: &str = "http://127.0.0.1:48234";');
     expect(native).not.toContain("WCASH_LOCALNET_ENDPOINT");
     expect(main).toContain("isPackaged: app.isPackaged");
-    expect(main).toContain("WCASH_RUNTIME.localnet ? process.env.WCASH_LOCALNET_DATA_DIR : undefined");
+    expect(main).toContain("WCASH_RUNTIME.localnet && !app.isPackaged");
+    expect(main).toContain("WCASH_PACKAGE_METADATA.wcashPackagedProfile");
     expect(main).toContain('mainWindow.webContents.on("page-title-updated"');
     expect(main).toContain("mainWindow.setTitle(WCASH_PRODUCT_NAME)");
     expect(main).toContain("service: WCASH_SEED_KEYTAR_SERVICE");

@@ -97,6 +97,9 @@ jobs:
       - name: Check isolated package policy
         run: yarn test:package:unsigned-local
 
+      - name: Check Local Regtest QA package policy
+        run: yarn test:package:local-regtest-qa
+
       - name: Check sandboxed preload
         run: xvfb-run -a yarn test:wcash-sandbox-preload
 
@@ -118,6 +121,11 @@ jobs:
           - name: macOS ARM64
             runner: macos-15
             script: package:unsigned-local:mac-arm64
+            linux: false
+
+          - name: macOS ARM64 Local Regtest QA
+            runner: macos-15
+            script: package:local-regtest-qa:mac-arm64
             linux: false
 
           - name: macOS Intel

@@ -4,6 +4,8 @@ const fs = require("fs");
 const path = require("path");
 
 const CORE_REVISION = "58bc22ec63bbe3eddab5f961c137836431589c95";
+const TESTNET_PACKAGED_PROFILE = "testnet";
+const LOCAL_REGTEST_QA_PACKAGED_PROFILE = "local-regtest-qa";
 
 const TESTNET_RUNTIME_PROFILE = Object.freeze({
   id: "testnet",
@@ -48,11 +50,20 @@ function requireKnownRuntimeProfile(profile) {
   return profile;
 }
 
-function selectWcashRuntimeProfile({ isPackaged, localnetRequested }) {
-  if (typeof isPackaged !== "boolean" || typeof localnetRequested !== "boolean") {
+function selectWcashRuntimeProfile({ isPackaged, localnetRequested, packagedProfile = TESTNET_PACKAGED_PROFILE }) {
+  if (
+    typeof isPackaged !== "boolean" ||
+    typeof localnetRequested !== "boolean" ||
+    (packagedProfile !== TESTNET_PACKAGED_PROFILE && packagedProfile !== LOCAL_REGTEST_QA_PACKAGED_PROFILE)
+  ) {
     throw new TypeError("Wcash runtime profile selection requires explicit boolean inputs");
   }
-  return !isPackaged && localnetRequested ? LOCAL_REGTEST_RUNTIME_PROFILE : TESTNET_RUNTIME_PROFILE;
+  if (isPackaged) {
+    return packagedProfile === LOCAL_REGTEST_QA_PACKAGED_PROFILE
+      ? LOCAL_REGTEST_RUNTIME_PROFILE
+      : TESTNET_RUNTIME_PROFILE;
+  }
+  return localnetRequested ? LOCAL_REGTEST_RUNTIME_PROFILE : TESTNET_RUNTIME_PROFILE;
 }
 
 function canonicalPath(candidate) {
@@ -113,7 +124,9 @@ function publicRuntimeConfig(profile) {
 }
 
 module.exports = {
+  LOCAL_REGTEST_QA_PACKAGED_PROFILE,
   LOCAL_REGTEST_RUNTIME_PROFILE,
+  TESTNET_PACKAGED_PROFILE,
   TESTNET_RUNTIME_PROFILE,
   publicRuntimeConfig,
   requireKnownRuntimeProfile,
