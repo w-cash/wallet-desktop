@@ -18,6 +18,7 @@ export const native = {
   get_latest_block_server: jest.fn(),
   // Send
   send: jest.fn(),
+  cancel_transaction_proposal: jest.fn().mockResolvedValue("{\"cancelled\":false}"),
   get_spendable_balance_with_address: jest.fn(),
   // History
   remove_transaction: jest.fn(),

@@ -24,6 +24,7 @@
       "src/components/addressBook/AddressbookImpl.ts",
       "src/components/appSecurity/AppSecurityModal.tsx",
       "src/components/common/Common.module.css",
+      "src/components/confirmModal/ConfirmModal.tsx",
       "src/components/dashboard/Dashboard.tsx",
       "src/components/history/components/VtItemBlock.tsx",
       "src/components/history/components/VtModal.tsx",
@@ -34,10 +35,12 @@
       "src/components/logo/Logo.tsx",
       "src/components/receive/components/AddressBlock.tsx",
       "src/components/send/Send.tsx",
-      "src/components/sideBar/Sidebar.tsx"
+      "src/components/send/components/SendConfirmModal.tsx",
+      "src/components/sideBar/Sidebar.tsx",
+      "src/root/Routes.tsx"
     ],
-    "fileCount": 106,
-    "sha256": "8e29f571a920a5d9fa7a04c84e55bc76e5a2248e050613a27dc685e1285afcd7"
+    "fileCount": 103,
+    "sha256": "e99fd012ee30a5b4943d638db893d2a6b971267418b82604fd3bc9f7e5df95c6"
   },
   "approvedBrandingFiles": {
     "public/favicon.ico": "b593fb06133ec48cd0f1b2f825583a6d83d8d688f3dbb012bdec14b4c470dceb",
@@ -72,7 +75,10 @@
     "src/components/send/Send.tsx": "ea2b6f6ea7868e58011c3970b1f4b9f5768495e6a808b0e30d210da3b30aa5f9",
     "src/components/history/components/VtItemBlock.tsx": "cefa659a6d2cf3fc55666893f781edc2a610443060e2878b14c8da35f865cb6e",
     "src/components/history/components/VtModal.tsx": "80a11faef01b0a5747091585a0fb3c78d45b40ed706f1a93cd252adea551b66d",
-    "src/components/insight/Insight.tsx": "b5bdd014807130528ef6c8d25b00f5570f8af23af513c512e51d6c9b2780761f"
+    "src/components/insight/Insight.tsx": "b5bdd014807130528ef6c8d25b00f5570f8af23af513c512e51d6c9b2780761f",
+    "src/components/confirmModal/ConfirmModal.tsx": "4ba04d72c8d4d3b743ca62a00cd067e5883d30638f1c58e58f005d54e1baae42",
+    "src/components/send/components/SendConfirmModal.tsx": "3b0e84dd72dcf7b0321782af8ceaf479a6b291eefde9e3db3c415e883893f407",
+    "src/root/Routes.tsx": "92ddfca21829c288a0c6d10fde4f3a5b5d17e3c1c1658975cf9b994a41b7af37"
   },
   "approvedLayoutFiles": {
     "src/components/common/Common.module.css": "f65679a98840faa261c8c2fdf6565532121bb405e270dc3f9ad59c258d854c1b"

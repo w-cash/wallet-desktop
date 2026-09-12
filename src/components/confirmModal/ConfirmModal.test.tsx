@@ -1,7 +1,12 @@
 import React from "react";
-import { render, screen, fireEvent } from "../../test-utils";
+import { render, screen, fireEvent, waitFor } from "../../test-utils";
 import ConfirmModal from "./ConfirmModal";
 import { ConfirmModalClass } from "../appstate";
+
+jest.mock("../../electronBridge");
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { native } = require("../../electronBridge");
 
 beforeAll(() => {
   const div = document.createElement("div");
@@ -21,6 +26,10 @@ const makeOpenModal = (runAction: () => void = jest.fn()): ConfirmModalClass => 
 };
 
 describe("ConfirmModal", () => {
+  beforeEach(() => {
+    (native.cancel_transaction_proposal as jest.Mock).mockReset().mockResolvedValue('{"cancelled":true}');
+  });
+
   it("renders the title when open", () => {
     render(<ConfirmModal closeModal={jest.fn()} />, {
       contextOverrides: { confirmModal: makeOpenModal() },
@@ -35,13 +44,28 @@ describe("ConfirmModal", () => {
     expect(screen.getByText("This action cannot be undone.")).toBeInTheDocument();
   });
 
-  it("calls closeModal when Cancel is clicked", () => {
+  it("releases a staged proposal and closes when Cancel is clicked", () => {
+    const closeModal = jest.fn();
+    render(<ConfirmModal closeModal={closeModal} />, {
+      contextOverrides: { confirmModal: makeOpenModal() },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+    expect(native.cancel_transaction_proposal).toHaveBeenCalledTimes(1);
+    expect(closeModal).toHaveBeenCalledTimes(1);
+  });
+
+  it("handles a rejected staged-proposal cancellation", async () => {
+    const error = new Error("proposal retained");
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+    (native.cancel_transaction_proposal as jest.Mock).mockRejectedValue(error);
     const closeModal = jest.fn();
     render(<ConfirmModal closeModal={closeModal} />, {
       contextOverrides: { confirmModal: makeOpenModal() },
     });
     fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
     expect(closeModal).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(consoleError).toHaveBeenCalledWith("cancel_transaction_proposal", error));
+    consoleError.mockRestore();
   });
 
   it("calls runAction and closeModal when Confirm is clicked", () => {
@@ -53,6 +77,7 @@ describe("ConfirmModal", () => {
     fireEvent.click(screen.getByRole("button", { name: /confirm/i }));
     expect(runAction).toHaveBeenCalledTimes(1);
     expect(closeModal).toHaveBeenCalledTimes(1);
+    expect(native.cancel_transaction_proposal).not.toHaveBeenCalled();
   });
 
   it("does not render content when closed", () => {

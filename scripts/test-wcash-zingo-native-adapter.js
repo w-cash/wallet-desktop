@@ -224,6 +224,17 @@ async function main() {
           recovery: { message: "broadcast outcome is ambiguous" },
         });
       }
+      if (confirmBehavior === "fee-mismatch") {
+        nativeProposal.state = "calculated";
+        return JSON.stringify({
+          schema_version: 1,
+          operation,
+          outcome: "recovery_required",
+          txid: "f".repeat(64),
+          fee_zat: String(proposal.feeZat + 1),
+          recovery: { message: "fee mismatch" },
+        });
+      }
       nativeProposal = null;
       const txid = operation === "send" ? "b".repeat(64) : "c".repeat(64);
       return JSON.stringify({
@@ -354,6 +365,16 @@ async function main() {
     ],
     "replacement must cancel the prior proposal by its opaque identifier before staging another",
   );
+  const operationsBeforeIdenticalSend = proposalOperations.length;
+  const repeatedProposal = JSON.parse(
+    await adapter.invoke("send", JSON.stringify([{ memo: "hello", amount: 100_000_000, address: ironwoodAddress }])),
+  );
+  assert.deepEqual(repeatedProposal, proposal, "a canonically identical send must keep the reviewed exact fee");
+  assert.equal(
+    proposalOperations.length,
+    operationsBeforeIdenticalSend,
+    "a canonically identical send must reuse its staged proposal without cancellation or replacement",
+  );
   assert.deepEqual(JSON.parse(await adapter.invoke("confirm")), { txids: ["b".repeat(64)] });
   assert.equal(confirmCalls, 1);
   assert.deepEqual(proposalOperations.at(-1), ["confirm", "2", "send"]);
@@ -362,6 +383,13 @@ async function main() {
   const shieldProposal = JSON.parse(await adapter.invoke("shield"));
   assert.equal(shieldProposal.fee, 25_000, "shield preview must not assume the one-output send fee");
   assert.equal(confirmCalls, 1, "shield preview must not calculate, sign, or broadcast");
+  const operationsBeforeIdenticalShield = proposalOperations.length;
+  assert.deepEqual(JSON.parse(await adapter.invoke("shield")), shieldProposal);
+  assert.equal(
+    proposalOperations.length,
+    operationsBeforeIdenticalShield,
+    "a repeated shield must reuse the exact staged proposal displayed by the renderer",
+  );
   assert.deepEqual(JSON.parse(await adapter.invoke("confirm")), { txids: ["c".repeat(64)] });
   assert.equal(confirmCalls, 2);
   assert.deepEqual(proposalOperations.at(-1), ["confirm", "3", "shield_coinbase"]);
@@ -370,6 +398,13 @@ async function main() {
     await adapter.invoke("send", JSON.stringify([{ address: ironwoodAddress, amount: 50_000_000 }])),
   );
   assert.equal(ambiguousPreview.fee, 15_000);
+  confirmBehavior = "fee-mismatch";
+  await assert.rejects(
+    () => adapter.invoke("confirm"),
+    /confirmation did not match the reviewed proposal/,
+    "confirmation must fail closed if the returned fee differs from the fee reviewed by the renderer",
+  );
+  assert.deepEqual(proposalOperations.at(-1), ["confirm", "4", "send"]);
   confirmBehavior = "ambiguous";
   assert.deepEqual(JSON.parse(await adapter.invoke("confirm")), { error: "broadcast outcome is ambiguous" });
   assert.deepEqual(proposalOperations.at(-1), ["confirm", "4", "send"]);
@@ -402,8 +437,13 @@ async function main() {
 
   confirmBehavior = "broadcast";
   await adapter.invoke("shield");
-  assert.equal(await adapter.invoke("deinitialize"), "Wcash adapter state cleared.");
+  assert.deepEqual(JSON.parse(await adapter.invoke("cancel_transaction_proposal")), { cancelled: true });
   assert.deepEqual(proposalOperations.at(-1), ["cancel", "8"]);
+  assert.deepEqual(JSON.parse(await adapter.invoke("confirm")), { error: "No Wcash transaction proposal is pending" });
+
+  await adapter.invoke("shield");
+  assert.equal(await adapter.invoke("deinitialize"), "Wcash adapter state cleared.");
+  assert.deepEqual(proposalOperations.at(-1), ["cancel", "9"]);
   assert.deepEqual(JSON.parse(await adapter.invoke("confirm")), { error: "No Wcash transaction proposal is pending" });
 
   assert.equal(await adapter.invoke("get_developer_donation_address"), "");

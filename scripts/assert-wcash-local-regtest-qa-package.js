@@ -36,7 +36,9 @@ const qaSerialized = JSON.stringify(qaConfig);
 const nativeManifest = read("native/Cargo.toml");
 const nativeLock = read("native/Cargo.lock");
 const main = read("public/electron.js");
+const preload = read("public/preload.js");
 const sensitivePolicy = read("public/sensitiveNativePolicy.js");
+const wcashAdapter = read("public/wcashZingoNativeAdapter.js");
 const commonStyles = read("src/components/common/Common.module.css");
 const scrollPane = read("src/components/scrollPane/ScrollPane.tsx");
 const sendScreen = read("src/components/send/Send.tsx");
@@ -192,6 +194,14 @@ requireCondition(
   "a Wcash build can start inherited Nym transport",
 );
 const noParamMethods = main.match(/const _NATIVE_NO_PARAM_METHODS = \[([\s\S]*?)\];/)?.[1] || "";
+requireCondition(
+  noParamMethods.includes('"cancel_transaction_proposal"') &&
+    preload.includes('"cancel_transaction_proposal"') &&
+    wcashAdapter.includes('case "cancel_transaction_proposal"') &&
+    main.includes("async function releasePendingProposalBeforeExit()") &&
+    main.includes('await releasePendingProposalBeforeExit();'),
+  "the renderer cannot release an abandoned Wcash transaction proposal",
+);
 requireCondition(!noParamMethods.includes('"get_seed"'), "seed export is exposed through the generic native IPC loop");
 requireCondition(!noParamMethods.includes('"get_ufvk"'), "viewing-key export is exposed through the generic native IPC loop");
 requireCondition(

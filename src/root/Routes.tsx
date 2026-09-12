@@ -97,6 +97,15 @@ const AppRoutes: React.FC = () => {
   // --- timers ---
   const fetchErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  useEffect(
+    () => () => {
+      void native.cancel_transaction_proposal().catch((error) => {
+        console.error("cancel_transaction_proposal", error);
+      });
+    },
+    [location.pathname],
+  );
+
   // --- setters (stable, with deepEqual guards) ---
   const setTotalBalance = useCallback((val: TotalBalanceClass) => {
     setTotalBalanceState((prev) => (deepEqual(prev, val) ? prev : val));

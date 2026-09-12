@@ -943,6 +943,29 @@ function getWcashNativeAdapter() {
   return _wcashNativeAdapter;
 }
 
+let exitProposalCleanup = null;
+async function releasePendingProposalBeforeExit() {
+  if (_wcashNativeAdapter === null) return;
+  if (exitProposalCleanup === null) {
+    exitProposalCleanup = _wcashNativeAdapter
+      .invoke("cancel_transaction_proposal")
+      .catch((error) => {
+        console.error(
+          `Wcash transaction proposal cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      })
+      .finally(() => {
+        exitProposalCleanup = null;
+      });
+  }
+  let timeout;
+  const deadline = new Promise((resolve) => {
+    timeout = setTimeout(resolve, 750);
+  });
+  await Promise.race([exitProposalCleanup, deadline]);
+  clearTimeout(timeout);
+}
+
 // The renderer keeps the exact upstream method contract. Every method is
 // routed through the fixed-network Wcash adapter; there is no Zcash fallback.
 function requireNative(method) {
@@ -1004,6 +1027,7 @@ const _NATIVE_NO_PARAM_METHODS = [
   "get_config_wallet_performance",
   "get_wallet_version",
   "shield",
+  "cancel_transaction_proposal",
   "drain_orchard_to_ironwood",
   "drain_status",
   "get_ironwood_activation_height",
@@ -1809,12 +1833,14 @@ ipcMain.handle("get-pending-uri", () => {
   return uri;
 });
 
-ipcMain.on("apprestart", () => {
+ipcMain.on("apprestart", async () => {
+  await releasePendingProposalBeforeExit();
   app.relaunch({ args: process.argv.slice(1).concat(["--relaunch"]) });
   app.exit(0);
 });
 
-ipcMain.on("appquitdone", () => {
+ipcMain.on("appquitdone", async () => {
+  await releasePendingProposalBeforeExit();
   waitingForClose = false;
   proceedToClose = true;
   // app.quit() triggers the full Electron teardown, which in Electron 40 crashes
@@ -1927,6 +1953,7 @@ function createWindow() {
     waitingForClose = true;
     event.preventDefault();
 
+    void releasePendingProposalBeforeExit();
     mainWindow.webContents.send("appquitting");
 
     // Failsafe: if the renderer doesn't respond within 3s, force quit.

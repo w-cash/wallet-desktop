@@ -210,6 +210,13 @@ const SendConfirmModal: React.FC<SendConfirmModalProps> = ({
     })();
   }, [getPrivacyLevel, sendFee, sendPageState.toaddr]);
 
+  const cancelButton = () => {
+    void native.cancel_transaction_proposal().catch((error) => {
+      console.error("cancel_transaction_proposal", error);
+    });
+    closeModal();
+  };
+
   const sendButton = async () => {
     const allSettings = await window.electronAPI.ipcRenderer.invoke("loadSettings");
     if (allSettings?.requireDeviceAuth) {
@@ -339,7 +346,7 @@ const SendConfirmModal: React.FC<SendConfirmModalProps> = ({
   return (
     <Modal
       isOpen={modalIsOpen}
-      onRequestClose={closeModal}
+      onRequestClose={cancelButton}
       className={styles.confirmModal}
       overlayClassName={styles.confirmOverlay}
     >
@@ -393,7 +400,7 @@ const SendConfirmModal: React.FC<SendConfirmModalProps> = ({
         </div>
 
         <div className={cstyles.buttoncontainer}>
-          <button type="button" className={cstyles.primarybutton} onClick={closeModal}>
+          <button type="button" className={cstyles.primarybutton} onClick={cancelButton}>
             Cancel
           </button>
           <button type="button" className={cstyles.primarybutton} onClick={() => sendButton()}>

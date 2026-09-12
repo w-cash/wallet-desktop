@@ -37,6 +37,7 @@ const _ALL_NATIVE_METHODS = [
   "get_wallet_version",
   "shield",
   "confirm",
+  "cancel_transaction_proposal",
   "drain_orchard_to_ironwood",
   "drain_status",
   "get_ironwood_activation_height",

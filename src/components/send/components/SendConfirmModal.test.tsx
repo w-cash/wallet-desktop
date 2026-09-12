@@ -90,6 +90,7 @@ const mainnetWallet = {
 describe("SendConfirmModal", () => {
   beforeEach(() => {
     (native.parse_address as jest.Mock).mockReset();
+    (native.cancel_transaction_proposal as jest.Mock).mockReset().mockResolvedValue('{"cancelled":true}');
     mockNavigate.mockReset();
     installElectronAPI();
   });
@@ -104,11 +105,24 @@ describe("SendConfirmModal", () => {
     expect(screen.queryByText("Confirm Transaction")).not.toBeInTheDocument();
   });
 
-  it("calls closeModal when Cancel is clicked", () => {
+  it("releases the staged proposal and closes when Cancel is clicked", () => {
+    const closeModal = jest.fn();
+    render(<SendConfirmModal {...makeProps({ closeModal })} />);
+    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    expect(native.cancel_transaction_proposal).toHaveBeenCalledTimes(1);
+    expect(closeModal).toHaveBeenCalledTimes(1);
+  });
+
+  it("handles a rejected staged-proposal cancellation", async () => {
+    const error = new Error("proposal retained");
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+    (native.cancel_transaction_proposal as jest.Mock).mockRejectedValue(error);
     const closeModal = jest.fn();
     render(<SendConfirmModal {...makeProps({ closeModal })} />);
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
     expect(closeModal).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(consoleError).toHaveBeenCalledWith("cancel_transaction_proposal", error));
+    consoleError.mockRestore();
   });
 
   it("shows Cancel button before Send button", () => {
@@ -316,6 +330,7 @@ describe("SendConfirmModal", () => {
       );
       expect(invoke).not.toHaveBeenCalledWith("auth:verify", expect.anything());
       expect(closeModal).toHaveBeenCalled();
+      expect(native.cancel_transaction_proposal).not.toHaveBeenCalled();
     });
 
     it("opens an error modal when sendTransaction throws", async () => {

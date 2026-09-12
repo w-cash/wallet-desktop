@@ -133,7 +133,9 @@ function verifyPackagedApplication(context) {
 
   const packagedProfile = asar.extractFile(archive, "build/wcashRuntimeProfile.js").toString();
   const packagedMain = asar.extractFile(archive, "build/electron.js").toString();
+  const packagedPreload = asar.extractFile(archive, "build/preload.js").toString();
   const packagedSensitivePolicy = asar.extractFile(archive, "build/sensitiveNativePolicy.js").toString();
+  const packagedAdapter = asar.extractFile(archive, "build/wcashZingoNativeAdapter.js").toString();
   assert(packagedProfile.includes('endpoint: "http://127.0.0.1:48234"'), "packaged profile is not loopback-only");
   assert(
     packagedProfile.includes('ironwoodPrefix: "w' + "u" + 'regtest1"'),
@@ -142,6 +144,13 @@ function verifyPackagedApplication(context) {
   assert(packagedMain.includes("wcashPackagedProfile"), "main ignores the packaged QA marker");
   assert(packagedMain.includes("Wcash Wallet"), "main does not set the exact product name");
   assert(packagedMain.includes("createSensitiveNativeHandler"), "main does not enforce sensitive native operations");
+  assert(
+    packagedMain.includes('"cancel_transaction_proposal"') &&
+      packagedPreload.includes('"cancel_transaction_proposal"') &&
+      packagedAdapter.includes('case "cancel_transaction_proposal"') &&
+      packagedMain.includes("async function releasePendingProposalBeforeExit()"),
+    "the packaged renderer cannot release an abandoned transaction proposal",
+  );
   assert(
     packagedSensitivePolicy.includes("get_seed") &&
       packagedSensitivePolicy.includes("get_ufvk") &&

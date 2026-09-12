@@ -123,6 +123,7 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
       throw new Error("Wcash native proposal state did not match the trusted main process");
     }
     pendingProposal = null;
+    return result.cancelled;
   }
 
   function assertRuntime(status) {
@@ -428,14 +429,15 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
   }
 
   async function stageSendUnlocked(sendJson) {
-    await discardPendingProposalUnlocked();
     let transfers;
     try {
       transfers = JSON.parse(sendJson);
     } catch (cause) {
+      await discardPendingProposalUnlocked();
       throw new Error("Wcash send request is invalid", { cause });
     }
     if (!Array.isArray(transfers) || transfers.length < 1 || transfers.length > MAX_TRANSFER_RECIPIENTS) {
+      await discardPendingProposalUnlocked();
       return JSON.stringify({
         error: `Wcash payment list must contain 1 through ${MAX_TRANSFER_RECIPIENTS} recipients`,
       });
@@ -444,31 +446,42 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
     const payments = [];
     for (const transfer of transfers) {
       if (!isRecord(transfer) || typeof transfer.address !== "string") {
+        await discardPendingProposalUnlocked();
         return JSON.stringify({ error: "Wcash payment is invalid" });
       }
-      const validation = parseJson(
-        "wcash_validate_recipient",
-        await requireNative("wcash_validate_recipient")(transfer.address),
-      );
+      let validation;
+      try {
+        validation = parseJson(
+          "wcash_validate_recipient",
+          await requireNative("wcash_validate_recipient")(transfer.address),
+        );
+      } catch (error) {
+        await discardPendingProposalUnlocked();
+        throw error;
+      }
       if (validation.valid !== true || validation.network !== profile.network) {
+        await discardPendingProposalUnlocked();
         return JSON.stringify({ error: "Recipient is not a valid address for this Wcash network" });
       }
       let amount;
       try {
         amount = toCanonicalAmount(transfer.amount);
       } catch (error) {
+        await discardPendingProposalUnlocked();
         return JSON.stringify({
           error: error instanceof Error ? error.message : "Wcash payment amount is invalid",
         });
       }
       totalZat += amount.zatoshis;
       if (!Number.isSafeInteger(totalZat) || totalZat > MAX_MONEY_ZAT) {
+        await discardPendingProposalUnlocked();
         return JSON.stringify({ error: "Wcash payment total is outside the accepted range" });
       }
       if (
         transfer.memo !== undefined &&
         (typeof transfer.memo !== "string" || Buffer.byteLength(transfer.memo) > 512)
       ) {
+        await discardPendingProposalUnlocked();
         return JSON.stringify({ error: "Memo is longer than the 512-byte Wcash limit" });
       }
       payments.push({
@@ -477,13 +490,23 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
         ...(transfer.memo ? { memo: transfer.memo } : {}),
       });
     }
+    const requestKey = JSON.stringify({ payments });
+    if (
+      pendingProposal &&
+      pendingProposal.operation === "send" &&
+      pendingProposal.requestKey === requestKey &&
+      pendingProposal.valueZat === totalZat
+    ) {
+      return JSON.stringify({ fee: pendingProposal.feeZat, amount: totalZat });
+    }
+    await discardPendingProposalUnlocked();
     try {
       const preview = proposalPreview(
-        await nativeJson("wcash_propose_send", JSON.stringify({ payments })),
+        await nativeJson("wcash_propose_send", requestKey),
         "send",
         totalZat,
       );
-      pendingProposal = preview;
+      pendingProposal = { ...preview, requestKey };
       return JSON.stringify({ fee: preview.feeZat, amount: totalZat });
     } catch (error) {
       try {
@@ -502,13 +525,16 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
   }
 
   async function stageShieldUnlocked() {
+    if (pendingProposal && pendingProposal.operation === "shield_coinbase") {
+      return JSON.stringify({ fee: pendingProposal.feeZat });
+    }
     await discardPendingProposalUnlocked();
     try {
       const preview = proposalPreview(
         await nativeJson("wcash_propose_shield_coinbase"),
         "shield_coinbase",
       );
-      pendingProposal = preview;
+      pendingProposal = { ...preview, requestKey: "shield_coinbase" };
       return JSON.stringify({ fee: preview.feeZat });
     } catch (error) {
       try {
@@ -695,6 +721,10 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
         return serializeProposalOperation(stageShieldUnlocked);
       case "confirm":
         return confirm();
+      case "cancel_transaction_proposal":
+        return serializeProposalOperation(async () =>
+          JSON.stringify({ cancelled: await discardPendingProposalUnlocked() }),
+        );
       case "get_latest_block_wallet": {
         const balance = await currentBalance();
         return JSON.stringify({ height: safeInteger(balance.fully_scanned_height, "fully scanned height") });
