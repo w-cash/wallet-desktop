@@ -7,6 +7,7 @@ const plist = require("plist");
 
 const runtime = require("../config/wcash-runtime.json");
 const forbiddenResource = /(?:nym-proxy|zingo-pc-uri|co\.zingo\.pc\.policy|apparmor-zingo)/i;
+const canonicalProjectUrl = "https://github.com/w-cash/wallet-desktop";
 
 function assert(condition, message) {
   if (!condition) throw new Error("Unsigned local package verification failed: " + message);
@@ -51,6 +52,7 @@ function verifyPackagedApplication(context) {
   assert(packagedMetadata.name === "wcash-warden-testnet", "packaged application name is not Wcash");
   assert(packagedMetadata.productName === runtime.productName, "packaged product name is not Wcash");
   assert(packagedMetadata.main === "build/electron.js", "packaged entry point is unexpected");
+  assert(packagedMetadata.homepage === canonicalProjectUrl, "packaged project URL is not canonical");
   assert(
     !asar.listPackage(archive).some((name) => forbiddenResource.test(name)),
     "app.asar contains an inherited network helper",

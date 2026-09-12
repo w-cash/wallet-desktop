@@ -29,6 +29,7 @@ assert(
   packageJson.author && packageJson.author.name === "Wcash" && packageJson.author.email === "placex.com@gmail.com",
   "Linux package maintainer metadata is incomplete",
 );
+assert(packageJson.homepage === "./", "renderer assets must retain a relative application URL");
 assert(runtime.runtimeReady === true, "the reviewed Wcash runtime is not enabled");
 assert(runtime.releaseReady === false, "this target must never enable public release readiness");
 assert(packageJson.build.mas === undefined, "an inherited Mac App Store identity remains configured");

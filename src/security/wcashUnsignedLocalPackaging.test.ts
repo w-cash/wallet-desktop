@@ -25,6 +25,7 @@ describe("unsigned local Wcash Testnet packaging", () => {
 
   it("uses Wcash-only unsigned identities on every desktop platform", () => {
     const localConfig = readJson("config/electron-builder.unsigned-local.json");
+    const packageJson = readJson("package.json");
     const serialized = JSON.stringify(localConfig);
 
     expect(localConfig).toMatchObject({
@@ -45,6 +46,7 @@ describe("unsigned local Wcash Testnet packaging", () => {
     expect(localConfig).not.toHaveProperty("afterAllArtifactBuild");
     expect(serialized).not.toMatch(/zingo|zcash|nym/i);
     expect(serialized).not.toContain("protocols");
+    expect(packageJson.homepage).toBe("./");
   });
 
   it("quarantines inherited store and signing identities", () => {
