@@ -6,9 +6,8 @@
   "description": "Wcash Wallet",
   "license": "MIT",
   "author": {
-    "name": "zingolabs",
-    "email": "zingo@zingolabs.com",
-    "url": "https://github.com/zingolabs/zingo-pc"
+    "name": "Wcash Wallet contributors",
+    "url": "https://github.com/w-cash/wallet-desktop"
   },
   "contributors": [
     "Wcash Wallet contributors"

@@ -62,6 +62,12 @@ for (const [relativePath, expected] of Object.entries(manifest.approvedProtocolF
   if (actual !== expected) failures.push(`${relativePath}: ${actual} != ${expected}`);
 }
 
+for (const [relativePath, expected] of Object.entries(manifest.approvedLayoutFiles || {})) {
+  const absolutePath = path.join(root, relativePath);
+  const actual = fs.existsSync(absolutePath) ? sha256(fs.readFileSync(absolutePath)) : "missing";
+  if (actual !== expected) failures.push(`${relativePath}: ${actual} != ${expected}`);
+}
+
 for (const forbiddenPath of manifest.forbiddenPaths) {
   if (fs.existsSync(path.join(root, forbiddenPath))) failures.push(`${forbiddenPath} must not exist`);
 }
@@ -75,5 +81,6 @@ if (failures.length > 0) {
 console.log(
   `Exact Zingo UI parity passed: ${protectedFiles.length} protected files, ` +
     `${Object.keys(manifest.approvedBrandingFiles).length} branding files, ` +
-    `${Object.keys(manifest.approvedProtocolFiles || {}).length} protocol files.`,
+    `${Object.keys(manifest.approvedProtocolFiles || {}).length} protocol files, ` +
+    `${Object.keys(manifest.approvedLayoutFiles || {}).length} accessibility layout files.`,
 );

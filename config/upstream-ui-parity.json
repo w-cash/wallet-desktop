@@ -22,6 +22,7 @@
       "src/components/addNewWallet/AddNewWallet.tsx",
       "src/components/addressBook/AddressbookImpl.ts",
       "src/components/appSecurity/AppSecurityModal.tsx",
+      "src/components/common/Common.module.css",
       "src/components/dashboard/Dashboard.tsx",
       "src/components/history/components/VtItemBlock.tsx",
       "src/components/history/components/VtModal.tsx",
@@ -35,8 +36,8 @@
       "src/components/send/components/ToAddrBox.tsx",
       "src/components/sideBar/Sidebar.tsx"
     ],
-    "fileCount": 106,
-    "sha256": "f43c136033c6e2bae157c8099703388b753eb587052151f4dfbf72c2e2960410"
+    "fileCount": 105,
+    "sha256": "ca9b986b6404883226f50524fa8df4946910a6c7a740bf89c869e01f194565e7"
   },
   "approvedBrandingFiles": {
     "public/favicon.ico": "b593fb06133ec48cd0f1b2f825583a6d83d8d688f3dbb012bdec14b4c470dceb",
@@ -68,11 +69,14 @@
   "approvedProtocolFiles": {
     "src/rpc/rpc.ts": "f0b637d632f744c23b089a98ed03ff55c31e2ed1e62313d402251cc2e3616079",
     "src/utils/uris.ts": "e84c06eeacf7ebadeb619d9ad7401f5ffea8fee8bb313c98598ce8d349836923",
-    "src/components/send/Send.tsx": "9df58b915ff162ca603a022acc73dc8198631c8c997175a32047e045ee0e86e3",
+    "src/components/send/Send.tsx": "ea2b6f6ea7868e58011c3970b1f4b9f5768495e6a808b0e30d210da3b30aa5f9",
     "src/components/history/components/VtItemBlock.tsx": "cefa659a6d2cf3fc55666893f781edc2a610443060e2878b14c8da35f865cb6e",
     "src/components/history/components/VtModal.tsx": "80a11faef01b0a5747091585a0fb3c78d45b40ed706f1a93cd252adea551b66d",
     "src/components/insight/Insight.tsx": "b5bdd014807130528ef6c8d25b00f5570f8af23af513c512e51d6c9b2780761f",
     "src/components/send/components/ToAddrBox.tsx": "c9725d0a627519e252398798c8d4318f4b2b8a18f0763e27b0ab0a67c274a20f",
     "src/rpc/components/mixnetPresenter.ts": "476b8a15a3c7a538454ce535fc8ff7c336920ffda4d1cb3fbe59ee57edc555da"
+  },
+  "approvedLayoutFiles": {
+    "src/components/common/Common.module.css": "f65679a98840faa261c8c2fdf6565532121bb405e270dc3f9ad59c258d854c1b"
   }
 }

@@ -319,7 +319,7 @@ const Send: React.FC<SendProps> = ({ sendTransaction, setSendPageState }) => {
 
       <div className={styles.horizontalcontainer}>
         <div className={cstyles.containermarginleft}>
-          <ScrollPaneTop offsetHeight={260}>
+          <ScrollPaneTop offsetHeight={280}>
             <ToAddrBox
               toaddr={sendPageState.toaddr}
               zecPrice={zecPrice}

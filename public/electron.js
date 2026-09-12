@@ -29,11 +29,35 @@ app.setPath(
 );
 if (process.platform === "win32") app.setAppUserModelId(wcashProfile.appId);
 
-const settings = require("electron-settings");
-const storage = require("electron-json-storage");
-
 const STORAGE_KEY = "wallets";
 const isDev = !app.isPackaged;
+
+// Keep a production startup breadcrumb before BrowserWindow exists. A failure
+// in native setup or macOS protocol registration otherwise happens too early
+// for the renderer diagnostics in createWindow() to record anything.
+const startupLogPath = path.join(app.getPath("userData"), "startup.log");
+function appendStartupLog(message) {
+  if (isDev) return;
+  try {
+    fs.mkdirSync(path.dirname(startupLogPath), { recursive: true });
+    fs.appendFileSync(startupLogPath, `${new Date().toISOString()} ${message}\n`);
+  } catch (_) {}
+}
+
+appendStartupLog(
+  `=== main module loaded bundleVersion=${app.getVersion()} profile=${wcashProfile.id} network=${wcashProfile.network} ===`,
+);
+
+let settings;
+let storage;
+try {
+  settings = require("electron-settings");
+  storage = require("electron-json-storage");
+  appendStartupLog("main-process settings dependencies loaded");
+} catch (error) {
+  appendStartupLog(`main-process dependency load failed: ${error instanceof Error ? error.message : String(error)}`);
+  throw error;
+}
 
 class MenuBuilder {
   mainWindow;
@@ -1768,6 +1792,7 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
     },
   });
+  appendStartupLog("BrowserWindow created");
 
   const ignore = process.platform !== "darwin";
   mainWindow.webContents.setIgnoreMenuShortcuts(ignore);
@@ -1793,29 +1818,22 @@ function createWindow() {
   // Diagnostic logging for MAS/sandbox builds — writes to userData so we can
   // read it from ~/Library/Containers/co.zingo.pc/Data/Library/Application Support/Wcash Wallet/startup.log
   if (!isDev) {
-    const logPath = path.join(app.getPath("userData"), "startup.log");
-    const ts = () => new Date().toISOString();
-    const log = (msg) => {
-      try {
-        require("fs").appendFileSync(logPath, `${ts()} ${msg}\n`);
-      } catch (_) {}
-    };
-    log(`=== startup bundleVersion=${app.getVersion()} ===`);
-    mainWindow.webContents.on("did-start-loading", () => log("did-start-loading"));
-    mainWindow.webContents.on("did-finish-load", () => log("did-finish-load OK"));
+    appendStartupLog(`=== renderer startup bundleVersion=${app.getVersion()} ===`);
+    mainWindow.webContents.on("did-start-loading", () => appendStartupLog("did-start-loading"));
+    mainWindow.webContents.on("did-finish-load", () => appendStartupLog("did-finish-load OK"));
     mainWindow.webContents.on("did-fail-load", (_e, code, desc, url) =>
-      log(`did-fail-load code=${code} desc=${desc} url=${url}`),
+      appendStartupLog(`did-fail-load code=${code} desc=${desc} url=${url}`),
     );
-    mainWindow.webContents.on("dom-ready", () => log("dom-ready"));
+    mainWindow.webContents.on("dom-ready", () => appendStartupLog("dom-ready"));
     mainWindow.webContents.on("render-process-gone", (_e, details) =>
-      log(`render-process-gone reason=${details.reason} exitCode=${details.exitCode}`),
+      appendStartupLog(`render-process-gone reason=${details.reason} exitCode=${details.exitCode}`),
     );
     app.on("render-process-gone", (_e, _wc, details) =>
-      log(`app render-process-gone reason=${details.reason} exitCode=${details.exitCode}`),
+      appendStartupLog(`app render-process-gone reason=${details.reason} exitCode=${details.exitCode}`),
     );
     mainWindow.webContents.on("console-message", (_e, level, message, line, sourceId) => {
       const src = sourceId ? sourceId.split("/").slice(-1)[0] : "?";
-      log(`console[${level}] ${src}:${line} ${message}`);
+      appendStartupLog(`console[${level}] ${src}:${line} ${message}`);
     });
   }
 
@@ -1823,8 +1841,7 @@ function createWindow() {
   menuBuilder.buildMenu();
 
   if (sandboxDisabled) {
-    // Log to startup.log if available (log() is only defined in the !isDev block above).
-    if (typeof log === "function") log("WARNING: Chromium sandbox disabled (unprivileged_userns_clone=0)");
+    appendStartupLog("WARNING: Chromium sandbox disabled (unprivileged_userns_clone=0)");
     mainWindow.webContents.once("did-finish-load", () => {
       dialog.showMessageBox(mainWindow, {
         type: "warning",
@@ -2165,6 +2182,7 @@ async function maybeRunDebAppImageToFlatpakMigration() {
 // function once the Electron application is initialized.
 // Install REACT_DEVELOPER_TOOLS as well if isDev
 app.whenReady().then(async () => {
+  appendStartupLog("app ready; configuring Wcash native wallet directory");
   try {
     const native = getNative();
     if (
@@ -2174,7 +2192,9 @@ app.whenReady().then(async () => {
     ) {
       throw new Error("Wcash native wallet directory could not be configured");
     }
+    appendStartupLog("Wcash native wallet directory configured");
   } catch (error) {
+    appendStartupLog(`Wcash native setup failed: ${error instanceof Error ? error.message : String(error)}`);
     dialog.showErrorBox("Wcash Wallet unavailable", error instanceof Error ? error.message : String(error));
     app.quit();
     return;
@@ -2186,7 +2206,14 @@ app.whenReady().then(async () => {
   // - Windows/Linux packaged: the installer registers it, but calling this too doesn't hurt.
   // - Dev mode on any platform: needed because electron-builder hasn't run.
   const isInSandbox = process.mas || !!process.env.FLATPAK_ID;
-  if (!isInSandbox) {
+  // The unsigned local-Regtest QA package intentionally has no URI protocol in
+  // Info.plist. Asking LaunchServices to register one at runtime can display a
+  // macOS alert before BrowserWindow is created, so this fixed local profile
+  // must skip protocol registration as well.
+  if (wcashProfile.localnet) {
+    appendStartupLog("wcash protocol registration skipped for local-Regtest QA profile");
+  } else if (!isInSandbox) {
+    appendStartupLog("registering wcash protocol handler");
     if (process.defaultApp) {
       // Dev mode on Windows/Linux: register so URIs reach this instance via second-instance.
       // Skipped on macOS: cold-start doesn't work in dev anyway, and registering here would
@@ -2211,6 +2238,9 @@ app.whenReady().then(async () => {
         app.setAsDefaultProtocolClient("wcash");
       }
     }
+    appendStartupLog("wcash protocol handler registration finished");
+  } else {
+    appendStartupLog("wcash protocol registration supplied by package sandbox metadata");
   }
 
   // Warm the mainnet registry before the renderer exists. By the time
@@ -2282,11 +2312,22 @@ app.whenReady().then(async () => {
     callback(false);
   });
   session.defaultSession.setPermissionCheckHandler(() => false);
+  appendStartupLog("renderer session policies configured");
 
+  appendStartupLog("checking macOS package migration");
   await maybeRunDmgToMasMigration();
+  appendStartupLog("macOS package migration check finished");
+  appendStartupLog("checking Linux package migration");
   await maybeRunDebAppImageToFlatpakMigration();
+  appendStartupLog("Linux package migration check finished");
 
+  appendStartupLog("creating main window");
   createWindow();
+}).catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  appendStartupLog(`app startup failed: ${message}`);
+  dialog.showErrorBox("Wcash Wallet unavailable", message);
+  app.quit();
 });
 
 // Add a new listener that tries to quit the application when

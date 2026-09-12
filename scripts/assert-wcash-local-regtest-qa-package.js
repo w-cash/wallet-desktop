@@ -34,6 +34,9 @@ const qaConfig = readJson("config/electron-builder.local-regtest-qa.json");
 const qaSerialized = JSON.stringify(qaConfig);
 const nativeManifest = read("native/Cargo.toml");
 const main = read("public/electron.js");
+const commonStyles = read("src/components/common/Common.module.css");
+const scrollPane = read("src/components/scrollPane/ScrollPane.tsx");
+const sendScreen = read("src/components/send/Send.tsx");
 const local = publicRuntimeConfig(
   selectWcashRuntimeProfile({
     isPackaged: true,
@@ -61,6 +64,10 @@ requireCondition(
 requireCondition(qaConfig.extends === undefined, "the QA config must not inherit release metadata");
 requireCondition(qaConfig.appId === "com.wcashwallet.wallet.local-regtest-qa", "the QA bundle identifier is wrong");
 requireCondition(qaConfig.productName === "Wcash Wallet", "the QA product name is wrong");
+requireCondition(
+  qaConfig.copyright === "Copyright © 2026 Wcash Wallet contributors",
+  "the packaged application copyright is not attributed to Wcash Wallet contributors",
+);
 requireCondition(qaConfig.forceCodeSigning === false, "code signing must remain disabled");
 requireCondition(qaConfig.npmRebuild === false, "native rebuilding must stay in the explicit build step");
 requireCondition(qaConfig.afterSign === undefined, "the QA package must not run a signing hook");
@@ -88,6 +95,19 @@ requireCondition(
 );
 requireCondition(!/(?:zingo|zcash|nym)/i.test(qaSerialized), "the QA config contains inherited network/product wiring");
 requireCondition(!qaSerialized.includes("protocols"), "the QA package must not register a URI protocol");
+requireCondition(
+  packageJson.author?.name === "Wcash Wallet contributors" &&
+    packageJson.author?.url === "https://github.com/w-cash/wallet-desktop" &&
+    packageJson.author?.email === undefined,
+  "the exposed application author metadata is inherited from upstream",
+);
+if (!policyOnly) {
+  const modulesPath = path.join(root, "node_modules");
+  requireCondition(
+    fs.existsSync(modulesPath) && !fs.lstatSync(modulesPath).isSymbolicLink(),
+    "node_modules must be installed in this worktree; a shared symlink produces an incomplete packaged dependency graph",
+  );
+}
 
 const nativeCommand = packageJson.scripts["neon:wcash-regtest:mac-arm64"];
 for (const required of [
@@ -117,9 +137,50 @@ requireCondition(
   "native feature isolation changed",
 );
 requireCondition(
+  nativeManifest.includes('authors = ["Wcash Wallet contributors"]'),
+  "the native package author metadata is inherited from upstream",
+);
+requireCondition(
   main.includes('intent: wcashProfile.runtimeReady ? "off" : "on"') &&
     main.includes('phase: wcashProfile.runtimeReady ? "switched_off" : "unattached"'),
   "a Wcash build can start inherited Nym transport",
+);
+requireCondition(
+  main.includes("if (wcashProfile.localnet)") &&
+    main.includes("wcash protocol registration skipped for local-Regtest QA profile"),
+  "the local QA application can call LaunchServices protocol registration before opening its window",
+);
+requireCondition(
+  main.includes('appendStartupLog("app ready; configuring Wcash native wallet directory")') &&
+    main.includes('appendStartupLog("BrowserWindow created")') &&
+    main.includes('appendStartupLog(`app startup failed: ${message}`)'),
+  "pre-window packaged startup diagnostics are missing",
+);
+
+const sidebarRule = commonStyles.match(/\.sidebarcontainer\s*\{([^}]*)\}/)?.[1] || "";
+requireCondition(
+  /height:\s*calc\(100vh\s*-\s*16px\)/.test(sidebarRule) &&
+    /overflow-y:\s*auto/.test(sidebarRule) &&
+    /overflow-x:\s*hidden/.test(sidebarRule),
+  "the sidebar cannot scroll at the minimum supported Mac window height",
+);
+const contentRule = commonStyles.match(/\.contentcontainer\s*\{([^}]*)\}/)?.[1] || "";
+requireCondition(
+  /height:\s*calc\(100vh\s*-\s*16px\)/.test(contentRule) &&
+    /overflow-y:\s*auto/.test(contentRule) &&
+    /overflow-x:\s*hidden/.test(contentRule),
+  "screen actions cannot be reached by scrolling at the minimum supported Mac window height",
+);
+requireCondition(main.includes("minHeight: 600"), "the supported minimum window height changed");
+requireCondition(
+  scrollPane.includes("window.innerHeight - offsetHeight") &&
+    scrollPane.includes('overflowY: "auto"'),
+  "the exact screen content panes no longer scroll within the minimum window",
+);
+requireCondition(
+  sendScreen.includes("<ScrollPaneTop offsetHeight={280}>") &&
+    sendScreen.includes('className={cstyles.verticalbuttons}'),
+  "the Send actions do not fit the minimum 600px framed Mac window",
 );
 
 const parity = spawnSync(process.execPath, [path.join(root, "scripts", "assert-upstream-ui-parity.js")], {

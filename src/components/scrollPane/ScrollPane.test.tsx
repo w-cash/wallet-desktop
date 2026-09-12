@@ -36,4 +36,28 @@ describe("ScrollPane", () => {
       Object.defineProperty(window, "innerHeight", { configurable: true, value: original });
     }
   });
+
+  it("keeps overflowing content reachable in the 600px framed Mac window", () => {
+    const original = window.innerHeight;
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 562 });
+    try {
+      render(
+        <ScrollPaneTop offsetHeight={280}>
+          <div style={{ height: 900 }}>bottom marker</div>
+        </ScrollPaneTop>,
+      );
+      const wrapper = screen.getByText("bottom marker").parentElement as HTMLDivElement;
+      Object.defineProperties(wrapper, {
+        clientHeight: { configurable: true, value: 282 },
+        scrollHeight: { configurable: true, value: 900 },
+      });
+
+      expect(wrapper.style.height).toBe("282px");
+      expect(wrapper.style.overflowY).toBe("auto");
+      wrapper.scrollTop = wrapper.scrollHeight - wrapper.clientHeight;
+      expect(wrapper.scrollTop).toBe(618);
+    } finally {
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: original });
+    }
+  });
 });

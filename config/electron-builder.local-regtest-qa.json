@@ -1,6 +1,7 @@
 {
   "appId": "com.wcashwallet.wallet.local-regtest-qa",
   "productName": "Wcash Wallet",
+  "copyright": "Copyright © 2026 Wcash Wallet contributors",
   "buildVersion": "180.1",
   "artifactName": "Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-${version}-${buildVersion}-${arch}.${ext}",
   "forceCodeSigning": false,

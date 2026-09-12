@@ -73,8 +73,35 @@ function verifyPackagedApplication(context) {
   const packagedMetadata = JSON.parse(asar.extractFile(archive, "package.json").toString());
   assert(packagedMetadata.name === "wcash-wallet-local-regtest-qa", "package name is not dedicated to Local Regtest QA");
   assert(packagedMetadata.productName === EXPECTED_PRODUCT, "packaged product name is not exact");
+  assert(
+    packagedMetadata.author?.name === "Wcash Wallet contributors" &&
+      packagedMetadata.author?.url === "https://github.com/w-cash/wallet-desktop" &&
+      packagedMetadata.author?.email === undefined,
+    "packaged author metadata is inherited from upstream",
+  );
   assert(packagedMetadata.wcashPackagedProfile === EXPECTED_MARKER, "the immutable Local Regtest QA marker is missing");
   assert(packagedMetadata.main === "build/electron.js", "packaged entry point is unexpected");
+
+  // Exercise the actual ASAR dependency resolver with the packaged Electron
+  // runtime. A shared/symlinked development node_modules can look complete to
+  // the compiler while electron-builder silently omits hoisted transitives.
+  const dependencyProbe = spawnSync(
+    executable,
+    [
+      "-e",
+      'const Module=require("module");const load=Module._load;Module._load=function(request){if(request==="electron")return{app:{getPath:()=>"/tmp"}};return load.apply(this,arguments)};for(const candidate of process.argv.slice(1))require(candidate);',
+      path.join(archive, "node_modules", "electron-settings"),
+      path.join(archive, "node_modules", "electron-json-storage"),
+    ],
+    {
+      encoding: "utf8",
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    },
+  );
+  assert(
+    dependencyProbe.status === 0,
+    `packaged settings/storage dependencies cannot load: ${(dependencyProbe.stderr || dependencyProbe.stdout).trim()}`,
+  );
 
   const packagedProfile = asar.extractFile(archive, "build/wcashRuntimeProfile.js").toString();
   const packagedMain = asar.extractFile(archive, "build/electron.js").toString();
@@ -87,6 +114,10 @@ function verifyPackagedApplication(context) {
   const info = plist.parse(fs.readFileSync(path.join(contents, "Info.plist"), "utf8"));
   assert(info.CFBundleIdentifier === EXPECTED_APP_ID, "Info.plist bundle identifier is wrong");
   assert(info.CFBundleName === EXPECTED_PRODUCT, "Info.plist bundle name is wrong");
+  assert(
+    info.NSHumanReadableCopyright === "Copyright © 2026 Wcash Wallet contributors",
+    "Info.plist copyright is inherited from upstream",
+  );
   assert(info.CFBundleURLTypes === undefined, "Info.plist registers an inherited URI protocol");
 
   // Apple Silicon Electron's executable arrives linker-signed ad hoc even

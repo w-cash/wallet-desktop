@@ -1,11 +1,17 @@
 .sidebarcontainer {
   width: 220px;
   float: left;
+  height: calc(100vh - 16px);
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .contentcontainer {
   width: calc(100% - 220px);
   float: right;
+  height: calc(100vh - 16px);
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .well {
