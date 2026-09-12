@@ -6,6 +6,7 @@ on:
     branches:
       - dev
       - main
+      - wcash
       - "feat/wcash-*"
       - "fix/wcash-*"
       - "ci/wcash-*"
@@ -94,6 +95,7 @@ jobs:
 
   packages:
     name: Package ${{ matrix.name }}
+    needs: quality
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
 
