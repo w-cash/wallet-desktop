@@ -522,6 +522,12 @@ const withAuthTimeout = (probe, fallback = "not_supported", ms = 3000) =>
 const AUTH_PROBE_TIMEOUT_MS = 3000;
 const AUTH_VERIFY_TIMEOUT_MS = 60000;
 
+function getWcashTrustedWindow() {
+  if (!wcashTrustedWebContents || wcashTrustedWebContents.isDestroyed()) return null;
+  const owner = BrowserWindow.fromWebContents(wcashTrustedWebContents);
+  return owner && !owner.isDestroyed() ? owner : null;
+}
+
 async function verifyWcashDeviceAuth(reason) {
   if (!WCASH_RUNTIME_READY) return { success: false, reason: "wcash-runtime-disabled" };
   let native;
@@ -534,7 +540,7 @@ async function verifyWcashDeviceAuth(reason) {
     platform: process.platform,
     reason,
     native,
-    getWindow: () => BrowserWindow.getAllWindows()[0] ?? null,
+    getWindow: getWcashTrustedWindow,
     execFile: require("child_process").execFile,
     readFileSync: fs.readFileSync,
     userId: typeof process.getuid === "function" ? process.getuid() : null,
@@ -855,13 +861,11 @@ const wcashTransactionController = createWcashTransactionController({
   pendingTransactionsNative: (afterCursor) => getWcashWalletLifecycle().pendingTransactions(afterCursor),
   rebroadcastPendingNative: (txid) => getWcashWalletLifecycle().rebroadcastPending(txid),
   confirmSend: async (options) => {
-    const owner =
-      BrowserWindow.getAllWindows().find((window) => window.webContents === wcashTrustedWebContents) ?? null;
+    const owner = getWcashTrustedWindow();
     return (await dialog.showMessageBox(owner, options)).response === 0;
   },
   confirmShield: async (options) => {
-    const owner =
-      BrowserWindow.getAllWindows().find((window) => window.webContents === wcashTrustedWebContents) ?? null;
+    const owner = getWcashTrustedWindow();
     return (await dialog.showMessageBox(owner, options)).response === 0;
   },
 });

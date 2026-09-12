@@ -28,6 +28,10 @@ function challengeDecision(value) {
   return verifiedOnly(value);
 }
 
+function validWindowsOwnerHandle(value) {
+  return Buffer.isBuffer(value) && (value.length === 4 || value.length === 8) && value.some((byte) => byte !== 0);
+}
+
 function linuxProcessSubject(processId, userId, readFileSync) {
   if (!Number.isSafeInteger(processId) || processId < 1 || !Number.isSafeInteger(userId) || userId < 0) {
     throw new TypeError("Linux process identity is invalid");
@@ -106,6 +110,10 @@ function createWcashDeviceOwnerVerifier() {
       try {
         window = typeof getWindow === "function" ? getWindow() : null;
         if (
+          !window ||
+          typeof window.isDestroyed !== "function" ||
+          window.isDestroyed() ||
+          typeof window.getNativeWindowHandle !== "function" ||
           !native ||
           typeof native.checkWindowsHello !== "function" ||
           typeof native.verifyWindowsUser !== "function"
@@ -115,19 +123,50 @@ function createWcashDeviceOwnerVerifier() {
         const availability = await withTimeout(() => native.checkWindowsHello(), "not_supported", probeTimeoutMs);
         if (availability !== "available") return failed("device-auth-unavailable");
         if (activeChallenge !== null) return failed("device-auth-busy");
-        if (window) window.blur();
+        if (window.isDestroyed()) return failed("device-auth-unavailable");
+
+        if (typeof window.isMinimized === "function" && window.isMinimized()) {
+          if (typeof window.restore !== "function") return failed("device-auth-unavailable");
+          window.restore();
+        }
+        if (typeof window.isVisible === "function" && !window.isVisible()) {
+          if (typeof window.show !== "function") return failed("device-auth-unavailable");
+          window.show();
+        }
+        if (typeof window.focus === "function") window.focus();
+
+        const nativeWindowHandle = window.getNativeWindowHandle();
+        if (!validWindowsOwnerHandle(nativeWindowHandle)) {
+          return failed("device-auth-unavailable");
+        }
+
         const result = await runChallenge(
-          () => native.verifyWindowsUser(String(reason)),
+          () => native.verifyWindowsUser(Buffer.from(nativeWindowHandle), String(reason)),
           withTimeout,
           verifyTimeoutMs,
           () => {
-            if (window) window.focus();
+            if (!window.isDestroyed() && typeof window.focus === "function") window.focus();
           },
         );
-        return challengeDecision(result);
+        const decision = challengeDecision(result);
+        if (decision.success !== true) return decision;
+
+        const currentWindow = typeof getWindow === "function" ? getWindow() : null;
+        if (
+          currentWindow !== window ||
+          window.isDestroyed() ||
+          typeof currentWindow.getNativeWindowHandle !== "function"
+        ) {
+          return failed("device-auth-rejected");
+        }
+        const currentHandle = currentWindow.getNativeWindowHandle();
+        if (!validWindowsOwnerHandle(currentHandle) || !currentHandle.equals(nativeWindowHandle)) {
+          return failed("device-auth-rejected");
+        }
+        return decision;
       } catch {
         try {
-          if (window) window.focus();
+          if (window && typeof window.isDestroyed === "function" && !window.isDestroyed()) window.focus();
         } catch {
           // A closing window must not turn a denial into an exception.
         }

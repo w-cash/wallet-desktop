@@ -103,8 +103,22 @@ describe("Wcash device-owner authentication", () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   });
 
-  it("restores the trusted Windows window and rejects extra native fields", async () => {
-    const window = { blur: jest.fn(), focus: jest.fn() };
+  it("owns Windows Hello with the trusted window handle and rejects extra native fields", async () => {
+    const handle = Buffer.from([0x34, 0x12, 0, 0, 0, 0, 0, 0]);
+    const window = {
+      isDestroyed: jest.fn(() => false),
+      getNativeWindowHandle: jest.fn(() => handle),
+      isMinimized: jest.fn(() => true),
+      restore: jest.fn(),
+      isVisible: jest.fn(() => false),
+      show: jest.fn(),
+      focus: jest.fn(),
+      blur: jest.fn(),
+    };
+    const verifyWindowsUser = jest.fn(async (_handle: Buffer, _reason: string) => ({
+      success: true,
+      diagnostic: "untrusted",
+    }));
     const verifier = createWcashDeviceOwnerVerifier();
     await expect(
       verifier.verify({
@@ -113,12 +127,116 @@ describe("Wcash device-owner authentication", () => {
         getWindow: () => window,
         native: {
           checkWindowsHello: async () => "available",
-          verifyWindowsUser: async () => ({ success: true, diagnostic: "untrusted" }),
+          verifyWindowsUser,
         },
       }),
     ).resolves.toEqual({ success: false, reason: "device-auth-rejected" });
-    expect(window.blur).toHaveBeenCalledTimes(1);
-    expect(window.focus).toHaveBeenCalledTimes(1);
+    expect(verifyWindowsUser).toHaveBeenCalledTimes(1);
+    expect(verifyWindowsUser).toHaveBeenCalledWith(expect.any(Buffer), "Authorize Wcash Testnet transaction");
+    expect(verifyWindowsUser.mock.calls[0][0]).toEqual(handle);
+    expect(verifyWindowsUser.mock.calls[0][0]).not.toBe(handle);
+    expect(window.restore).toHaveBeenCalledTimes(1);
+    expect(window.show).toHaveBeenCalledTimes(1);
+    expect(window.focus).toHaveBeenCalledTimes(2);
+    expect(window.blur).not.toHaveBeenCalled();
+  });
+
+  it("accepts Windows verification only while the same owner and handle remain current", async () => {
+    const handle = Buffer.from([0x34, 0x12, 0, 0, 0, 0, 0, 0]);
+    const window = {
+      isDestroyed: () => false,
+      getNativeWindowHandle: () => Buffer.from(handle),
+      focus: jest.fn(),
+    };
+    const getWindow = jest.fn(() => window);
+    const verifier = createWcashDeviceOwnerVerifier();
+
+    await expect(
+      verifier.verify({
+        ...base,
+        platform: "win32",
+        getWindow,
+        native: {
+          checkWindowsHello: async () => "available",
+          verifyWindowsUser: async () => ({ success: true }),
+        },
+      }),
+    ).resolves.toEqual({ success: true });
+    expect(getWindow).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects Windows verification if the trusted owner changes while the prompt is active", async () => {
+    const first = {
+      isDestroyed: () => false,
+      getNativeWindowHandle: () => Buffer.from([1, 0, 0, 0, 0, 0, 0, 0]),
+    };
+    const replacement = {
+      isDestroyed: () => false,
+      getNativeWindowHandle: () => Buffer.from([2, 0, 0, 0, 0, 0, 0, 0]),
+    };
+    let current = first;
+    const verifier = createWcashDeviceOwnerVerifier();
+
+    await expect(
+      verifier.verify({
+        ...base,
+        platform: "win32",
+        getWindow: () => current,
+        native: {
+          checkWindowsHello: async () => "available",
+          verifyWindowsUser: async () => {
+            current = replacement;
+            return { success: true };
+          },
+        },
+      }),
+    ).resolves.toEqual({ success: false, reason: "device-auth-rejected" });
+  });
+
+  it.each([
+    ["missing owner", () => null],
+    ["destroyed owner", () => ({ isDestroyed: () => true, getNativeWindowHandle: () => Buffer.from([1, 0, 0, 0]) })],
+    ["zero owner handle", () => ({ isDestroyed: () => false, getNativeWindowHandle: () => Buffer.alloc(8) })],
+    [
+      "wrong-sized owner handle",
+      () => ({ isDestroyed: () => false, getNativeWindowHandle: () => Buffer.from([1, 2, 3]) }),
+    ],
+  ])("fails closed for a %s", async (_caseName, getWindow) => {
+    const verifyWindowsUser = jest.fn();
+    const verifier = createWcashDeviceOwnerVerifier();
+    await expect(
+      verifier.verify({
+        ...base,
+        platform: "win32",
+        getWindow,
+        native: { checkWindowsHello: async () => "available", verifyWindowsUser },
+      }),
+    ).resolves.toMatchObject({ success: false });
+    expect(verifyWindowsUser).not.toHaveBeenCalled();
+  });
+
+  it("does not reuse a Windows handle after its trusted owner closes during the probe", async () => {
+    let destroyed = false;
+    const verifyWindowsUser = jest.fn();
+    const verifier = createWcashDeviceOwnerVerifier();
+    await expect(
+      verifier.verify({
+        ...base,
+        platform: "win32",
+        getWindow: () => ({
+          isDestroyed: () => destroyed,
+          getNativeWindowHandle: () => Buffer.from([1, 0, 0, 0, 0, 0, 0, 0]),
+        }),
+        native: {
+          checkWindowsHello: async () => {
+            destroyed = true;
+            return "available";
+          },
+          verifyWindowsUser,
+        },
+      }),
+    ).resolves.toEqual({ success: false, reason: "device-auth-unavailable" });
+    expect(verifyWindowsUser).not.toHaveBeenCalled();
   });
 
   it("binds Linux polkit to the exact PID, start time, and UID using absolute binaries", async () => {

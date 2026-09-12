@@ -5064,6 +5064,7 @@ dependencies = [
  "tokio",
  "wcash-wallet",
  "windows",
+ "windows-future",
  "zeroize",
  "zingolib",
 ]
