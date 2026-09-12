@@ -4,8 +4,8 @@ const path = require("path");
 const { nativeDependencyPinsMatch } = require("./wcash-native-pins");
 const runtime = require("../config/wcash-runtime.json");
 
-const reviewedRevision = "db28e549bda764adcc5ba48c295a3e33c033d638";
-const reviewedWolfRevision = "b44571035074900570ef13f4fa96787886674ada";
+const reviewedRevision = "58bc22ec63bbe3eddab5f961c137836431589c95";
+const reviewedWolfRevision = "5b4e29980eb45e84ddab9024f530c923986d7e1e";
 const root = path.resolve(__dirname, "..");
 
 if (

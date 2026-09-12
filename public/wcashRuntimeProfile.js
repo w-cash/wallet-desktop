@@ -3,7 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const CORE_REVISION = "db28e549bda764adcc5ba48c295a3e33c033d638";
+const CORE_REVISION = "58bc22ec63bbe3eddab5f961c137836431589c95";
 
 const TESTNET_RUNTIME_PROFILE = Object.freeze({
   id: "testnet",

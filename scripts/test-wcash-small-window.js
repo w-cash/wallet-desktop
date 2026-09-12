@@ -13,7 +13,7 @@ const RUNTIME = Object.freeze({
   storageNamespace: "wcashregtest-v5",
   branchId: "c3a6678a",
   runtimeReady: true,
-  coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
+  coreRevision: "58bc22ec63bbe3eddab5f961c137836431589c95",
 });
 
 const ironwoodAddress = `wuregtest1${"q".repeat(90)}`;
@@ -82,12 +82,32 @@ async function waitForSelector(window, selector) {
 }
 
 async function run() {
+  const mainProcessSource = fs.readFileSync(path.join(__dirname, "..", "public", "electron.js"), "utf8");
+  if (!mainProcessSource.includes("minWidth: 720,\n    minHeight: 480,")) {
+    throw new Error("production Wcash window minimum is not the tested 720x480 size");
+  }
+
   ipcMain.on("wcash:runtime-config", (event) => {
     event.returnValue = RUNTIME;
   });
   handle("wcash:status", status);
   handle("wcash:open", { wallet });
   handle("wcash:balance", balance);
+  handle("wcash:history", {
+    exact_tip: { height: 4, hash: Array(32).fill(4) },
+    transactions: [
+      {
+        txid: "a".repeat(64),
+        mined_height: 4,
+        direction: "outgoing",
+        kind: "transfer",
+        amount_delta_zat: -100_015_000,
+        fee_zat: 15_000,
+        timestamp: 1_788_782_400,
+        confirmations: 1,
+      },
+    ],
+  });
   handle("wcash:receivers", {
     ironwood_address: ironwoodAddress,
     transparent_coinbase_address: transparentAddress,
@@ -101,9 +121,8 @@ async function run() {
 
   const window = new BrowserWindow({
     show: false,
-    width: 1150,
-    height: 600,
-    useContentSize: true,
+    width: 720,
+    height: 480,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -161,7 +180,7 @@ async function run() {
     fs.writeFileSync(screenshotPath, (await window.webContents.capturePage()).toPNG());
   }
 
-  console.log(JSON.stringify({ ok: true, size: "1150x600", ...result }));
+  console.log(JSON.stringify({ ok: true, size: "720x480", ...result }));
   window.destroy();
 }
 

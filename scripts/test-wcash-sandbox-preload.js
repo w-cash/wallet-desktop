@@ -12,7 +12,7 @@ const TESTNET_RUNTIME_CONFIG = Object.freeze({
   storageNamespace: "wcashtestnet-v5",
   branchId: "b3cfd27e",
   runtimeReady: true,
-  coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
+  coreRevision: "58bc22ec63bbe3eddab5f961c137836431589c95",
 });
 
 const EXPECTED_METHODS = [
@@ -20,6 +20,7 @@ const EXPECTED_METHODS = [
   "balance",
   "config",
   "create",
+  "history",
   "open",
   "pendingTransactions",
   "rebroadcastPending",
@@ -77,7 +78,7 @@ async function run() {
     result.config?.storageNamespace !== "wcashtestnet-v5" ||
     result.config?.branchId !== "b3cfd27e" ||
     result.config?.runtimeReady !== true ||
-    result.config?.coreRevision !== "db28e549bda764adcc5ba48c295a3e33c033d638" ||
+    result.config?.coreRevision !== "58bc22ec63bbe3eddab5f961c137836431589c95" ||
     result.directRequire !== "undefined" ||
     result.directNative !== "undefined" ||
     result.directInvoke !== "undefined"

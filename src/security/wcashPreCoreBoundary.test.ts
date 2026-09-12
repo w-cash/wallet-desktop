@@ -18,7 +18,7 @@ describe("Wcash pinned-runtime product boundary", () => {
       productName: "Wcash Warden Testnet",
       runtimeReady: true,
       releaseReady: false,
-      coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
+      coreRevision: "58bc22ec63bbe3eddab5f961c137836431589c95",
       network: "Wcash Testnet",
       ticker: "TWC",
     });

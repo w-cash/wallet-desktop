@@ -59,6 +59,7 @@ describe("Wcash renderer privilege boundary", () => {
       "wcash:sync",
       "wcash:stop-sync",
       "wcash:balance",
+      "wcash:history",
       "wcash:receivers",
       "wcash:validate-recipient",
       "wcash:send",

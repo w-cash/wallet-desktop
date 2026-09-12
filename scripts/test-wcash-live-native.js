@@ -57,6 +57,7 @@ async function main() {
     "wcash_shield_coinbase_and_broadcast",
     "wcash_pending_transactions",
     "wcash_rebroadcast_pending",
+    "wcash_confirmed_transactions",
   ]) {
     if (typeof native[method] !== "function") {
       throw new Error(`native transaction boundary is missing ${method}`);
@@ -143,6 +144,19 @@ async function main() {
       throw new Error("the native pending-transaction DTO violated its empty-wallet contract");
     }
 
+    const history = parseObject("wcash_confirmed_transactions", await native.wcash_confirmed_transactions());
+    if (
+      history.exact_tip === null ||
+      history.exact_tip.height !== sync.chain_tip_height ||
+      !Array.isArray(history.exact_tip.hash) ||
+      history.exact_tip.hash.length !== 32 ||
+      !Array.isArray(history.transactions) ||
+      history.transactions.length !== 0 ||
+      /raw|seed|mnemonic|spending_key/i.test(JSON.stringify(history))
+    ) {
+      throw new Error("the native confirmed-history DTO violated its empty-wallet contract");
+    }
+
     // Do not retain or print the recovery phrase after the native spending
     // boundary has rejected the validation-only fixture.
     recoveryPhrase = undefined;
@@ -177,6 +191,7 @@ async function main() {
         transparentPrefix: receivers.transparent_coinbase_address.slice(0, 2),
         persistedWalletReopened: true,
         transactionBoundaryValidated: true,
+        confirmedHistoryValidated: true,
       }),
     );
   } finally {

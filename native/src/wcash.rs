@@ -17,7 +17,8 @@ use serde_json::{Map, Value};
 use wcash_wallet::{
     decode_recipient, derive_wallet_spending_key, encode_orchard_receiver,
     encode_transparent_coinbase_receiver, WalletNetwork, WalletRpcError, WalletServiceError,
-    MAX_PENDING_TRANSACTION_PAGE_SIZE, MAX_TRANSFER_RECIPIENTS,
+    MAX_CONFIRMED_TRANSACTION_HISTORY_SIZE, MAX_PENDING_TRANSACTION_PAGE_SIZE,
+    MAX_TRANSFER_RECIPIENTS,
 };
 use zeroize::Zeroizing;
 #[cfg(feature = "wcash-regtest")]
@@ -84,6 +85,7 @@ pub(super) fn export(cx: &mut ModuleContext) -> NeonResult<()> {
     cx.export_function("wcash_sync", sync)?;
     cx.export_function("wcash_stop_sync", stop_sync)?;
     cx.export_function("wcash_balance", balance)?;
+    cx.export_function("wcash_confirmed_transactions", confirmed_transactions)?;
     cx.export_function("wcash_receivers", receivers)?;
     cx.export_function("wcash_validate_recipient", validate_recipient)?;
     cx.export_function("wcash_send_and_broadcast", send_and_broadcast)?;
@@ -1083,6 +1085,33 @@ fn balance(cx: FunctionContext) -> JsResult<JsPromise> {
             })?;
             serde_json::to_string(&summary)
                 .map_err(|error| ZingolibError::Read(format!("serialize Wcash balance: {error}")))
+        })
+    })
+}
+
+fn confirmed_transactions(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    if !cx.is_empty() {
+        return cx.throw_type_error("wcash_confirmed_transactions expects no arguments");
+    }
+    json_promise(cx, || {
+        with_panic_guard(|| {
+            let slot = WCASH_RUNTIME
+                .lock()
+                .map_err(|_| ZingolibError::Read("Wcash runtime lock poisoned".to_owned()))?;
+            let runtime = slot
+                .as_ref()
+                .ok_or_else(|| ZingolibError::Read("Wcash wallet is not open".to_owned()))?;
+            let history = runtime
+                .confirmed_transactions(MAX_CONFIRMED_TRANSACTION_HISTORY_SIZE)
+                .map_err(|error| {
+                    ZingolibError::Read(format!(
+                        "{} confirmed transaction history: {error}",
+                        WCASH_NETWORK_LABEL
+                    ))
+                })?;
+            serde_json::to_string(&history).map_err(|error| {
+                ZingolibError::Read(format!("serialize Wcash transaction history: {error}"))
+            })
         })
     })
 }

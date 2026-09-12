@@ -927,6 +927,7 @@ handleWcash("wcash:open", async () => {
 handleWcash("wcash:sync", () => invokeWcashJson("wcash_sync"), { cancelOnShutdown: true });
 handleWcash("wcash:stop-sync", () => requireWcashNative("wcash_stop_sync").wcash_stop_sync(), { outOfBand: true });
 handleWcash("wcash:balance", () => invokeWcashJson("wcash_balance"));
+handleWcash("wcash:history", () => invokeWcashJson("wcash_confirmed_transactions"));
 handleWcash("wcash:receivers", () => invokeWcashJson("wcash_receivers"));
 handleWcash("wcash:validate-recipient", (address) => wcashTransactionController.validateRecipient(address));
 handleWcash("wcash:send", (request) => wcashTransactionController.send(request));
@@ -1859,10 +1860,8 @@ function createWindow() {
   const mainWindow = new BrowserWindow({
     width: 1350,
     height: 700,
-    minWidth: 1150,
-    minHeight: 600,
-    maxWidth: 1500,
-    maxHeight: 800,
+    minWidth: 720,
+    minHeight: 480,
     title: WCASH_PRODUCT_NAME,
     webPreferences: {
       nodeIntegration: false,

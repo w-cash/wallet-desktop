@@ -5,6 +5,7 @@ import {
   memoUtf8Bytes,
   parseBalance,
   parseCanonicalTwcAmount,
+  parseConfirmedHistory,
   parseCreatedWallet,
   parseOperationResult,
   parsePendingTransactions,
@@ -61,6 +62,54 @@ describe("Wcash renderer boundary", () => {
     expect(isExactTipBalance(exact)).toBe(true);
     expect(isExactTipBalance(stale)).toBe(false);
     expect(exact.accounts[0].ironwoodPendingZat).toBe(25_000_000n);
+  });
+
+  it("strictly parses newest-first confirmed history without private transaction data", () => {
+    const confirmed = {
+      exact_tip: { height: 100, hash: Array.from({ length: 32 }, (_, index) => index) },
+      transactions: [
+        {
+          txid: "c".repeat(64),
+          mined_height: 100,
+          direction: "outgoing",
+          kind: "transfer",
+          amount_delta_zat: -125_015_000,
+          fee_zat: 15_000,
+          timestamp: 1_788_782_400,
+          confirmations: 1,
+        },
+        {
+          txid: "b".repeat(64),
+          mined_height: 98,
+          direction: "incoming",
+          kind: "coinbase",
+          amount_delta_zat: "625000000",
+          fee_zat: null,
+          timestamp: null,
+          confirmations: 3,
+        },
+      ],
+    };
+    expect(parseConfirmedHistory(confirmed)).toMatchObject({
+      exactTipHeight: 100,
+      exactTipHash: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      transactions: [
+        { direction: "outgoing", kind: "transfer", amountDeltaZat: -125_015_000n, feeZat: 15_000n },
+        { direction: "incoming", kind: "coinbase", amountDeltaZat: 625_000_000n, feeZat: null },
+      ],
+    });
+    expect(() =>
+      parseConfirmedHistory({
+        ...confirmed,
+        transactions: [{ ...confirmed.transactions[0], raw_transaction_hex: "deadbeef" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      parseConfirmedHistory({
+        ...confirmed,
+        transactions: [{ ...confirmed.transactions[0], confirmations: 2 }],
+      }),
+    ).toThrow();
   });
 
   it("formats all eight Wcash decimal places without floating point", () => {

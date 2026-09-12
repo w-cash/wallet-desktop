@@ -79,6 +79,26 @@ export interface WcashBalance {
   readonly accounts: readonly WcashAccountBalance[];
 }
 
+export type WcashTransactionDirection = "incoming" | "outgoing" | "internal";
+export type WcashTransactionKind = "transfer" | "coinbase" | "shielding" | "migration";
+
+export interface WcashConfirmedTransaction {
+  readonly txid: string;
+  readonly minedHeight: number;
+  readonly direction: WcashTransactionDirection;
+  readonly kind: WcashTransactionKind;
+  readonly amountDeltaZat: bigint;
+  readonly feeZat: bigint | null;
+  readonly timestamp: number | null;
+  readonly confirmations: number;
+}
+
+export interface WcashConfirmedHistory {
+  readonly exactTipHeight: number;
+  readonly exactTipHash: string;
+  readonly transactions: readonly WcashConfirmedTransaction[];
+}
+
 export interface WcashCreatedWallet {
   readonly wallet: WcashWalletMetadata;
   readonly recoveryPhrase: string;
@@ -184,7 +204,7 @@ export const WCASH_TESTNET_PRODUCT_CONFIG: WcashProductConfig = Object.freeze({
   storageNamespace: "wcashtestnet-v5",
   branchId: WCASH_BRANCH_ID,
   runtimeReady: true,
-  coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
+  coreRevision: "58bc22ec63bbe3eddab5f961c137836431589c95",
 });
 
 export const WCASH_LOCAL_REGTEST_PRODUCT_CONFIG: WcashProductConfig = Object.freeze({
@@ -196,7 +216,7 @@ export const WCASH_LOCAL_REGTEST_PRODUCT_CONFIG: WcashProductConfig = Object.fre
   storageNamespace: "wcashregtest-v5",
   branchId: WCASH_REGTEST_BRANCH_ID,
   runtimeReady: true,
-  coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
+  coreRevision: "58bc22ec63bbe3eddab5f961c137836431589c95",
 });
 
 const PRODUCT_CONFIG_KEYS = [
@@ -271,6 +291,13 @@ const requireZatoshis = (record: UnknownRecord, key: string, operation: string):
   const value = record[key];
   if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
   if (typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value)) return BigInt(value);
+  throw new Error(`${operation} returned malformed data`);
+};
+
+const requireSignedZatoshis = (record: UnknownRecord, key: string, operation: string): bigint => {
+  const value = record[key];
+  if (typeof value === "number" && Number.isSafeInteger(value) && !Object.is(value, -0)) return BigInt(value);
+  if (typeof value === "string" && /^(?:0|-?[1-9][0-9]*)$/.test(value)) return BigInt(value);
   throw new Error(`${operation} returned malformed data`);
 };
 
@@ -402,10 +429,80 @@ export const parseBalance = (payload: unknown): WcashBalance => {
 export const isExactTipBalance = (balance: WcashBalance): boolean =>
   balance.synchronized && balance.fullyScannedHeight === balance.chainTipHeight;
 
+export const parseConfirmedHistory = (payload: unknown): WcashConfirmedHistory => {
+  const operation = "Transaction history";
+  const record = requireRecord(payload, operation);
+  requireExactKeys(record, ["exact_tip", "transactions"], operation);
+  if (!isRecord(record.exact_tip) || !Array.isArray(record.transactions) || record.transactions.length > 50) {
+    throw new Error(`${operation} returned malformed data`);
+  }
+  requireExactKeys(record.exact_tip, ["height", "hash"], operation);
+  const exactTipHeight = requireU32(record.exact_tip, "height", operation);
+  const hash = record.exact_tip.hash;
+  if (
+    !Array.isArray(hash) ||
+    hash.length !== 32 ||
+    hash.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)
+  ) {
+    throw new Error(`${operation} returned malformed data`);
+  }
+  const exactTipHash = hash.map((byte) => (byte as number).toString(16).padStart(2, "0")).join("");
+  const seenTxids = new Set<string>();
+  let previousHeight = 0xffff_ffff;
+  const transactions = record.transactions.map((value): WcashConfirmedTransaction => {
+    if (!isRecord(value)) throw new Error(`${operation} returned malformed data`);
+    requireExactKeys(
+      value,
+      ["txid", "mined_height", "direction", "kind", "amount_delta_zat", "fee_zat", "timestamp", "confirmations"],
+      operation,
+    );
+    const txid = requireTxid(value, "txid", operation);
+    const minedHeight = requireU32(value, "mined_height", operation);
+    const confirmations = requireU32(value, "confirmations", operation);
+    const amountDeltaZat = requireSignedZatoshis(value, "amount_delta_zat", operation);
+    const feeZat = value.fee_zat === null ? null : requireZatoshis(value, "fee_zat", operation);
+    const timestamp = value.timestamp === null ? null : requireU32(value, "timestamp", operation);
+    if (
+      seenTxids.has(txid) ||
+      minedHeight > exactTipHeight ||
+      minedHeight > previousHeight ||
+      confirmations !== exactTipHeight - minedHeight + 1 ||
+      amountDeltaZat < -MAX_MONEY_ZAT ||
+      amountDeltaZat > MAX_MONEY_ZAT ||
+      (feeZat !== null && feeZat > MAX_MONEY_ZAT) ||
+      (value.direction !== "incoming" && value.direction !== "outgoing" && value.direction !== "internal") ||
+      (value.kind !== "transfer" &&
+        value.kind !== "coinbase" &&
+        value.kind !== "shielding" &&
+        value.kind !== "migration")
+    ) {
+      throw new Error(`${operation} returned malformed data`);
+    }
+    seenTxids.add(txid);
+    previousHeight = minedHeight;
+    return {
+      txid,
+      minedHeight,
+      direction: value.direction,
+      kind: value.kind,
+      amountDeltaZat,
+      feeZat,
+      timestamp,
+      confirmations,
+    };
+  });
+  return { exactTipHeight, exactTipHash, transactions: Object.freeze(transactions) };
+};
+
 export const formatTwc = (value: bigint): string => {
   const whole = value / ZATOSHIS_PER_COIN;
   const fraction = (value % ZATOSHIS_PER_COIN).toString().padStart(8, "0");
   return `${whole}.${fraction}`;
+};
+
+export const formatSignedTwc = (value: bigint): string => {
+  const prefix = value > 0n ? "+" : value < 0n ? "−" : "";
+  return `${prefix}${formatTwc(value < 0n ? -value : value)}`;
 };
 
 export const parseCanonicalTwcAmount = (value: string): { readonly amount: string; readonly amountZat: bigint } => {

@@ -100,9 +100,6 @@ jobs:
       - name: Check sandboxed preload
         run: xvfb-run -a yarn test:wcash-sandbox-preload
 
-      - name: Check small-window scrolling
-        run: xvfb-run -a yarn test:wcash-small-window
-
   packages:
     name: Package ${{ matrix.name }}
     needs: quality
@@ -171,3 +168,7 @@ jobs:
 
       - name: Build and verify unsigned Wcash package
         run: yarn ${{ matrix.script }}
+
+      - name: Check small-window scrolling
+        if: matrix.name == 'macOS ARM64'
+        run: yarn test:wcash-small-window

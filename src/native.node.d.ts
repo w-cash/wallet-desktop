@@ -112,6 +112,7 @@ export function wcash_send_and_broadcast(seed_phrase: string, request_json: stri
 export function wcash_shield_coinbase_and_broadcast(seed_phrase: string): Promise<string>;
 export function wcash_pending_transactions(after_cursor?: string | null): Promise<string>;
 export function wcash_rebroadcast_pending(txid: string): Promise<string>;
+export function wcash_confirmed_transactions(): Promise<string>;
 export function delete_wallet(
   server_uri: string,
   chain_hint: ServerChainNameEnum,

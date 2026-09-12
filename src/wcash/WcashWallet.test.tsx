@@ -1,5 +1,5 @@
 import React from "react";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import WcashWallet from "./WcashWallet";
 
@@ -71,7 +71,7 @@ const testnetConfig: Bridge["config"] = {
   storageNamespace: "wcashtestnet-v5",
   branchId: "b3cfd27e",
   runtimeReady: true,
-  coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
+  coreRevision: "58bc22ec63bbe3eddab5f961c137836431589c95",
 };
 
 const localRegtestConfig: Bridge["config"] = {
@@ -83,7 +83,7 @@ const localRegtestConfig: Bridge["config"] = {
   storageNamespace: "wcashregtest-v5",
   branchId: "c3a6678a",
   runtimeReady: true,
-  coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
+  coreRevision: "58bc22ec63bbe3eddab5f961c137836431589c95",
 };
 
 const installBridge = (overrides: Partial<Bridge> = {}): Bridge => {
@@ -99,6 +99,7 @@ const installBridge = (overrides: Partial<Bridge> = {}): Bridge => {
     sync: jest.fn(),
     stopSync: jest.fn().mockResolvedValue(true),
     balance: jest.fn(),
+    history: jest.fn().mockResolvedValue({ exact_tip: { height: 100, hash: Array(32).fill(0) }, transactions: [] }),
     receivers: jest.fn().mockResolvedValue(receivers),
     validateRecipient: jest.fn().mockImplementation((address: string) =>
       Promise.resolve({
@@ -265,6 +266,86 @@ describe("Wcash Testnet desktop wallet", () => {
     expect(await screen.findAllByText(/6\.25000000/)).not.toHaveLength(0);
     expect(screen.getByText("Verified at block 92.")).toBeInTheDocument();
     expect(bridge.sync).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows confirmed transaction history only at the same exact tip", async () => {
+    const user = userEvent.setup();
+    const historyTxid = "d".repeat(64);
+    const bridge = installBridge({
+      status: jest.fn().mockResolvedValue({ state: "database-and-secret-ready", wallet }),
+      balance: jest.fn().mockResolvedValue(balance(100)),
+      history: jest.fn().mockResolvedValue({
+        exact_tip: { height: 100, hash: Array(32).fill(7) },
+        transactions: [
+          {
+            txid: historyTxid,
+            mined_height: 100,
+            direction: "outgoing",
+            kind: "transfer",
+            amount_delta_zat: -100_015_000,
+            fee_zat: 15_000,
+            timestamp: 1_788_782_400,
+            confirmations: 1,
+          },
+        ],
+      }),
+    });
+    render(<WcashWallet />);
+
+    await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+
+    expect(await screen.findByRole("heading", { name: "Transaction history" })).toBeInTheDocument();
+    expect(await screen.findByText("−1.00015000 TWC")).toBeInTheDocument();
+    expect(screen.getByText(historyTxid)).toBeInTheDocument();
+    expect(screen.getByText(/Block 100 · 1 confirmation/)).toBeInTheDocument();
+    expect(bridge.history).toHaveBeenCalledWith();
+  });
+
+  it("clears exact-tip history before synchronization can be cancelled", async () => {
+    const user = userEvent.setup();
+    const historyTxid = "e".repeat(64);
+    let rejectSync: ((error: Error) => void) | undefined;
+    const bridge = installBridge({
+      status: jest.fn().mockResolvedValue({ state: "database-and-secret-ready", wallet }),
+      balance: jest.fn().mockResolvedValue(balance(100)),
+      history: jest.fn().mockResolvedValue({
+        exact_tip: { height: 100, hash: Array(32).fill(9) },
+        transactions: [
+          {
+            txid: historyTxid,
+            mined_height: 99,
+            direction: "incoming",
+            kind: "transfer",
+            amount_delta_zat: 100_000_000,
+            fee_zat: null,
+            timestamp: null,
+            confirmations: 2,
+          },
+        ],
+      }),
+      sync: jest.fn().mockImplementation(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectSync = reject;
+          }),
+      ),
+    });
+    render(<WcashWallet />);
+
+    await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    expect(await screen.findByText(historyTxid)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Synchronize" }));
+    expect(screen.queryByText(historyTxid)).not.toBeInTheDocument();
+    expect(
+      within(screen.getByRole("region", { name: "Transaction history" })).getByText("Exact tip required"),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Stop sync" }));
+    rejectSync?.(new Error("Synchronization cancelled"));
+    expect(await screen.findByRole("button", { name: "Synchronize" })).toBeInTheDocument();
+    expect(screen.queryByText(historyTxid)).not.toBeInTheDocument();
+    expect(bridge.history).toHaveBeenCalledTimes(1);
   });
 
   it("rejects non-Wcash receiving addresses instead of rendering them", async () => {

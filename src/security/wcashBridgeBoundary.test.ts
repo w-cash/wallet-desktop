@@ -2,7 +2,7 @@ const runtimeConfig = {
   profile: "testnet",
   productName: "Wcash Warden Testnet",
   runtimeReady: true,
-  coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
+  coreRevision: "58bc22ec63bbe3eddab5f961c137836431589c95",
   network: "Wcash Testnet",
   ticker: "TWC",
   endpoint: "https://wallet-testnet.wcashexplorer.com:443",
@@ -60,6 +60,7 @@ describe("Wcash renderer bridge boundary", () => {
         "balance",
         "config",
         "create",
+        "history",
         "open",
         "pendingTransactions",
         "rebroadcastPending",
@@ -92,6 +93,7 @@ describe("Wcash renderer bridge boundary", () => {
     await wcash.sync();
     await wcash.stopSync();
     await wcash.balance();
+    await wcash.history();
     await wcash.receivers();
     await wcash.validateRecipient("wutest1recipient");
     await wcash.send({ payments: [{ address: "wutest1recipient", amount: "1" }] });
@@ -110,6 +112,7 @@ describe("Wcash renderer bridge boundary", () => {
       ["wcash:sync"],
       ["wcash:stop-sync"],
       ["wcash:balance"],
+      ["wcash:history"],
       ["wcash:receivers"],
       ["wcash:validate-recipient", "wutest1recipient"],
       ["wcash:send", { payments: [{ address: "wutest1recipient", amount: "1" }] }],

@@ -15,7 +15,7 @@ const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), "u
 const packageJson = JSON.parse(read("package.json"));
 const packagedRuntime = JSON.parse(read("config/wcash-runtime.json"));
 const manifest = read("native/Cargo.toml");
-const reviewedWolfRevision = "b44571035074900570ef13f4fa96787886674ada";
+const reviewedWolfRevision = "5b4e29980eb45e84ddab9024f530c923986d7e1e";
 
 function fail(message) {
   console.error("Wcash local Regtest build is blocked: " + message);

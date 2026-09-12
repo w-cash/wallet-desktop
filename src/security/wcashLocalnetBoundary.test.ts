@@ -42,7 +42,7 @@ describe("Wcash local Regtest build boundary", () => {
       storageNamespace: "wcashregtest-v5",
       branchId: "c3a6678a",
       runtimeReady: true,
-      coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
+      coreRevision: "58bc22ec63bbe3eddab5f961c137836431589c95",
     });
   });
 
@@ -227,14 +227,14 @@ describe("Wcash local Regtest build boundary", () => {
 
     expect(manifest).toContain('default = ["wcash-testnet"]');
     expect(manifest).toContain(
-      'zingolib = { git = "https://github.com/w-cash/wallet-core.git", rev = "db28e549bda764adcc5ba48c295a3e33c033d638", optional = true }',
+      'zingolib = { git = "https://github.com/w-cash/wallet-core.git", rev = "58bc22ec63bbe3eddab5f961c137836431589c95", optional = true }',
     );
     expect(manifest).toContain('wcash-regtest = ["dep:zingolib", "zingolib/regtest"]');
     expect(
       nativeDependencyPinsMatch({
         root: repositoryRoot,
-        coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
-        wolfRevision: "b44571035074900570ef13f4fa96787886674ada",
+        coreRevision: "58bc22ec63bbe3eddab5f961c137836431589c95",
+        wolfRevision: "5b4e29980eb45e84ddab9024f530c923986d7e1e",
       }),
     ).toBe(true);
     expect(packageJson.scripts["neon-mac-arm64-localnet"]).toContain("--no-default-features --features wcash-regtest");

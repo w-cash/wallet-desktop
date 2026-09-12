@@ -34,6 +34,7 @@ declare global {
       sync: () => Promise<unknown>;
       stopSync: () => Promise<boolean>;
       balance: () => Promise<unknown>;
+      history: () => Promise<unknown>;
       receivers: () => Promise<unknown>;
       validateRecipient: (address: string) => Promise<unknown>;
       send: (request: unknown) => Promise<unknown>;

@@ -1,6 +1,7 @@
 import React, { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   WcashBalance,
+  WcashConfirmedTransaction,
   WcashOperationResult,
   WcashPendingTransaction,
   WcashReceivers,
@@ -8,9 +9,11 @@ import {
   WcashWalletMetadata,
   createSendRequest,
   formatTwc,
+  formatSignedTwc,
   isExactTipBalance,
   memoUtf8Bytes,
   parseBalance,
+  parseConfirmedHistory,
   parseCreatedWallet,
   parseOpenedWallet,
   parseOperationResult,
@@ -39,10 +42,25 @@ type Screen =
   | "unavailable";
 
 type PendingLoadState = "idle" | "loading" | "loaded" | "error";
+type HistoryLoadState = "idle" | "loading" | "loaded" | "error";
 
 const CONFIRMATION_WORDS = [3, 11, 19] as const;
 
 const sum = (values: readonly bigint[]): bigint => values.reduce((total, value) => total + value, 0n);
+
+const HISTORY_KIND_LABELS = Object.freeze({
+  transfer: "Private transfer",
+  coinbase: "Mining reward",
+  shielding: "Coinbase shielding",
+  migration: "Wallet migration",
+});
+
+const formatHistoryTime = (timestamp: number): string =>
+  new Intl.DateTimeFormat("en-GB", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "UTC",
+  }).format(new Date(timestamp * 1_000)) + " UTC";
 
 const isSameWallet = (left: WcashWalletMetadata, right: WcashWalletMetadata): boolean =>
   left.accountId === right.accountId && left.birthdayHeight === right.birthdayHeight;
@@ -119,6 +137,9 @@ const WcashWallet = () => {
   const [recoveryHoldTxids, setRecoveryHoldTxids] = useState<readonly string[]>([]);
   const [transactionStatusUnknown, setTransactionStatusUnknown] = useState(false);
   const [transactionNote, setTransactionNote] = useState<string | null>(null);
+  const [confirmedTransactions, setConfirmedTransactions] = useState<readonly WcashConfirmedTransaction[]>([]);
+  const [historyExactTipHeight, setHistoryExactTipHeight] = useState<number | null>(null);
+  const [historyLoadState, setHistoryLoadState] = useState<HistoryLoadState>("idle");
 
   const refreshPendingTransactions = useCallback(async () => {
     setPendingLoadState("loading");
@@ -161,6 +182,24 @@ const WcashWallet = () => {
     } catch (cause) {
       setPendingExactTipHeight(null);
       setPendingLoadState("error");
+      throw cause;
+    }
+  }, []);
+
+  const refreshConfirmedHistory = useCallback(async (expectedTipHeight: number) => {
+    setHistoryLoadState("loading");
+    try {
+      const history = parseConfirmedHistory(await window.wcash.history());
+      if (history.exactTipHeight !== expectedTipHeight) {
+        throw new Error("The Wcash tip changed while confirmed transaction history was being read");
+      }
+      setConfirmedTransactions(history.transactions);
+      setHistoryExactTipHeight(history.exactTipHeight);
+      setHistoryLoadState("loaded");
+    } catch (cause) {
+      setConfirmedTransactions([]);
+      setHistoryExactTipHeight(null);
+      setHistoryLoadState("error");
       throw cause;
     }
   }, []);
@@ -240,6 +279,9 @@ const WcashWallet = () => {
     setPendingTransactions([]);
     setPendingExactTipHeight(null);
     setPendingLoadState("idle");
+    setConfirmedTransactions([]);
+    setHistoryExactTipHeight(null);
+    setHistoryLoadState("idle");
     setSyncNote("Checking wallet state…");
 
     const addresses = parseReceivers(await window.wcash.receivers(), window.wcash.config);
@@ -247,10 +289,12 @@ const WcashWallet = () => {
     setReceivers(addresses);
     setScreen("wallet");
 
+    let exactTipHeight: number | null = null;
     try {
       const current = parseBalance(await window.wcash.balance());
       if (isExactTipBalance(current)) {
         setBalance(current);
+        exactTipHeight = current.chainTipHeight;
         setSyncNote(`Verified at block ${current.chainTipHeight.toLocaleString()}.`);
       } else {
         setSyncNote("Balance withheld because the wallet is not synchronized to its known chain tip.");
@@ -263,6 +307,13 @@ const WcashWallet = () => {
       await refreshPendingTransactions();
     } catch (cause) {
       setError(publicErrorMessage(cause));
+    }
+    if (exactTipHeight !== null) {
+      try {
+        await refreshConfirmedHistory(exactTipHeight);
+      } catch {
+        // History stays visibly unavailable while balance and recovery controls remain usable.
+      }
     }
   };
 
@@ -410,6 +461,9 @@ const WcashWallet = () => {
   const syncWallet = async () => {
     setSyncing(true);
     setBalance(null);
+    setConfirmedTransactions([]);
+    setHistoryExactTipHeight(null);
+    setHistoryLoadState("idle");
     setError(null);
     setSyncNote(`Synchronizing ${networkLabel}…`);
     try {
@@ -427,6 +481,11 @@ const WcashWallet = () => {
       setBalance(current);
       setSyncNote(`Verified at block ${current.chainTipHeight.toLocaleString()}.`);
       await refreshPendingTransactions();
+      try {
+        await refreshConfirmedHistory(current.chainTipHeight);
+      } catch {
+        // A failed read is represented in the history section without hiding an exact-tip balance.
+      }
     } catch (cause) {
       setBalance(null);
       setSyncNote("Balance remains hidden because synchronization did not complete.");
@@ -456,12 +515,23 @@ const WcashWallet = () => {
       if (isExactTipBalance(current)) {
         setBalance(current);
         setSyncNote(`Verified at block ${current.chainTipHeight.toLocaleString()}.`);
+        try {
+          await refreshConfirmedHistory(current.chainTipHeight);
+        } catch {
+          // Confirmed history remains separately fail-closed until the next synchronization.
+        }
       } else {
         setBalance(null);
+        setConfirmedTransactions([]);
+        setHistoryExactTipHeight(null);
+        setHistoryLoadState("idle");
         setSyncNote("The chain tip moved. Synchronize again before authorizing another transaction.");
       }
     } catch {
       setBalance(null);
+      setConfirmedTransactions([]);
+      setHistoryExactTipHeight(null);
+      setHistoryLoadState("idle");
       setSyncNote("Balance withheld until a complete exact-tip synchronization succeeds.");
     }
   };
@@ -969,6 +1039,54 @@ const WcashWallet = () => {
                 Amounts are not displayed from stale or partially scanned wallet state.
               </div>
             )}
+
+            <section className="warden-transactions warden-history" aria-labelledby="history-title">
+              <div className="warden-section-heading">
+                <div>
+                  <p className="warden-kicker">Confirmed on chain</p>
+                  <h2 id="history-title">Transaction history</h2>
+                </div>
+                <span>
+                  {historyLoadState === "loaded" && historyExactTipHeight !== null
+                    ? `${confirmedTransactions.length} · block ${historyExactTipHeight.toLocaleString()}`
+                    : "Exact tip required"}
+                </span>
+              </div>
+              {historyLoadState === "loading" ? (
+                <BusyLine>Reading confirmed transactions…</BusyLine>
+              ) : historyLoadState === "error" ? (
+                <p role="alert">Confirmed history is unavailable until an exact-tip verified read succeeds.</p>
+              ) : historyLoadState === "loaded" && confirmedTransactions.length === 0 ? (
+                <p>No confirmed transactions yet.</p>
+              ) : historyLoadState === "loaded" ? (
+                <ul className="warden-history-list" aria-label="Confirmed transaction history">
+                  {confirmedTransactions.map((transaction) => (
+                    <li key={transaction.txid} data-direction={transaction.direction}>
+                      <div className="warden-history-summary">
+                        <span>{HISTORY_KIND_LABELS[transaction.kind]}</span>
+                        <strong>{formatSignedTwc(transaction.amountDeltaZat)} TWC</strong>
+                      </div>
+                      <div className="warden-history-meta">
+                        <span>
+                          Block {transaction.minedHeight.toLocaleString()} ·{" "}
+                          {transaction.confirmations.toLocaleString()}{" "}
+                          {transaction.confirmations === 1 ? "confirmation" : "confirmations"}
+                        </span>
+                        {transaction.timestamp === null ? null : (
+                          <time dateTime={new Date(transaction.timestamp * 1_000).toISOString()}>
+                            {formatHistoryTime(transaction.timestamp)}
+                          </time>
+                        )}
+                        {transaction.feeZat === null ? null : <span>Fee {formatTwc(transaction.feeZat)} TWC</span>}
+                      </div>
+                      <code title={transaction.txid}>{transaction.txid}</code>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p>Synchronize to the exact chain tip to read confirmed history.</p>
+              )}
+            </section>
 
             {transactionNote ? (
               <div className="warden-transaction-note" role="status">

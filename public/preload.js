@@ -16,7 +16,7 @@ const WCASH_TESTNET_RUNTIME = Object.freeze({
   storageNamespace: "wcashtestnet-v5",
   branchId: "b3cfd27e",
   runtimeReady: true,
-  coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
+  coreRevision: "58bc22ec63bbe3eddab5f961c137836431589c95",
 });
 const WCASH_LOCAL_REGTEST_RUNTIME = Object.freeze({
   profile: "local-regtest",
@@ -27,7 +27,7 @@ const WCASH_LOCAL_REGTEST_RUNTIME = Object.freeze({
   storageNamespace: "wcashregtest-v5",
   branchId: "c3a6678a",
   runtimeReady: true,
-  coreRevision: "db28e549bda764adcc5ba48c295a3e33c033d638",
+  coreRevision: "58bc22ec63bbe3eddab5f961c137836431589c95",
 });
 const publicProfileKeys = Object.keys(WCASH_TESTNET_RUNTIME).sort();
 const selectedRuntime = ipcRenderer.sendSync("wcash:runtime-config");
@@ -222,6 +222,7 @@ contextBridge.exposeInMainWorld(
     sync: () => invokeWcash("wcash:sync"),
     stopSync: () => invokeWcash("wcash:stop-sync"),
     balance: () => invokeWcash("wcash:balance"),
+    history: () => invokeWcash("wcash:history"),
     receivers: () => invokeWcash("wcash:receivers"),
     validateRecipient: (address) => invokeWcash("wcash:validate-recipient", address),
     send: (request) => invokeWcash("wcash:send", request),
