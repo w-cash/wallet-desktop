@@ -27,10 +27,9 @@ beforeAll(() => {
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { native } = require("../../../electronBridge");
 
-const installElectronAPI = (overrides: { loadSettings?: any; authVerify?: any } = {}) => {
+const installElectronAPI = (overrides: { loadSettings?: any } = {}) => {
   const invoke = jest.fn(async (channel: string) => {
     if (channel === "loadSettings") return overrides.loadSettings ?? {};
-    if (channel === "auth:verify") return overrides.authVerify ?? { success: true };
     return undefined;
   });
   Object.defineProperty(window, "electronAPI", {
@@ -290,18 +289,10 @@ describe("SendConfirmModal", () => {
   });
 
   describe("sendButton", () => {
-    it("calls auth:verify when requireDeviceAuth is true; bails on failure", async () => {
-      const invoke = installElectronAPI({ loadSettings: { requireDeviceAuth: true }, authVerify: { success: false } });
-      const sendTransaction = jest.fn();
-      const closeModal = jest.fn();
-      render(<SendConfirmModal {...makeProps({ sendTransaction, closeModal })} />);
-      fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
-      await waitFor(() => expect(invoke).toHaveBeenCalledWith("auth:verify", "Authorize transaction"));
-      expect(invoke).toHaveBeenCalledWith("loadSettings");
-      expect(sendTransaction).not.toHaveBeenCalled();
-      expect(closeModal).not.toHaveBeenCalled();
-    });
-
+    // The active Wcash wallet authenticates inside the owner-bound main-process
+    // lifecycle. This inherited, unreachable Zcash modal does not test that
+    // security boundary; wcashWalletLifecycle.test.ts and
+    // wcashDeviceAuth.test.ts do.
     it("skips auth when requireDeviceAuth is unset", async () => {
       const invoke = installElectronAPI({ loadSettings: {} });
       const sendTransaction = jest.fn().mockResolvedValue("txid-1");

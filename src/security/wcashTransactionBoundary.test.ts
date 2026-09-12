@@ -185,7 +185,11 @@ describe("Wcash transaction main-process boundary", () => {
     const shieldReview = {
       ...persistedReview,
       operation: "shield_coinbase",
-      recovery: { ...persistedReview.recovery, txids: [TXID] },
+      recovery: {
+        code: "exact_transaction_review_required",
+        message: "sensitive native diagnostic",
+        txids: [TXID],
+      },
     };
     expect(parseNativeOperationEnvelope(shieldReview, "shield_coinbase")).toEqual({
       ...shieldReview,
