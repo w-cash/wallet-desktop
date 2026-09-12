@@ -124,6 +124,7 @@ async function main() {
     const pending = parseObject("wcash_pending_transactions", await native.wcash_pending_transactions());
     if (
       pending.schema_version !== 1 ||
+      pending.exact_tip_height !== sync.chain_tip_height ||
       !Array.isArray(pending.transactions) ||
       pending.transactions.length !== 0 ||
       pending.next_cursor !== null ||

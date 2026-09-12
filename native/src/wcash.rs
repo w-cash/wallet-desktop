@@ -16,13 +16,14 @@ use secrecy::SecretVec;
 use serde_json::{Map, Value};
 use wcash_wallet::{
     decode_recipient, derive_wallet_spending_key, encode_orchard_receiver,
-    encode_transparent_coinbase_receiver, WalletNetwork, MAX_PENDING_TRANSACTION_PAGE_SIZE,
-    MAX_TRANSFER_RECIPIENTS,
+    encode_transparent_coinbase_receiver, WalletNetwork, WalletRpcError, WalletServiceError,
+    MAX_PENDING_TRANSACTION_PAGE_SIZE, MAX_TRANSFER_RECIPIENTS,
 };
 use zeroize::Zeroizing;
 use zingolib::wcash::{
-    BroadcastResult, SignedTransaction, StoredSignedTransaction, WalletSyncCancellation,
-    WcashTestnet, WcashTestnetPayment, WcashTestnetRuntime,
+    BroadcastResult, SignedTransaction, StoredSignedTransaction, WalletBalanceSummary,
+    WalletSyncCancellation, WcashTestnet, WcashTestnetPayment, WcashTestnetRuntime,
+    WcashTestnetRuntimeError,
 };
 
 use super::{with_panic_guard, ZingolibError, RT, WALLET_BASE_DIR};
@@ -37,6 +38,12 @@ const MAX_SEND_REQUEST_BYTES: usize = 128 * 1024;
 const MAX_RECIPIENT_ADDRESS_BYTES: usize = 1_024;
 const MAX_MEMO_BYTES: usize = 512;
 const RECOVERY_REQUIRED_CODE: &str = "exact_transaction_rebroadcast_required";
+const REVIEW_REQUIRED_CODE: &str = "exact_transaction_review_required";
+const REJECTED_CODE: &str = "transaction_rejected";
+const MAX_PUBLIC_ERROR_MESSAGE_BYTES: usize = 4_096;
+const MAX_PUBLIC_RECOVERY_TXIDS: usize = MAX_PENDING_TRANSACTION_PAGE_SIZE;
+const RECOVERY_STATUS_UNKNOWN_MESSAGE: &str =
+    "signed transaction recovery status is unknown; inspect pending transactions and do not sign a replacement";
 
 static WCASH_RUNTIME: Lazy<Mutex<Option<WcashTestnetRuntime>>> = Lazy::new(|| Mutex::new(None));
 static ACTIVE_SYNC: Lazy<Mutex<Option<WalletSyncCancellation>>> = Lazy::new(|| Mutex::new(None));
@@ -355,17 +362,139 @@ fn require_mnemonic_owns_wallet(mnemonic: &Mnemonic<English>) -> Result<(), Zing
     Ok(())
 }
 
-fn ensure_no_pending_transactions(runtime: &WcashTestnetRuntime) -> Result<(), ZingolibError> {
-    let page = runtime.pending_transactions(None, 1).map_err(|error| {
-        ZingolibError::Read(format!("inspect pending Wcash transactions: {error}"))
-    })?;
-    if let Some(transaction) = page.transactions.first() {
-        return Err(ZingolibError::Init(format!(
-            "pending signed transaction {} must settle or be rebroadcast before signing another transaction",
-            transaction.txid
-        )));
+fn exact_tip_from_summary(summary: &WalletBalanceSummary) -> Option<u32> {
+    (summary.synchronized && summary.fully_scanned_height == summary.chain_tip_height)
+        .then_some(summary.chain_tip_height)
+}
+
+fn require_exact_wallet_tip(runtime: &WcashTestnetRuntime) -> Result<u32, ZingolibError> {
+    let summary = runtime
+        .balance()
+        .map_err(|error| ZingolibError::Read(format!("read Wcash exact tip: {error}")))?;
+    exact_tip_from_summary(&summary).ok_or_else(|| {
+        ZingolibError::Read(
+            "Wcash wallet must synchronize to the exact chain tip before transaction recovery or signing"
+                .to_owned(),
+        )
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingLifecycle {
+    Unexpired,
+    Expired,
+    TipUnknown,
+}
+
+impl PendingLifecycle {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unexpired => "unexpired",
+            Self::Expired => "expired",
+            Self::TipUnknown => "tip_unknown",
+        }
     }
-    Ok(())
+
+    const fn rebroadcast_allowed(self) -> bool {
+        matches!(self, Self::Unexpired)
+    }
+
+    const fn blocks_new_signing(self) -> bool {
+        !matches!(self, Self::Expired)
+    }
+}
+
+fn pending_lifecycle(expiry_height: u32, exact_tip_height: Option<u32>) -> PendingLifecycle {
+    match exact_tip_height {
+        None => PendingLifecycle::TipUnknown,
+        Some(tip) if expiry_height != 0 && tip >= expiry_height => PendingLifecycle::Expired,
+        Some(_) => PendingLifecycle::Unexpired,
+    }
+}
+
+fn next_pending_cursor(
+    current: Option<u64>,
+    next: Option<u64>,
+) -> Result<Option<u64>, ZingolibError> {
+    match next {
+        Some(next) if current.is_none_or(|previous| next > previous) => Ok(Some(next)),
+        Some(_) => Err(ZingolibError::Read(
+            "pending transaction pagination did not advance".to_owned(),
+        )),
+        None => Ok(None),
+    }
+}
+
+fn ensure_no_unexpired_pending_transactions(
+    runtime: &WcashTestnetRuntime,
+    exact_tip_height: u32,
+) -> Result<(), ZingolibError> {
+    let mut after_row_id = None;
+    loop {
+        let page = runtime
+            .pending_transactions(after_row_id, MAX_PENDING_TRANSACTION_PAGE_SIZE)
+            .map_err(|error| {
+                ZingolibError::Read(format!("inspect pending Wcash transactions: {error}"))
+            })?;
+        if let Some(transaction) = page.transactions.iter().find(|transaction| {
+            pending_lifecycle(transaction.expiry_height, Some(exact_tip_height))
+                .blocks_new_signing()
+        }) {
+            return Err(ZingolibError::Init(format!(
+                "unexpired signed transaction {} must settle, be rebroadcast, or reach expiry height {} before signing another transaction",
+                transaction.txid, transaction.expiry_height
+            )));
+        }
+
+        match next_pending_cursor(after_row_id, page.next_after_row_id)? {
+            Some(next) => after_row_id = Some(next),
+            None => return Ok(()),
+        }
+    }
+}
+
+fn bounded_public_message(message: impl AsRef<str>) -> String {
+    let message = message.as_ref();
+    if message.len() <= MAX_PUBLIC_ERROR_MESSAGE_BYTES {
+        return message.to_owned();
+    }
+
+    let mut end = MAX_PUBLIC_ERROR_MESSAGE_BYTES.saturating_sub('…'.len_utf8());
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &message[..end])
+}
+
+enum NativeBroadcastOutcome {
+    Broadcast(BroadcastResult),
+    Rejected { node_code: i32, message: String },
+    RecoveryRequired { code: &'static str, message: String },
+    Expired,
+}
+
+fn classify_broadcast_result(
+    result: Result<BroadcastResult, WcashTestnetRuntimeError>,
+) -> NativeBroadcastOutcome {
+    match result {
+        Ok(broadcast) => NativeBroadcastOutcome::Broadcast(broadcast),
+        Err(WcashTestnetRuntimeError::Rpc(WalletRpcError::Rejected { code, message })) => {
+            NativeBroadcastOutcome::Rejected {
+                node_code: code,
+                message: bounded_public_message(message),
+            }
+        }
+        Err(WcashTestnetRuntimeError::Rpc(WalletRpcError::AmbiguousBroadcast {
+            reason, ..
+        })) => NativeBroadcastOutcome::RecoveryRequired {
+            code: RECOVERY_REQUIRED_CODE,
+            message: bounded_public_message(reason),
+        },
+        Err(error) => NativeBroadcastOutcome::RecoveryRequired {
+            code: REVIEW_REQUIRED_CODE,
+            message: bounded_public_message(error.to_string()),
+        },
+    }
 }
 
 struct PublicTransactionMetadata<'a> {
@@ -375,12 +504,13 @@ struct PublicTransactionMetadata<'a> {
     target_height: Option<u32>,
     fee_zat: Option<u64>,
     internal_change_receiver_verified: Option<bool>,
+    exact_tip_height: u32,
 }
 
-fn transaction_result_json<E: std::fmt::Display>(
+fn transaction_result_json(
     operation: &str,
     transaction: PublicTransactionMetadata<'_>,
-    broadcast: Result<BroadcastResult, E>,
+    outcome: NativeBroadcastOutcome,
 ) -> String {
     let PublicTransactionMetadata {
         txid,
@@ -389,46 +519,136 @@ fn transaction_result_json<E: std::fmt::Display>(
         target_height,
         fee_zat,
         internal_change_receiver_verified,
+        exact_tip_height,
     } = transaction;
-    match broadcast {
-        Ok(broadcast) => serde_json::json!({
+    let common = || {
+        serde_json::json!({
             "schema_version": TRANSACTION_SCHEMA_VERSION,
             "operation": operation,
-            "outcome": "broadcast",
             "txid": txid,
             "branch_id": branch_id,
             "expiry_height": expiry_height,
             "target_height": target_height,
             "fee_zat": fee_zat.map(|fee| fee.to_string()),
             "internal_change_receiver_verified": internal_change_receiver_verified,
-            "broadcast": broadcast,
-            "recovery": null,
+            "exact_tip_height": exact_tip_height,
         })
-        .to_string(),
-        Err(error) => serde_json::json!({
-            "schema_version": TRANSACTION_SCHEMA_VERSION,
-            "operation": operation,
-            "outcome": "recovery_required",
-            "txid": txid,
-            "branch_id": branch_id,
-            "expiry_height": expiry_height,
-            "target_height": target_height,
-            "fee_zat": fee_zat.map(|fee| fee.to_string()),
-            "internal_change_receiver_verified": internal_change_receiver_verified,
-            "broadcast": null,
-            "recovery": {
-                "code": RECOVERY_REQUIRED_CODE,
-                "message": error.to_string(),
+    };
+
+    match outcome {
+        NativeBroadcastOutcome::Broadcast(broadcast) if broadcast.txid == txid => {
+            let mut result = common();
+            result["outcome"] = Value::String("broadcast".to_owned());
+            result["broadcast"] = serde_json::json!(broadcast);
+            result["recovery"] = Value::Null;
+            result["rejection"] = Value::Null;
+            result.to_string()
+        }
+        NativeBroadcastOutcome::Broadcast(_) => transaction_result_json(
+            operation,
+            PublicTransactionMetadata {
+                txid,
+                branch_id,
+                expiry_height,
+                target_height,
+                fee_zat,
+                internal_change_receiver_verified,
+                exact_tip_height,
             },
-        })
-        .to_string(),
+            NativeBroadcastOutcome::RecoveryRequired {
+                code: REVIEW_REQUIRED_CODE,
+                message: "broadcast result returned a different transaction identifier".to_owned(),
+            },
+        ),
+        NativeBroadcastOutcome::Rejected { node_code, message } => {
+            let mut result = common();
+            result["outcome"] = Value::String("rejected".to_owned());
+            result["broadcast"] = Value::Null;
+            result["recovery"] = Value::Null;
+            result["rejection"] = serde_json::json!({
+                "code": REJECTED_CODE,
+                "node_code": node_code,
+                "message": message,
+            });
+            result.to_string()
+        }
+        NativeBroadcastOutcome::RecoveryRequired { code, message } => {
+            let mut result = common();
+            result["outcome"] = Value::String("recovery_required".to_owned());
+            result["broadcast"] = Value::Null;
+            result["recovery"] = serde_json::json!({
+                "code": code,
+                "message": message,
+                "txids": [txid],
+            });
+            result["rejection"] = Value::Null;
+            result.to_string()
+        }
+        NativeBroadcastOutcome::Expired => {
+            let mut result = common();
+            result["outcome"] = Value::String("expired".to_owned());
+            result["broadcast"] = Value::Null;
+            result["recovery"] = Value::Null;
+            result["rejection"] = Value::Null;
+            result.to_string()
+        }
     }
 }
 
-fn signed_transaction_result_json<E: std::fmt::Display>(
+fn public_recovery_txids(txids: &[String]) -> Result<Vec<&str>, ZingolibError> {
+    if txids.is_empty() || txids.len() > MAX_PUBLIC_RECOVERY_TXIDS {
+        return Err(ZingolibError::Read(
+            RECOVERY_STATUS_UNKNOWN_MESSAGE.to_owned(),
+        ));
+    }
+
+    let mut public = Vec::with_capacity(txids.len());
+    for txid in txids {
+        if !is_canonical_txid(txid) || public.contains(&txid.as_str()) {
+            return Err(ZingolibError::Read(
+                RECOVERY_STATUS_UNKNOWN_MESSAGE.to_owned(),
+            ));
+        }
+        public.push(txid.as_str());
+    }
+    Ok(public)
+}
+
+fn persisted_transactions_review_result_json(
+    operation: &str,
+    txids: &[String],
+    reason: &str,
+    exact_tip_height: u32,
+) -> Result<String, ZingolibError> {
+    let txids = public_recovery_txids(txids)?;
+    let primary_txid = txids[0];
+    Ok(serde_json::json!({
+        "schema_version": TRANSACTION_SCHEMA_VERSION,
+        "operation": operation,
+        "outcome": "recovery_required",
+        "txid": primary_txid,
+        "branch_id": WalletNetwork::Testnet.branch_id_hex(),
+        "expiry_height": null,
+        "target_height": null,
+        "fee_zat": null,
+        "internal_change_receiver_verified": null,
+        "exact_tip_height": exact_tip_height,
+        "broadcast": null,
+        "recovery": {
+            "code": REVIEW_REQUIRED_CODE,
+            "message": bounded_public_message(reason),
+            "txids": txids,
+        },
+        "rejection": null,
+    })
+    .to_string())
+}
+
+fn signed_transaction_result_json(
     operation: &str,
     signed: &SignedTransaction,
-    broadcast: Result<BroadcastResult, E>,
+    exact_tip_height: u32,
+    broadcast: Result<BroadcastResult, WcashTestnetRuntimeError>,
 ) -> String {
     transaction_result_json(
         operation,
@@ -439,14 +659,16 @@ fn signed_transaction_result_json<E: std::fmt::Display>(
             target_height: Some(signed.target_height),
             fee_zat: Some(signed.fee_zat),
             internal_change_receiver_verified: Some(signed.internal_change_receiver_verified),
+            exact_tip_height,
         },
-        broadcast,
+        classify_broadcast_result(broadcast),
     )
 }
 
-fn stored_transaction_result_json<E: std::fmt::Display>(
+fn stored_transaction_result_json(
     signed: &StoredSignedTransaction,
-    broadcast: Result<BroadcastResult, E>,
+    exact_tip_height: u32,
+    broadcast: Result<BroadcastResult, WcashTestnetRuntimeError>,
 ) -> String {
     transaction_result_json(
         "rebroadcast_pending",
@@ -457,27 +679,53 @@ fn stored_transaction_result_json<E: std::fmt::Display>(
             target_height: None,
             fee_zat: None,
             internal_change_receiver_verified: None,
+            exact_tip_height,
         },
-        broadcast,
+        classify_broadcast_result(broadcast),
+    )
+}
+
+fn expired_transaction_result_json(
+    signed: &StoredSignedTransaction,
+    exact_tip_height: u32,
+) -> String {
+    transaction_result_json(
+        "rebroadcast_pending",
+        PublicTransactionMetadata {
+            txid: &signed.txid,
+            branch_id: &signed.branch_id,
+            expiry_height: signed.expiry_height,
+            target_height: None,
+            fee_zat: None,
+            internal_change_receiver_verified: None,
+            exact_tip_height,
+        },
+        NativeBroadcastOutcome::Expired,
     )
 }
 
 fn public_pending_page_json(
     transactions: &[StoredSignedTransaction],
     next_after_row_id: Option<u64>,
+    exact_tip_height: Option<u32>,
 ) -> String {
     let transactions = transactions
         .iter()
         .map(|transaction| {
+            let lifecycle = pending_lifecycle(transaction.expiry_height, exact_tip_height);
             serde_json::json!({
                 "txid": transaction.txid,
                 "branch_id": transaction.branch_id,
                 "expiry_height": transaction.expiry_height,
+                "lifecycle": lifecycle.as_str(),
+                "rebroadcast_allowed": lifecycle.rebroadcast_allowed(),
+                "blocks_new_signing": lifecycle.blocks_new_signing(),
             })
         })
         .collect::<Vec<_>>();
     serde_json::json!({
         "schema_version": TRANSACTION_SCHEMA_VERSION,
+        "exact_tip_height": exact_tip_height,
         "transactions": transactions,
         "next_cursor": next_after_row_id.map(|cursor| cursor.to_string()),
     })
@@ -503,15 +751,8 @@ fn find_pending_transaction(
             return Ok(transaction);
         }
 
-        match page.next_after_row_id {
-            Some(next) if after_row_id.is_none_or(|previous| next > previous) => {
-                after_row_id = Some(next);
-            }
-            Some(_) => {
-                return Err(ZingolibError::Read(
-                    "pending transaction pagination did not advance".to_owned(),
-                ));
-            }
+        match next_pending_cursor(after_row_id, page.next_after_row_id)? {
+            Some(next) => after_row_id = Some(next),
             None => {
                 return Err(ZingolibError::Read(format!(
                     "pending signed transaction {txid} was not found"
@@ -812,13 +1053,32 @@ fn send_and_broadcast(mut cx: FunctionContext) -> JsResult<JsPromise> {
             let runtime = slot
                 .as_mut()
                 .ok_or_else(|| ZingolibError::Init("Wcash wallet is not open".to_owned()))?;
-            ensure_no_pending_transactions(runtime)?;
+            let exact_tip_height = require_exact_wallet_tip(runtime)?;
+            ensure_no_unexpired_pending_transactions(runtime, exact_tip_height)?;
 
-            let signed = RT
-                .block_on(runtime.send(&master_seed, payments))
-                .map_err(|error| ZingolibError::Init(format!("Wcash Testnet send: {error}")))?;
+            let signed = match RT.block_on(runtime.send(&master_seed, payments)) {
+                Ok(signed) => signed,
+                Err(WcashTestnetRuntimeError::Wallet(
+                    WalletServiceError::PersistedTransactionsRequireReview { txids, reason },
+                )) => {
+                    return persisted_transactions_review_result_json(
+                        "send",
+                        &txids,
+                        &reason,
+                        exact_tip_height,
+                    );
+                }
+                Err(error) => {
+                    return Err(ZingolibError::Init(format!("Wcash Testnet send: {error}")));
+                }
+            };
             let broadcast = RT.block_on(runtime.broadcast(&signed));
-            Ok(signed_transaction_result_json("send", &signed, broadcast))
+            Ok(signed_transaction_result_json(
+                "send",
+                &signed,
+                exact_tip_height,
+                broadcast,
+            ))
         })
     })
 }
@@ -841,17 +1101,32 @@ fn shield_coinbase_and_broadcast(mut cx: FunctionContext) -> JsResult<JsPromise>
             let runtime = slot
                 .as_mut()
                 .ok_or_else(|| ZingolibError::Init("Wcash wallet is not open".to_owned()))?;
-            ensure_no_pending_transactions(runtime)?;
+            let exact_tip_height = require_exact_wallet_tip(runtime)?;
+            ensure_no_unexpired_pending_transactions(runtime, exact_tip_height)?;
 
-            let signed = RT
-                .block_on(runtime.shield_coinbase(&master_seed))
-                .map_err(|error| {
-                    ZingolibError::Init(format!("Wcash Testnet coinbase shielding: {error}"))
-                })?;
+            let signed = match RT.block_on(runtime.shield_coinbase(&master_seed)) {
+                Ok(signed) => signed,
+                Err(WcashTestnetRuntimeError::Wallet(
+                    WalletServiceError::PersistedTransactionsRequireReview { txids, reason },
+                )) => {
+                    return persisted_transactions_review_result_json(
+                        "shield_coinbase",
+                        &txids,
+                        &reason,
+                        exact_tip_height,
+                    );
+                }
+                Err(error) => {
+                    return Err(ZingolibError::Init(format!(
+                        "Wcash Testnet coinbase shielding: {error}"
+                    )));
+                }
+            };
             let broadcast = RT.block_on(runtime.broadcast(&signed));
             Ok(signed_transaction_result_json(
                 "shield_coinbase",
                 &signed,
+                exact_tip_height,
                 broadcast,
             ))
         })
@@ -890,6 +1165,11 @@ fn pending_transactions(mut cx: FunctionContext) -> JsResult<JsPromise> {
             let runtime = slot
                 .as_ref()
                 .ok_or_else(|| ZingolibError::Read("Wcash wallet is not open".to_owned()))?;
+            let exact_tip_height = runtime
+                .balance()
+                .ok()
+                .as_ref()
+                .and_then(exact_tip_from_summary);
             let page = runtime
                 .pending_transactions(after_row_id, MAX_PENDING_TRANSACTION_PAGE_SIZE)
                 .map_err(|error| {
@@ -898,6 +1178,7 @@ fn pending_transactions(mut cx: FunctionContext) -> JsResult<JsPromise> {
             Ok(public_pending_page_json(
                 &page.transactions,
                 page.next_after_row_id,
+                exact_tip_height,
             ))
         })
     })
@@ -923,8 +1204,18 @@ fn rebroadcast_pending(mut cx: FunctionContext) -> JsResult<JsPromise> {
                 .as_mut()
                 .ok_or_else(|| ZingolibError::Read("Wcash wallet is not open".to_owned()))?;
             let signed = find_pending_transaction(runtime, &txid)?;
+            let exact_tip_height = require_exact_wallet_tip(runtime)?;
+            if pending_lifecycle(signed.expiry_height, Some(exact_tip_height))
+                == PendingLifecycle::Expired
+            {
+                return Ok(expired_transaction_result_json(&signed, exact_tip_height));
+            }
             let broadcast = RT.block_on(runtime.broadcast_pending(&signed));
-            Ok(stored_transaction_result_json(&signed, broadcast))
+            Ok(stored_transaction_result_json(
+                &signed,
+                exact_tip_height,
+                broadcast,
+            ))
         })
     })
 }
@@ -1186,16 +1477,93 @@ mod tests {
             branch_id: "b3cfd27e".to_owned(),
             expiry_height: 123,
         };
-        let output = public_pending_page_json(&[pending], Some(7));
+        let output = public_pending_page_json(&[pending], Some(7), Some(122));
         let parsed: Value = serde_json::from_str(&output).unwrap();
 
         assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["exact_tip_height"], 122);
         assert_eq!(parsed["next_cursor"], "7");
         assert_eq!(parsed["transactions"][0]["txid"], "ab".repeat(32));
+        assert_eq!(parsed["transactions"][0]["lifecycle"], "unexpired");
+        assert_eq!(parsed["transactions"][0]["rebroadcast_allowed"], true);
+        assert_eq!(parsed["transactions"][0]["blocks_new_signing"], true);
         assert!(parsed["transactions"][0]
             .get("raw_transaction_hex")
             .is_none());
         assert!(!output.contains("sensitive-raw-transaction-bytes"));
+    }
+
+    #[test]
+    fn pending_lifecycle_unblocks_only_at_a_known_exact_expiry_tip() {
+        assert_eq!(
+            pending_lifecycle(140, Some(139)),
+            PendingLifecycle::Unexpired
+        );
+        assert_eq!(pending_lifecycle(140, Some(140)), PendingLifecycle::Expired);
+        assert_eq!(pending_lifecycle(140, Some(141)), PendingLifecycle::Expired);
+        assert_eq!(pending_lifecycle(140, None), PendingLifecycle::TipUnknown);
+        assert_eq!(
+            pending_lifecycle(0, Some(u32::MAX)),
+            PendingLifecycle::Unexpired
+        );
+
+        assert!(PendingLifecycle::Unexpired.blocks_new_signing());
+        assert!(PendingLifecycle::TipUnknown.blocks_new_signing());
+        assert!(!PendingLifecycle::Expired.blocks_new_signing());
+        assert!(PendingLifecycle::Unexpired.rebroadcast_allowed());
+        assert!(!PendingLifecycle::Expired.rebroadcast_allowed());
+        assert!(!PendingLifecycle::TipUnknown.rebroadcast_allowed());
+    }
+
+    #[test]
+    fn pending_pagination_requires_strict_forward_progress() {
+        assert_eq!(next_pending_cursor(None, Some(1)).unwrap(), Some(1));
+        assert_eq!(next_pending_cursor(Some(1), Some(2)).unwrap(), Some(2));
+        assert_eq!(next_pending_cursor(Some(2), None).unwrap(), None);
+        assert!(next_pending_cursor(Some(2), Some(2)).is_err());
+        assert!(next_pending_cursor(Some(2), Some(1)).is_err());
+    }
+
+    #[test]
+    fn pending_page_marks_expired_and_unknown_tip_rows_fail_closed() {
+        let pending = StoredSignedTransaction {
+            txid: "ab".repeat(32),
+            raw_transaction_hex: "never-export-lifecycle-bytes".to_owned(),
+            branch_id: "b3cfd27e".to_owned(),
+            expiry_height: 123,
+        };
+
+        let expired: Value = serde_json::from_str(&public_pending_page_json(
+            std::slice::from_ref(&pending),
+            None,
+            Some(123),
+        ))
+        .unwrap();
+        assert_eq!(expired["transactions"][0]["lifecycle"], "expired");
+        assert_eq!(expired["transactions"][0]["rebroadcast_allowed"], false);
+        assert_eq!(expired["transactions"][0]["blocks_new_signing"], false);
+
+        let unknown: Value =
+            serde_json::from_str(&public_pending_page_json(&[pending], None, None)).unwrap();
+        assert_eq!(unknown["exact_tip_height"], Value::Null);
+        assert_eq!(unknown["transactions"][0]["lifecycle"], "tip_unknown");
+        assert_eq!(unknown["transactions"][0]["rebroadcast_allowed"], false);
+        assert_eq!(unknown["transactions"][0]["blocks_new_signing"], true);
+        assert!(!unknown.to_string().contains("never-export-lifecycle-bytes"));
+    }
+
+    #[test]
+    fn exact_tip_requires_synchronized_contiguous_scanning() {
+        let summary = |tip, scanned, synchronized| WalletBalanceSummary {
+            chain_tip_height: tip,
+            fully_scanned_height: scanned,
+            synchronized,
+            accounts: vec![],
+        };
+
+        assert_eq!(exact_tip_from_summary(&summary(50, 50, true)), Some(50));
+        assert_eq!(exact_tip_from_summary(&summary(50, 49, true)), None);
+        assert_eq!(exact_tip_from_summary(&summary(50, 50, false)), None);
     }
 
     #[test]
@@ -1212,7 +1580,13 @@ mod tests {
         let output = signed_transaction_result_json(
             "send",
             &signed,
-            Result::<BroadcastResult, _>::Err("network acknowledgement lost"),
+            100,
+            Err(WcashTestnetRuntimeError::Rpc(
+                WalletRpcError::AmbiguousBroadcast {
+                    txid: signed.txid.clone(),
+                    reason: "network acknowledgement lost".to_owned(),
+                },
+            )),
         );
         let parsed: Value = serde_json::from_str(&output).unwrap();
 
@@ -1221,8 +1595,10 @@ mod tests {
         assert_eq!(parsed["outcome"], "recovery_required");
         assert_eq!(parsed["txid"], signed.txid);
         assert_eq!(parsed["fee_zat"], "10000");
+        assert_eq!(parsed["exact_tip_height"], 100);
         assert_eq!(parsed["broadcast"], Value::Null);
         assert_eq!(parsed["recovery"]["code"], RECOVERY_REQUIRED_CODE);
+        assert_eq!(parsed["rejection"], Value::Null);
         assert!(parsed.get("raw_transaction_hex").is_none());
         assert!(!output.contains("sensitive-signed-transaction-bytes"));
     }
@@ -1244,11 +1620,7 @@ mod tests {
             disposition: BroadcastDisposition::Submitted,
             status: TransactionStatus::Mempool,
         };
-        let output = signed_transaction_result_json(
-            "shield_coinbase",
-            &signed,
-            Result::<_, &str>::Ok(broadcast),
-        );
+        let output = signed_transaction_result_json("shield_coinbase", &signed, 100, Ok(broadcast));
         let parsed: Value = serde_json::from_str(&output).unwrap();
 
         assert_eq!(parsed["operation"], "shield_coinbase");
@@ -1257,7 +1629,146 @@ mod tests {
         assert_eq!(parsed["broadcast"]["disposition"], "submitted");
         assert_eq!(parsed["broadcast"]["status"]["state"], "mempool");
         assert_eq!(parsed["recovery"], Value::Null);
+        assert_eq!(parsed["rejection"], Value::Null);
         assert!(parsed.get("raw_transaction_hex").is_none());
         assert!(!output.contains("never-export-this-serialization"));
+    }
+
+    #[test]
+    fn definitive_node_rejection_is_not_reported_as_ambiguous_recovery() {
+        let signed = SignedTransaction {
+            txid: "12".repeat(32),
+            raw_transaction_hex: "never-export-rejected-bytes".to_owned(),
+            branch_id: "b3cfd27e".to_owned(),
+            target_height: 101,
+            expiry_height: 141,
+            fee_zat: 10_000,
+            internal_change_receiver_verified: true,
+        };
+        let output = signed_transaction_result_json(
+            "send",
+            &signed,
+            100,
+            Err(WcashTestnetRuntimeError::Rpc(WalletRpcError::Rejected {
+                code: -26,
+                message: "consensus-invalid".to_owned(),
+            })),
+        );
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["outcome"], "rejected");
+        assert_eq!(parsed["recovery"], Value::Null);
+        assert_eq!(parsed["rejection"]["code"], REJECTED_CODE);
+        assert_eq!(parsed["rejection"]["node_code"], -26);
+        assert_eq!(parsed["rejection"]["message"], "consensus-invalid");
+        assert!(!output.contains("never-export-rejected-bytes"));
+    }
+
+    #[test]
+    fn expired_rebroadcast_returns_terminal_outcome_without_signed_bytes() {
+        let signed = StoredSignedTransaction {
+            txid: "34".repeat(32),
+            raw_transaction_hex: "never-rebroadcast-expired-bytes".to_owned(),
+            branch_id: "b3cfd27e".to_owned(),
+            expiry_height: 140,
+        };
+        let output = expired_transaction_result_json(&signed, 140);
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["operation"], "rebroadcast_pending");
+        assert_eq!(parsed["outcome"], "expired");
+        assert_eq!(parsed["exact_tip_height"], 140);
+        assert_eq!(parsed["broadcast"], Value::Null);
+        assert_eq!(parsed["recovery"], Value::Null);
+        assert_eq!(parsed["rejection"], Value::Null);
+        assert!(!output.contains("never-rebroadcast-expired-bytes"));
+    }
+
+    #[test]
+    fn nonbroadcast_post_signing_error_requires_review_not_blind_replacement() {
+        let signed = SignedTransaction {
+            txid: "56".repeat(32),
+            raw_transaction_hex: "never-export-review-bytes".to_owned(),
+            branch_id: "b3cfd27e".to_owned(),
+            target_height: 100,
+            expiry_height: 140,
+            fee_zat: 10_000,
+            internal_change_receiver_verified: true,
+        };
+        let output = signed_transaction_result_json(
+            "send",
+            &signed,
+            99,
+            Err(WcashTestnetRuntimeError::SignedTransactionMetadataMismatch),
+        );
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["outcome"], "recovery_required");
+        assert_eq!(parsed["recovery"]["code"], REVIEW_REQUIRED_CODE);
+        assert_eq!(parsed["recovery"]["txids"][0], signed.txid);
+        assert_eq!(parsed["rejection"], Value::Null);
+        assert!(!output.contains("never-export-review-bytes"));
+    }
+
+    #[test]
+    fn persisted_signing_error_returns_all_canonical_txids_without_throwing() {
+        let first = "78".repeat(32);
+        let second = "9a".repeat(32);
+        let output = persisted_transactions_review_result_json(
+            "send",
+            &[first.clone(), second.clone()],
+            "final policy verification failed",
+            200,
+        )
+        .unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["outcome"], "recovery_required");
+        assert_eq!(parsed["txid"], first);
+        assert_eq!(parsed["branch_id"], WalletNetwork::Testnet.branch_id_hex());
+        assert_eq!(parsed["expiry_height"], Value::Null);
+        assert_eq!(parsed["exact_tip_height"], 200);
+        assert_eq!(parsed["recovery"]["code"], REVIEW_REQUIRED_CODE);
+        assert_eq!(
+            parsed["recovery"]["txids"],
+            serde_json::json!([first, second])
+        );
+        assert_eq!(parsed["rejection"], Value::Null);
+        assert!(!output.contains("raw_transaction"));
+    }
+
+    #[test]
+    fn malformed_persisted_review_metadata_fails_with_status_unknown() {
+        let malformed = vec!["NOT-A-CANONICAL-TXID".to_owned()];
+        let duplicate = "bc".repeat(32);
+        let duplicate_pair = vec![duplicate.clone(), duplicate];
+        let too_many = (0..=MAX_PUBLIC_RECOVERY_TXIDS)
+            .map(|index| format!("{index:064x}"))
+            .collect::<Vec<_>>();
+
+        for txids in [
+            &[][..],
+            malformed.as_slice(),
+            duplicate_pair.as_slice(),
+            too_many.as_slice(),
+        ] {
+            let error =
+                persisted_transactions_review_result_json("send", txids, "must not escape", 200)
+                    .unwrap_err();
+            assert!(matches!(
+                error,
+                ZingolibError::Read(message) if message == RECOVERY_STATUS_UNKNOWN_MESSAGE
+            ));
+        }
+    }
+
+    #[test]
+    fn public_error_messages_are_utf8_safe_and_bounded() {
+        let message = format!("{}é", "x".repeat(MAX_PUBLIC_ERROR_MESSAGE_BYTES));
+        let bounded = bounded_public_message(message);
+
+        assert!(bounded.is_char_boundary(bounded.len()));
+        assert!(bounded.ends_with('…'));
+        assert!(bounded.len() <= MAX_PUBLIC_ERROR_MESSAGE_BYTES);
     }
 }
