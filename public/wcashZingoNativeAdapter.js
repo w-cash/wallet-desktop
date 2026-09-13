@@ -314,6 +314,21 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
     return balance;
   }
 
+  function balanceTotals(balance) {
+    const totals = {
+      ironwood: 0,
+      ironwoodSpendable: 0,
+      transparent: 0,
+    };
+    if (!Array.isArray(balance.accounts)) throw new TypeError("Wcash core returned invalid accounts");
+    for (const account of balance.accounts) {
+      totals.ironwood += safeInteger(account.ironwood_total_zat, "Ironwood balance");
+      totals.ironwoodSpendable += safeInteger(account.ironwood_spendable_zat, "Ironwood spendable balance");
+      totals.transparent += safeInteger(account.transparent_total_zat, "transparent balance");
+    }
+    return totals;
+  }
+
   function syncStatus() {
     const balance = syncState.result || lastBalance;
     const scanned = balance ? safeInteger(balance.fully_scanned_height, "fully scanned height") : 0;
@@ -337,17 +352,15 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
 
   async function getBalance() {
     const balance = await currentBalance();
-    const totals = {
-      ironwood: 0,
-      ironwoodSpendable: 0,
-      transparent: 0,
-    };
-    if (!Array.isArray(balance.accounts)) throw new TypeError("Wcash core returned invalid accounts");
-    for (const account of balance.accounts) {
-      totals.ironwood += safeInteger(account.ironwood_total_zat, "Ironwood balance");
-      totals.ironwoodSpendable += safeInteger(account.ironwood_spendable_zat, "Ironwood spendable balance");
-      totals.transparent += safeInteger(account.transparent_total_zat, "transparent balance");
-    }
+    const totals = balanceTotals(balance);
+    // Proposal creation reserves its exact inputs in SQLite. Keep the
+    // pre-proposal amount available to the one renderer flow that owns that
+    // reservation, otherwise the next upstream balance poll disables its Send
+    // button while the reviewed preview is still pending.
+    const displaySpendable =
+      pendingProposal && pendingProposal.operation === "send" && pendingProposal.displaySpendableZat !== null
+        ? pendingProposal.displaySpendableZat
+        : totals.ironwoodSpendable;
     return {
       total_orchard_balance: 0,
       total_ironwood_balance: totals.ironwood,
@@ -357,7 +370,7 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
       confirmed_ironwood_balance: totals.ironwood,
       confirmed_sapling_balance: 0,
       confirmed_transparent_balance: totals.transparent,
-      spendable_balance: totals.ironwoodSpendable,
+      spendable_balance: displaySpendable,
     };
   }
 
@@ -505,12 +518,11 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
     }
     await discardPendingProposalUnlocked();
     try {
-      const preview = proposalPreview(
-        await nativeJson("wcash_propose_send", requestKey),
-        "send",
-        totalZat,
-      );
-      pendingProposal = { ...preview, requestKey };
+      const balanceBeforeProposal = await nativeJson("wcash_balance");
+      lastBalance = balanceBeforeProposal;
+      const displaySpendableZat = balanceTotals(balanceBeforeProposal).ironwoodSpendable;
+      const preview = proposalPreview(await nativeJson("wcash_propose_send", requestKey), "send", totalZat);
+      pendingProposal = { ...preview, requestKey, displaySpendableZat };
       return JSON.stringify({ fee: preview.feeZat, amount: totalZat });
     } catch (error) {
       try {
@@ -534,10 +546,7 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
     }
     await discardPendingProposalUnlocked();
     try {
-      const preview = proposalPreview(
-        await nativeJson("wcash_propose_shield_coinbase"),
-        "shield_coinbase",
-      );
+      const preview = proposalPreview(await nativeJson("wcash_propose_shield_coinbase"), "shield_coinbase");
       pendingProposal = { ...preview, requestKey: "shield_coinbase" };
       return JSON.stringify({ fee: preview.feeZat });
     } catch (error) {
@@ -566,14 +575,13 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
       await discardPendingProposalUnlocked();
       return JSON.stringify({ error: "The Wcash wallet credential does not control this wallet" });
     }
+    // Once confirmation starts, signing may persist a transaction and replace
+    // the proposal lock with ordinary pending-spend tracking. Stop presenting
+    // the preview reservation as available before crossing that boundary.
+    proposal.displaySpendableZat = null;
     let result;
     try {
-      result = await nativeJson(
-        "wcash_confirm_proposal",
-        credential.phrase,
-        proposal.id,
-        proposal.operation,
-      );
+      result = await nativeJson("wcash_confirm_proposal", credential.phrase, proposal.id, proposal.operation);
     } catch (error) {
       try {
         // Pre-signing failures leave a cancellable staged proposal. A signing

@@ -40,6 +40,7 @@ async function main() {
         account_id: "account-0",
         ironwood_total_zat: 300_000_000,
         ironwood_spendable_zat: 300_000_000,
+        ironwood_locked_zat: 0,
         transparent_total_zat: 0,
       },
     ],
@@ -49,8 +50,10 @@ async function main() {
   let nativeProposal = null;
   let confirmCalls = 0;
   let confirmBehavior = "broadcast";
+  let proposeBehavior = "success";
   const proposalOperations = [];
   let failNativeDelete = false;
+  let simulateProposalBalanceLock = false;
   const deleteOrder = [];
   let sync = deferred();
 
@@ -150,6 +153,10 @@ async function main() {
         throw new Error("calculated transaction requires review");
       }
       nativeProposal = null;
+      if (simulateProposalBalanceLock) {
+        balance.accounts[0].ironwood_spendable_zat = 300_000_000;
+        balance.accounts[0].ironwood_locked_zat = 0;
+      }
       return JSON.stringify({ cancelled: true });
     },
     wcash_propose_send: async (requestJson) => {
@@ -166,6 +173,13 @@ async function main() {
         feeZat: request.payments.length === 1 ? 15_000 : 20_000,
         state: "staged",
       };
+      if (simulateProposalBalanceLock) {
+        balance.accounts[0].ironwood_spendable_zat = 0;
+        balance.accounts[0].ironwood_locked_zat = 300_000_000;
+      }
+      if (proposeBehavior === "error") {
+        throw new Error("proposal planning failed");
+      }
       return JSON.stringify({
         schema_version: 1,
         proposal_id: nativeProposal.id,
@@ -452,10 +466,88 @@ async function main() {
   assert.deepEqual(proposalOperations.at(-1), ["cancel", "9"]);
   assert.deepEqual(JSON.parse(await adapter.invoke("confirm")), { error: "No Wcash transaction proposal is pending" });
 
+  simulateProposalBalanceLock = true;
+  const lockedPreview = JSON.parse(
+    await adapter.invoke("send", JSON.stringify([{ address: ironwoodAddress, amount: 10_000_000 }])),
+  );
+  assert.equal(lockedPreview.fee, 15_000);
+  assert.equal(balance.accounts[0].ironwood_spendable_zat, 0, "native proposal must reserve its selected note");
+  assert.equal(balance.accounts[0].ironwood_locked_zat, 300_000_000);
+  assert.equal(
+    JSON.parse(await adapter.invoke("get_balance")).spendable_balance,
+    300_000_000,
+    "the exact preview owner must keep its pre-proposal spendable display balance",
+  );
+  assert.equal(
+    JSON.parse(await adapter.invoke("get_spendable_balance_with_address", ironwoodAddress, "false")).spendable_balance,
+    300_000_000,
+    "the next upstream fee refresh must not disable the staged Send flow",
+  );
+  assert.deepEqual(JSON.parse(await adapter.invoke("cancel_transaction_proposal")), { cancelled: true });
+  balance.accounts[0].ironwood_spendable_zat = 290_000_000;
+  assert.equal(
+    JSON.parse(await adapter.invoke("get_balance")).spendable_balance,
+    290_000_000,
+    "explicit cancellation must clear the preview display balance",
+  );
+  balance.accounts[0].ironwood_spendable_zat = 300_000_000;
+
+  proposeBehavior = "error";
+  const failedPreview = JSON.parse(
+    await adapter.invoke("send", JSON.stringify([{ address: ironwoodAddress, amount: 11_000_000 }])),
+  );
+  assert.match(failedPreview.error, /proposal planning failed/);
+  assert.equal(nativeProposal, null, "a failed native proposal must be cancelled without an opaque id");
+  assert.deepEqual(proposalOperations.at(-1), ["cancel", undefined]);
+  balance.accounts[0].ironwood_spendable_zat = 285_000_000;
+  assert.equal(
+    JSON.parse(await adapter.invoke("get_balance")).spendable_balance,
+    285_000_000,
+    "a failed proposal must not leave a cached display balance",
+  );
+  balance.accounts[0].ironwood_spendable_zat = 300_000_000;
+  proposeBehavior = "success";
+
+  await adapter.invoke("send", JSON.stringify([{ address: ironwoodAddress, amount: 12_000_000 }]));
+  assert.equal(JSON.parse(await adapter.invoke("get_balance")).spendable_balance, 300_000_000);
+  assert.deepEqual(JSON.parse(await adapter.invoke("confirm")), { txids: ["b".repeat(64)] });
+  assert.equal(
+    JSON.parse(await adapter.invoke("get_balance")).spendable_balance,
+    0,
+    "successful confirmation must stop presenting the proposal reservation as spendable",
+  );
+  balance.accounts[0].ironwood_spendable_zat = 300_000_000;
+  balance.accounts[0].ironwood_locked_zat = 0;
+
+  await adapter.invoke("send", JSON.stringify([{ address: ironwoodAddress, amount: 13_000_000 }]));
+  confirmBehavior = "pre-sign-error";
+  await assert.rejects(() => adapter.invoke("confirm"), /chain tip moved before calculation/);
+  balance.accounts[0].ironwood_spendable_zat = 280_000_000;
+  assert.equal(
+    JSON.parse(await adapter.invoke("get_balance")).spendable_balance,
+    280_000_000,
+    "a failed confirmation with successful cancellation must clear the preview display balance",
+  );
+  balance.accounts[0].ironwood_spendable_zat = 300_000_000;
+  confirmBehavior = "broadcast";
+
+  await adapter.invoke("send", JSON.stringify([{ address: ironwoodAddress, amount: 14_000_000 }]));
+  assert.equal(await adapter.invoke("deinitialize"), "Wcash adapter state cleared.");
+  balance.accounts[0].ironwood_spendable_zat = 275_000_000;
+  assert.equal(
+    JSON.parse(await adapter.invoke("get_balance")).spendable_balance,
+    275_000_000,
+    "deinitialization must clear the preview display balance",
+  );
+  balance.accounts[0].ironwood_spendable_zat = 300_000_000;
+  simulateProposalBalanceLock = false;
+
   assert.equal(await adapter.invoke("get_developer_donation_address"), "");
   assert.deepEqual(JSON.parse(await adapter.invoke("zec_price_over_mixnet")), { price: null });
 
   const credentialKey = `${profile.keytarService}:${profile.keytarAccount}`;
+  simulateProposalBalanceLock = true;
+  await adapter.invoke("send", JSON.stringify([{ address: ironwoodAddress, amount: 15_000_000 }]));
   failNativeDelete = true;
   await assert.rejects(
     adapter.invoke("delete_wallet", profile.endpoint, "regtest", "high", 1, "wallet.dat"),
@@ -463,6 +555,14 @@ async function main() {
   );
   assert.equal(credentials.has(credentialKey), true, "native deletion failure must preserve the recovery credential");
   assert.deepEqual(deleteOrder, ["native"]);
+  balance.accounts[0].ironwood_spendable_zat = 270_000_000;
+  assert.equal(
+    JSON.parse(await adapter.invoke("get_balance")).spendable_balance,
+    270_000_000,
+    "wallet deletion must clear the preview display balance before deleting native state",
+  );
+  balance.accounts[0].ironwood_spendable_zat = 300_000_000;
+  simulateProposalBalanceLock = false;
 
   failNativeDelete = false;
   assert.deepEqual(
