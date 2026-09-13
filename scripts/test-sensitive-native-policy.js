@@ -1,6 +1,8 @@
 "use strict";
 
 const assert = require("assert/strict");
+const fs = require("fs");
+const path = require("path");
 const {
   createRequireAuthSettingHandler,
   createSensitiveAuthorizationGrantStore,
@@ -85,6 +87,13 @@ async function verifySensitiveOperation(method) {
 }
 
 async function main() {
+  const electronMain = fs.readFileSync(path.join(__dirname, "../public/electron.js"), "utf8");
+  assert.match(
+    electronMain,
+    /native\.verifyWindowsUser\(win\.getNativeWindowHandle\(\), String\(reason\)\)/,
+    "Windows Hello verification must pass the owning native window handle",
+  );
+
   await verifySensitiveOperation("get_seed");
   await verifySensitiveOperation("get_ufvk");
   await verifySensitiveOperation("confirm");

@@ -615,6 +615,7 @@ async function verifyDeviceAuthentication(reason, { requireAvailable = false } =
   // on "Authenticating..." with the window already blurred, and no way forward.
   if (process.platform === "win32") {
     const win = BrowserWindow.getAllWindows()[0] ?? null;
+    if (!win) return { success: false };
     try {
       const native = getNative();
       const availability = await withAuthTimeout(
@@ -626,7 +627,7 @@ async function verifyDeviceAuthentication(reason, { requireAvailable = false } =
         return requireAvailable ? { success: false, unavailable: true } : { success: true };
       if (win) win.blur();
       const result = await withAuthTimeout(
-        () => native.verifyWindowsUser(String(reason)),
+        () => native.verifyWindowsUser(win.getNativeWindowHandle(), String(reason)),
         { success: false },
         AUTH_VERIFY_TIMEOUT_MS,
       );
