@@ -17,6 +17,8 @@ use std::panic::{self, UnwindSafe};
 use std::path::PathBuf;
 
 use neon::prelude::*;
+#[cfg(target_os = "windows")]
+use neon::types::buffer::TypedArray;
 use once_cell::sync::{Lazy, OnceCell};
 use tokio::runtime::Runtime;
 
