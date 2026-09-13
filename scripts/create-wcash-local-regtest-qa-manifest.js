@@ -20,7 +20,7 @@ const TARGETS = {
   "linux-x64": {
     nativePlatform: "linux",
     config: "config/electron-builder.local-regtest-qa.linux-x64.json",
-    artifactPattern: /^Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-.+-linux-x64\.(?:AppImage|deb)$/,
+    artifactPattern: /^Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-.+-linux-(?:x86_64\.AppImage|amd64\.deb)$/,
     extensions: [".AppImage", ".deb"],
   },
   "windows-x64": {
