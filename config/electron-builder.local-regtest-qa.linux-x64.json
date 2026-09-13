@@ -40,6 +40,7 @@
   },
   "linux": {
     "category": "Finance",
+    "maintainer": "Wcash Wallet contributors <placex.com@gmail.com>",
     "executableName": "wcash-wallet",
     "icon": "./resources/icons",
     "target": ["AppImage", "deb"],
