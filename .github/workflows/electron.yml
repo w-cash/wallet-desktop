@@ -1,46 +1,48 @@
 name: Wcash Wallet Local Regtest QA Candidates
 
-# Explicit maintainer runs only. Every job uploads a short-lived, unsigned
-# review artifact; no job can publish a release or access signing credentials.
+# This reusable/manual workflow produces short-lived, unsigned QA artifacts.
+# It has read-only repository access, consumes no signing secrets, and cannot
+# publish a release. Production and store packaging remain separately blocked.
 on:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: wcash-wallet-local-regtest-qa-${{ github.ref }}
+  group: wcash-wallet-local-regtest-qa-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   macos-arm64-local-regtest-qa:
     name: Unsigned macOS arm64 Local Regtest QA
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 90
 
     steps:
-      - name: Check out the reviewed source and upstream parity tag
-        uses: actions/checkout@v4
+      - name: Check out source (actions/checkout v4.4.0)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
-      - name: Install the pinned Rust toolchain
-        uses: dtolnay/rust-toolchain@1.91.0
+      - name: Install Rust 1.91.0 (dtolnay/rust-toolchain 1.91.0)
+        uses: dtolnay/rust-toolchain@8d8cc9a8e0d47b64af669de71110e76860d6afbd # 1.91.0
         with:
           targets: aarch64-apple-darwin
 
-      - name: Use Node.js 22
-        uses: actions/setup-node@v4
+      - name: Install Node.js 22.23.2 (actions/setup-node v4.4.0)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22.x
+          node-version: 22.23.2
 
-      - name: Use Yarn 1
+      - name: Install Yarn 1.22.22
         run: |
           corepack enable
           corepack prepare yarn@1.22.22 --activate
 
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
+      - name: Install protoc 36.1 (arduino/setup-protoc v3.0.0)
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           version: "36.1"
 
@@ -56,11 +58,25 @@ jobs:
           LZMA_API_STATIC: "1"
         run: yarn package:local-regtest-qa:mac-arm64
 
-      - name: Upload the unsigned Local Regtest QA candidate
-        uses: actions/upload-artifact@v4
+      - name: Load and attest the packaged Wcash native runtime
+        run: >-
+          node scripts/verify-wcash-cross-platform-candidate-after-pack.js probe-native darwin
+          "dist/local-regtest-qa/mac-arm64/Wcash Wallet.app/Contents/MacOS/Wcash Wallet"
+          "dist/local-regtest-qa/mac-arm64/Wcash Wallet.app/Contents/Resources/app.asar.unpacked/build/native.node"
+          "dist/local-regtest-qa/WCASH-NATIVE-LOCAL-REGTEST-QA-ATTESTATION.json"
+
+      - name: Create the unsigned QA manifest and checksums
+        run: node scripts/create-wcash-local-regtest-qa-manifest.js macos-arm64 dist/local-regtest-qa
+
+      - name: Upload the unsigned Local Regtest QA candidate (actions/upload-artifact v4.6.2)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wcash-wallet-local-regtest-qa-macos-arm64-unsigned
-          path: dist/local-regtest-qa/Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-*-arm64.zip
+          path: |
+            dist/local-regtest-qa/Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-*-arm64.zip
+            dist/local-regtest-qa/WCASH-NATIVE-LOCAL-REGTEST-QA-ATTESTATION.json
+            dist/local-regtest-qa/Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-macos-arm64-MANIFEST.json
+            dist/local-regtest-qa/Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-macos-arm64-SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -70,8 +86,8 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - name: Check out the reviewed source and upstream parity tag
-        uses: actions/checkout@v4
+      - name: Check out source (actions/checkout v4.4.0)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
@@ -80,39 +96,48 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes build-essential clang cmake libsecret-1-dev libssl-dev pkg-config
 
-      - name: Install the pinned Rust toolchain
-        uses: dtolnay/rust-toolchain@1.91.0
+      - name: Install Rust 1.91.0 (dtolnay/rust-toolchain 1.91.0)
+        uses: dtolnay/rust-toolchain@8d8cc9a8e0d47b64af669de71110e76860d6afbd # 1.91.0
         with:
           targets: x86_64-unknown-linux-gnu
 
-      - name: Use Node.js 22
-        uses: actions/setup-node@v4
+      - name: Install Node.js 22.23.2 (actions/setup-node v4.4.0)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22.x
+          node-version: 22.23.2
 
-      - name: Use Yarn 1
+      - name: Install Yarn 1.22.22
         run: |
           corepack enable
           corepack prepare yarn@1.22.22 --activate
 
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
+      - name: Install protoc 36.1 (arduino/setup-protoc v3.0.0)
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           version: "36.1"
+
+      - name: Verify the native runner architecture
+        run: test "$(uname -m)" = x86_64
 
       - name: Install locked JavaScript dependencies
         run: yarn install --frozen-lockfile
 
-      - name: Verify policy and build the unsigned candidate
+      - name: Verify policy, load the native runtime, and build the unsigned candidates
         run: yarn package:local-regtest-qa:linux-x64
 
-      - name: Upload the unsigned Local Regtest QA candidates
-        uses: actions/upload-artifact@v4
+      - name: Create the unsigned QA manifest and checksums
+        run: node scripts/create-wcash-local-regtest-qa-manifest.js linux-x64 dist/local-regtest-qa/linux-x64
+
+      - name: Upload the unsigned Local Regtest QA candidates (actions/upload-artifact v4.6.2)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wcash-wallet-local-regtest-qa-linux-x64-unsigned
           path: |
             dist/local-regtest-qa/linux-x64/Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-*-linux-*.AppImage
             dist/local-regtest-qa/linux-x64/Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-*-linux-*.deb
+            dist/local-regtest-qa/linux-x64/WCASH-NATIVE-LOCAL-REGTEST-QA-ATTESTATION.json
+            dist/local-regtest-qa/linux-x64/Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-linux-x64-MANIFEST.json
+            dist/local-regtest-qa/linux-x64/Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-linux-x64-SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -122,7 +147,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: windows-latest
+          - runner: windows-2025
             node_arch: x64
             electron_arch: x64
             rust_target: x86_64-pc-windows-msvc
@@ -136,45 +161,58 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - name: Check out the reviewed source and upstream parity tag
-        uses: actions/checkout@v4
+      - name: Check out source (actions/checkout v4.4.0)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
-      - name: Install the pinned Rust toolchain
-        uses: dtolnay/rust-toolchain@1.91.0
+      - name: Install Rust 1.91.0 (dtolnay/rust-toolchain 1.91.0)
+        uses: dtolnay/rust-toolchain@8d8cc9a8e0d47b64af669de71110e76860d6afbd # 1.91.0
         with:
           targets: ${{ matrix.rust_target }}
 
-      - name: Use Node.js 22
-        uses: actions/setup-node@v4
+      - name: Install Node.js 22.23.2 (actions/setup-node v4.4.0)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22.x
+          node-version: 22.23.2
           architecture: ${{ matrix.node_arch }}
 
-      - name: Use Yarn 1
+      - name: Install Yarn 1.22.22
         run: |
           corepack enable
           corepack prepare yarn@1.22.22 --activate
 
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
+      - name: Install protoc 36.1 (arduino/setup-protoc v3.0.0)
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           version: "36.1"
+
+      - name: Verify the native runner architecture
+        run: node -e "if (process.arch !== '${{ matrix.node_arch }}') process.exit(1)"
 
       - name: Install locked JavaScript dependencies
         run: yarn install --frozen-lockfile
 
-      - name: Verify policy and build the unsigned candidate
+      - name: Verify policy, load the native runtime, and build the unsigned candidate
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
           LZMA_API_STATIC: "1"
         run: yarn ${{ matrix.package_script }}
 
-      - name: Upload the unsigned Local Regtest QA candidate
-        uses: actions/upload-artifact@v4
+      - name: Create the unsigned QA manifest and checksums
+        run: >-
+          node scripts/create-wcash-local-regtest-qa-manifest.js
+          windows-${{ matrix.electron_arch }}
+          dist/local-regtest-qa/windows-${{ matrix.electron_arch }}
+
+      - name: Upload the unsigned Local Regtest QA candidate (actions/upload-artifact v4.6.2)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wcash-wallet-local-regtest-qa-windows-${{ matrix.electron_arch }}-unsigned
-          path: dist/local-regtest-qa/windows-${{ matrix.electron_arch }}/Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-*-windows-${{ matrix.electron_arch }}.zip
+          path: |
+            dist/local-regtest-qa/windows-${{ matrix.electron_arch }}/Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-*-windows-${{ matrix.electron_arch }}.zip
+            dist/local-regtest-qa/windows-${{ matrix.electron_arch }}/WCASH-NATIVE-LOCAL-REGTEST-QA-ATTESTATION.json
+            dist/local-regtest-qa/windows-${{ matrix.electron_arch }}/Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-windows-${{ matrix.electron_arch }}-MANIFEST.json
+            dist/local-regtest-qa/windows-${{ matrix.electron_arch }}/Wcash-Wallet-LOCAL-REGTEST-QA-UNSIGNED-windows-${{ matrix.electron_arch }}-SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14

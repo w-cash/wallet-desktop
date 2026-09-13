@@ -216,6 +216,8 @@ const flatpak = read("flatpak/com.wcashwallet.wallet.yml");
 const flatpakMetadata = read("flatpak/com.wcashwallet.wallet.metainfo.xml");
 const masEntitlements = read("configs/entitlements.mas.plist");
 const signingEntryPoint = read("bin/signbinaries.sh");
+const crossPlatformVerifier = read("scripts/verify-wcash-cross-platform-candidate-after-pack.js");
+const candidateManifest = read("scripts/create-wcash-local-regtest-qa-manifest.js");
 
 for (const required of ["com.wcashwallet.wallet.authenticate", 'resources", "wcash-wallet-uri.sh"']) {
   requireCondition(main.includes(required), `trusted main process is missing ${required}`);
@@ -251,6 +253,21 @@ requireCondition(
 requireCondition(
   signingEntryPoint.includes("Wcash Wallet release signing is disabled") && signingEntryPoint.includes("exit 1"),
   "legacy release signing entry point is not fail-closed",
+);
+requireCondition(
+  crossPlatformVerifier.includes("probePackagedNative(executable, nativeBinding, platform)") &&
+    crossPlatformVerifier.includes("await native.wcash_status()") &&
+    crossPlatformVerifier.includes('marker: "wcash-native-local-regtest-qa"') &&
+    crossPlatformVerifier.includes('branch_id: "c3a6678a"') &&
+    crossPlatformVerifier.includes('endpoint: "http://127.0.0.1:48234"'),
+  "cross-platform packages do not load and attest the fixed Wcash native runtime",
+);
+requireCondition(
+  candidateManifest.includes('signing: "unsigned"') &&
+    candidateManifest.includes("releaseEligible: false") &&
+    candidateManifest.includes('profile: "local-regtest-qa"') &&
+    candidateManifest.includes('crypto.createHash("sha256")'),
+  "candidate manifest can imply release eligibility or omit SHA-256 evidence",
 );
 
 for (const removed of [
@@ -306,15 +323,16 @@ for (const forbidden of [
 }
 
 requireCondition(/^\s*workflow_dispatch:\s*$/m.test(workflow), "candidate workflow is not manually dispatched");
+requireCondition(/^\s*workflow_call:\s*$/m.test(workflow), "candidate workflow is not reusable");
 requireCondition(
   !/^\s*(?:push|pull_request|schedule):\s*$/m.test(workflow),
   "candidate workflow has an automatic trigger",
 );
 requireCondition(/^permissions:\s*\n\s+contents:\s+read\s*$/m.test(workflow), "workflow permission is not read-only");
 for (const required of [
-  "runs-on: macos-14",
+  "runs-on: macos-26",
   "runs-on: ubuntu-24.04",
-  "runner: windows-latest",
+  "runner: windows-2025",
   "runner: windows-11-vs2026-arm",
   "yarn package:local-regtest-qa:mac-arm64",
   "yarn package:local-regtest-qa:linux-x64",
@@ -323,8 +341,34 @@ for (const required of [
   "wcash-wallet-local-regtest-qa-macos-arm64-unsigned",
   "wcash-wallet-local-regtest-qa-linux-x64-unsigned",
   "wcash-wallet-local-regtest-qa-windows-${{ matrix.electron_arch }}-unsigned",
+  "probe-native darwin",
+  "create-wcash-local-regtest-qa-manifest.js macos-arm64",
+  "create-wcash-local-regtest-qa-manifest.js linux-x64",
+  "windows-${{ matrix.electron_arch }}",
+  "WCASH-NATIVE-LOCAL-REGTEST-QA-ATTESTATION.json",
+  "SHA256SUMS.txt",
+  "retention-days: 14",
 ]) {
   requireCondition(workflow.includes(required), `workflow is missing ${required}`);
+}
+const actionUses = [...workflow.matchAll(/^\s*uses:\s*([^@\s]+)@([^\s#]+)/gm)];
+requireCondition(actionUses.length > 0, "workflow has no external actions");
+const reviewedActions = {
+  "actions/checkout": "11d5960a326750d5838078e36cf38b85af677262",
+  "actions/setup-node": "49933ea5288caeca8642d1e84afbd3f7d6820020",
+  "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
+  "arduino/setup-protoc": "c65c819552d16ad3c9b72d9dfd5ba5237b9c906b",
+  "dtolnay/rust-toolchain": "8d8cc9a8e0d47b64af669de71110e76860d6afbd",
+};
+for (const [, action, revision] of actionUses) {
+  requireCondition(/^[0-9a-f]{40}$/.test(revision), `${action} is not pinned to an immutable commit SHA`);
+  requireCondition(reviewedActions[action] === revision, `${action}@${revision} is not the reviewed action revision`);
+}
+for (const action of Object.keys(reviewedActions)) {
+  requireCondition(
+    actionUses.some(([, used]) => used === action),
+    `workflow no longer uses reviewed action ${action}`,
+  );
 }
 for (const forbidden of [
   /contents:\s*write/i,

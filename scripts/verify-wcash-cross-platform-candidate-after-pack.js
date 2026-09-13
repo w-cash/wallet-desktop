@@ -9,7 +9,46 @@ const { peArch } = require("./pe-arch");
 const EXPECTED_APP_ID = "com.wcashwallet.wallet.local-regtest-qa";
 const EXPECTED_PRODUCT = "Wcash Wallet";
 const EXPECTED_MARKER = "local-regtest-qa";
+const NATIVE_ATTESTATION_FILENAME = "WCASH-NATIVE-LOCAL-REGTEST-QA-ATTESTATION.json";
 const FORBIDDEN_STAGED_NAME = /(?:zingo|zcash|nym|azure|provision)/i;
+const REQUIRED_NATIVE_METHODS = [
+  "set_wallet_base_dir",
+  "wcash_balance",
+  "wcash_cancel_proposal",
+  "wcash_confirm_proposal",
+  "wcash_confirmed_transactions",
+  "wcash_create",
+  "wcash_delete",
+  "wcash_export_ufvk",
+  "wcash_generate_mnemonic",
+  "wcash_open",
+  "wcash_pending_transactions",
+  "wcash_propose_send",
+  "wcash_propose_shield_coinbase",
+  "wcash_rebroadcast_pending",
+  "wcash_receivers",
+  "wcash_restore",
+  "wcash_status",
+  "wcash_stop_sync",
+  "wcash_sync",
+  "wcash_validate_mnemonic",
+  "wcash_validate_recipient",
+  "wcash_verify_mnemonic",
+];
+const PLATFORM_NATIVE_METHODS = {
+  darwin: ["checkMacAuth", "verifyMacUser"],
+  linux: [],
+  win32: ["checkWindowsHello", "verifyWindowsUser"],
+};
+const EXPECTED_NATIVE_STATUS = {
+  profile: "local-regtest",
+  network: "Wcash Regtest",
+  ticker: "TWC",
+  endpoint: "http://127.0.0.1:48234",
+  storage_namespace: "wcashregtest-v5",
+  branch_id: "c3a6678a",
+  wallet: null,
+};
 
 function assert(condition, message) {
   if (!condition) throw new Error(`Cross-platform Local Regtest QA verification failed: ${message}`);
@@ -48,6 +87,112 @@ function assertRegtestNative(nativeBinding) {
   assert(contains("wcashregtest-v5"), "native binding does not contain the Regtest namespace");
   assert(!contains("https://wallet-testnet.wcashexplorer.com:443"), "native binding contains the Testnet endpoint");
   assert(!contains("wcashtestnet-v5"), "native binding contains the Testnet namespace");
+}
+
+function expectedNativeMethods(platform) {
+  assert(Object.hasOwn(PLATFORM_NATIVE_METHODS, platform), `unsupported native probe platform ${platform}`);
+  return [...REQUIRED_NATIVE_METHODS, ...PLATFORM_NATIVE_METHODS[platform]].sort();
+}
+
+function validateNativeAttestation(attestation, platform) {
+  assert(attestation?.schemaVersion === 1, "native runtime attestation schema is unexpected");
+  assert(attestation?.marker === "wcash-native-local-regtest-qa", "native runtime attestation marker is missing");
+  assert(attestation?.platform === platform, "native runtime attestation platform is wrong");
+  assert(
+    JSON.stringify(attestation?.apiMethods) === JSON.stringify(expectedNativeMethods(platform)),
+    "native module API is not the fixed-profile Wcash boundary",
+  );
+  for (const [name, expected] of Object.entries(EXPECTED_NATIVE_STATUS)) {
+    assert(attestation?.status?.[name] === expected, `native runtime status ${name} is wrong`);
+  }
+}
+
+function nativeProbeSource() {
+  return `
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+(async () => {
+  const nativeBinding = process.argv[1];
+  const platform = process.argv[2];
+  const expectedMethods = JSON.parse(process.argv[3]);
+  const expectedStatus = JSON.parse(process.argv[4]);
+  const native = require(nativeBinding);
+  const apiMethods = Object.keys(native).sort();
+  if (JSON.stringify(apiMethods) !== JSON.stringify(expectedMethods)) {
+    throw new Error(\`native API mismatch: \${JSON.stringify(apiMethods)}\`);
+  }
+
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "wcash-native-attestation-"));
+  try {
+    if (native.set_wallet_base_dir(base) !== true) {
+      throw new Error("native wallet base directory was not accepted");
+    }
+    const status = JSON.parse(await native.wcash_status());
+    for (const [name, expected] of Object.entries(expectedStatus)) {
+      if (status[name] !== expected) {
+        throw new Error(\`native status \${name} mismatch: \${JSON.stringify(status[name])}\`);
+      }
+    }
+    const attestation = {
+      schemaVersion: 1,
+      marker: "wcash-native-local-regtest-qa",
+      platform,
+      apiMethods,
+      status: Object.fromEntries(Object.keys(expectedStatus).map((name) => [name, status[name]])),
+    };
+    process.stdout.write(\`WCASH_NATIVE_ATTESTATION=\${JSON.stringify(attestation)}\\n\`);
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : String(error));
+  process.exitCode = 1;
+});
+`;
+}
+
+function probePackagedNative(executable, nativeBinding, platform) {
+  assert(fs.existsSync(executable), `packaged Electron executable is missing: ${executable}`);
+  assertRegtestNative(nativeBinding);
+  const probe = spawnSync(
+    executable,
+    [
+      "-e",
+      nativeProbeSource(),
+      nativeBinding,
+      platform,
+      JSON.stringify(expectedNativeMethods(platform)),
+      JSON.stringify(EXPECTED_NATIVE_STATUS),
+    ],
+    {
+      encoding: "utf8",
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+      maxBuffer: 1024 * 1024,
+      timeout: 30_000,
+    },
+  );
+  const detail = (probe.stderr || probe.stdout || probe.error?.message || "no diagnostic output").trim();
+  assert(probe.status === 0, `packaged native binding cannot load or attest its Wcash profile: ${detail}`);
+  const markerLine = probe.stdout.split(/\r?\n/).find((line) => line.startsWith("WCASH_NATIVE_ATTESTATION="));
+  assert(markerLine, "packaged native runtime did not emit an attestation");
+  let attestation;
+  try {
+    attestation = JSON.parse(markerLine.slice("WCASH_NATIVE_ATTESTATION=".length));
+  } catch (error) {
+    throw new Error(`Cross-platform Local Regtest QA verification failed: invalid native attestation JSON: ${error}`);
+  }
+  validateNativeAttestation(attestation, platform);
+  return attestation;
+}
+
+function writeNativeAttestation(outputPath, attestation) {
+  validateNativeAttestation(attestation, attestation.platform);
+  const absolute = path.resolve(outputPath);
+  fs.mkdirSync(path.dirname(absolute), { recursive: true });
+  fs.writeFileSync(absolute, `${JSON.stringify(attestation, null, 2)}\n`, { mode: 0o644 });
+  return absolute;
 }
 
 function verifyMetadata(archive) {
@@ -113,7 +258,6 @@ function verifyPackagedApplication(context) {
     "config contains inherited platform wiring",
   );
 
-  assertRegtestNative(nativeBinding);
   assert(fs.existsSync(keytarBinding) && fs.statSync(keytarBinding).size > 0, "credential-store binding is missing");
   verifyMetadata(archive);
 
@@ -164,6 +308,11 @@ function verifyPackagedApplication(context) {
   }
 
   const executable = path.join(context.appOutDir, platform === "linux" ? "wcash-wallet" : "wcash-wallet.exe");
+  const attestation = probePackagedNative(executable, nativeBinding, platform);
+  const attestationPath = writeNativeAttestation(
+    path.join(String(config.directories.output), NATIVE_ATTESTATION_FILENAME),
+    attestation,
+  );
   const dependencyProbe = spawnSync(
     executable,
     [
@@ -180,11 +329,42 @@ function verifyPackagedApplication(context) {
   );
 
   console.log(
-    `Verified unsigned ${platform} ${expectedArch} Wcash Wallet Local Regtest QA staging at ${context.appOutDir}`,
+    `Verified unsigned ${platform} ${expectedArch} Wcash Wallet Local Regtest QA staging at ${context.appOutDir}; ` +
+      `native profile ${attestation.status.profile} (${attestation.status.branch_id}) loaded`,
   );
+  console.log(`Wrote native runtime attestation to ${attestationPath}`);
 }
 
 module.exports = async (context) => verifyPackagedApplication(context);
 module.exports.verifyPackagedApplication = verifyPackagedApplication;
 module.exports.assertRegtestNative = assertRegtestNative;
 module.exports.elfArch = elfArch;
+module.exports.expectedNativeMethods = expectedNativeMethods;
+module.exports.validateNativeAttestation = validateNativeAttestation;
+module.exports.probePackagedNative = probePackagedNative;
+module.exports.writeNativeAttestation = writeNativeAttestation;
+module.exports.NATIVE_ATTESTATION_FILENAME = NATIVE_ATTESTATION_FILENAME;
+
+if (require.main === module) {
+  const [command, platform, executable, nativeBinding, outputPath] = process.argv.slice(2);
+  if (
+    command !== "probe-native" ||
+    !platform ||
+    !executable ||
+    !nativeBinding ||
+    process.argv.length < 6 ||
+    process.argv.length > 7
+  ) {
+    console.error(
+      "Usage: node scripts/verify-wcash-cross-platform-candidate-after-pack.js " +
+        "probe-native <darwin|linux|win32> <electron-executable> <native-binding> [attestation-output]",
+    );
+    process.exit(2);
+  }
+  const attestation = probePackagedNative(path.resolve(executable), path.resolve(nativeBinding), platform);
+  if (outputPath) writeNativeAttestation(outputPath, attestation);
+  console.log(
+    `Verified packaged ${platform} Wcash native API and ${attestation.status.network} runtime profile ` +
+      `${attestation.status.branch_id}`,
+  );
+}
