@@ -72,7 +72,6 @@
   "approvedProtocolFiles": {
     "src/rpc/rpc.ts": "f0b637d632f744c23b089a98ed03ff55c31e2ed1e62313d402251cc2e3616079",
     "src/utils/uris.ts": "e84c06eeacf7ebadeb619d9ad7401f5ffea8fee8bb313c98598ce8d349836923",
-    "src/components/send/Send.tsx": "ea2b6f6ea7868e58011c3970b1f4b9f5768495e6a808b0e30d210da3b30aa5f9",
     "src/components/history/components/VtItemBlock.tsx": "cefa659a6d2cf3fc55666893f781edc2a610443060e2878b14c8da35f865cb6e",
     "src/components/history/components/VtModal.tsx": "80a11faef01b0a5747091585a0fb3c78d45b40ed706f1a93cd252adea551b66d",
     "src/components/insight/Insight.tsx": "b5bdd014807130528ef6c8d25b00f5570f8af23af513c512e51d6c9b2780761f",
@@ -81,6 +80,7 @@
     "src/root/Routes.tsx": "92ddfca21829c288a0c6d10fde4f3a5b5d17e3c1c1658975cf9b994a41b7af37"
   },
   "approvedLayoutFiles": {
-    "src/components/common/Common.module.css": "f65679a98840faa261c8c2fdf6565532121bb405e270dc3f9ad59c258d854c1b"
+    "src/components/common/Common.module.css": "f65679a98840faa261c8c2fdf6565532121bb405e270dc3f9ad59c258d854c1b",
+    "src/components/send/Send.tsx": "ea2b6f6ea7868e58011c3970b1f4b9f5768495e6a808b0e30d210da3b30aa5f9"
   }
 }
