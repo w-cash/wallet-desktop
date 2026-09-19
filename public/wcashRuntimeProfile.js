@@ -3,15 +3,36 @@
 const fs = require("fs");
 const path = require("path");
 
-const CORE_REVISION = "d10113e19c712a403c1b68947c2186e97f61f854";
+const CORE_REVISION = "5bfd56f3ca4f332f9520908821a0b7e166b2372f";
 const TESTNET_PACKAGED_PROFILE = "testnet";
+const MAINNET_PACKAGED_PROFILE = "mainnet";
 const LOCAL_REGTEST_QA_PACKAGED_PROFILE = "local-regtest-qa";
+
+const MAINNET_RUNTIME_PROFILE = Object.freeze({
+  id: "mainnet-v1",
+  appId: "com.wcashwallet.wallet.mainnet",
+  productName: "Wcash Wallet",
+  network: "Wcash Mainnet",
+  chainName: "main",
+  ticker: "WEC",
+  endpoint: "http://mainnet.zecwec.com:48234",
+  storageNamespace: "wcashmainnet-v1",
+  branchId: "d9c6a7ee",
+  ironwoodPrefix: "wu1",
+  transparentPrefix: "W1",
+  keytarService: "com.wcashwallet.wallet.mainnet-v1.wallet-seed.v1",
+  keytarAccount: "wcash-mainnet-v1-primary",
+  runtimeReady: true,
+  coreRevision: CORE_REVISION,
+  localnet: false,
+});
 
 const TESTNET_RUNTIME_PROFILE = Object.freeze({
   id: "testnet",
   appId: "com.wcashwallet.wallet.testnet",
   productName: "Wcash Wallet",
   network: "Wcash Testnet",
+  chainName: "test",
   ticker: "TWC",
   endpoint: "https://wallet-testnet.wcashexplorer.com:443",
   storageNamespace: "wcashtestnet-v5",
@@ -30,6 +51,7 @@ const LOCAL_REGTEST_RUNTIME_PROFILE = Object.freeze({
   appId: "com.wcashwallet.wallet.regtest",
   productName: "Wcash Wallet",
   network: "Wcash Regtest",
+  chainName: "regtest",
   ticker: "TWC",
   endpoint: "http://127.0.0.1:48234",
   storageNamespace: "wcashregtest-v5",
@@ -44,26 +66,28 @@ const LOCAL_REGTEST_RUNTIME_PROFILE = Object.freeze({
 });
 
 function requireKnownRuntimeProfile(profile) {
-  if (profile !== TESTNET_RUNTIME_PROFILE && profile !== LOCAL_REGTEST_RUNTIME_PROFILE) {
+  if (profile !== MAINNET_RUNTIME_PROFILE && profile !== TESTNET_RUNTIME_PROFILE && profile !== LOCAL_REGTEST_RUNTIME_PROFILE) {
     throw new TypeError("Wcash runtime profile must be one of the compiled application profiles");
   }
   return profile;
 }
 
-function selectWcashRuntimeProfile({ isPackaged, localnetRequested, packagedProfile = TESTNET_PACKAGED_PROFILE }) {
+function selectWcashRuntimeProfile({ isPackaged, localnetRequested, mainnetRequested = false, packagedProfile = TESTNET_PACKAGED_PROFILE }) {
   if (
     typeof isPackaged !== "boolean" ||
     typeof localnetRequested !== "boolean" ||
-    (packagedProfile !== TESTNET_PACKAGED_PROFILE && packagedProfile !== LOCAL_REGTEST_QA_PACKAGED_PROFILE)
+    typeof mainnetRequested !== "boolean" ||
+    (packagedProfile !== MAINNET_PACKAGED_PROFILE && packagedProfile !== TESTNET_PACKAGED_PROFILE && packagedProfile !== LOCAL_REGTEST_QA_PACKAGED_PROFILE) ||
+    (localnetRequested && mainnetRequested)
   ) {
     throw new TypeError("Wcash runtime profile selection requires explicit boolean inputs");
   }
   if (isPackaged) {
-    return packagedProfile === LOCAL_REGTEST_QA_PACKAGED_PROFILE
-      ? LOCAL_REGTEST_RUNTIME_PROFILE
-      : TESTNET_RUNTIME_PROFILE;
+    if (packagedProfile === LOCAL_REGTEST_QA_PACKAGED_PROFILE) return LOCAL_REGTEST_RUNTIME_PROFILE;
+    return packagedProfile === MAINNET_PACKAGED_PROFILE ? MAINNET_RUNTIME_PROFILE : TESTNET_RUNTIME_PROFILE;
   }
-  return localnetRequested ? LOCAL_REGTEST_RUNTIME_PROFILE : TESTNET_RUNTIME_PROFILE;
+  if (localnetRequested) return LOCAL_REGTEST_RUNTIME_PROFILE;
+  return mainnetRequested ? MAINNET_RUNTIME_PROFILE : TESTNET_RUNTIME_PROFILE;
 }
 
 function canonicalPath(candidate) {
@@ -104,8 +128,11 @@ function resolveWcashUserDataPath({ profile, appDataPath, localnetDataDir }) {
   const testnetDataPath = canonicalPath(
     path.join(appDataPath, TESTNET_RUNTIME_PROFILE.productName, TESTNET_RUNTIME_PROFILE.id),
   );
-  if (pathsOverlap(resolved, testnetDataPath) || pathsOverlap(testnetDataPath, resolved)) {
-    throw new TypeError("WCASH_LOCALNET_DATA_DIR must be isolated from the Testnet wallet data path");
+  const mainnetDataPath = canonicalPath(
+    path.join(appDataPath, MAINNET_RUNTIME_PROFILE.productName, MAINNET_RUNTIME_PROFILE.id),
+  );
+  if ([testnetDataPath, mainnetDataPath].some((walletPath) => pathsOverlap(resolved, walletPath) || pathsOverlap(walletPath, resolved))) {
+    throw new TypeError("WCASH_LOCALNET_DATA_DIR must be isolated from the public wallet data paths");
   }
   return resolved;
 }
@@ -116,6 +143,7 @@ function publicRuntimeConfig(profile) {
     profile: selected.id,
     productName: selected.productName,
     network: selected.network,
+    chainName: selected.chainName,
     ticker: selected.ticker,
     endpoint: selected.endpoint,
     storageNamespace: selected.storageNamespace,
@@ -126,6 +154,8 @@ function publicRuntimeConfig(profile) {
 }
 
 module.exports = {
+  MAINNET_PACKAGED_PROFILE,
+  MAINNET_RUNTIME_PROFILE,
   LOCAL_REGTEST_QA_PACKAGED_PROFILE,
   LOCAL_REGTEST_RUNTIME_PROFILE,
   TESTNET_PACKAGED_PROFILE,

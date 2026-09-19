@@ -37,6 +37,13 @@ use zingolib::wcash::{
     WcashTestnetPayment as WcashPayment, WcashTestnetRuntime as WcashRuntime,
     WcashTestnetRuntimeError as WcashRuntimeError,
 };
+#[cfg(feature = "wcash-mainnet")]
+use zingolib::wcash::{
+    BroadcastResult, CalculatedTransaction, StagedTransactionProposal, StoredSignedTransaction,
+    WalletBalanceSummary, WalletSyncCancellation, WcashMainnet as WcashProfile,
+    WcashMainnetPayment as WcashPayment, WcashMainnetRuntime as WcashRuntime,
+    WcashMainnetRuntimeError as WcashRuntimeError,
+};
 
 use super::{with_panic_guard, ZingolibError, RT, WALLET_BASE_DIR};
 
@@ -48,6 +55,14 @@ const WCASH_ENDPOINT: &str = "https://wallet-testnet.wcashexplorer.com:443";
 const WCASH_NETWORK: WalletNetwork = WalletNetwork::Testnet;
 #[cfg(feature = "wcash-testnet")]
 const WCASH_NETWORK_LABEL: &str = "Wcash Testnet";
+#[cfg(feature = "wcash-mainnet")]
+const WCASH_PROFILE_ID: &str = "mainnet-v1";
+#[cfg(feature = "wcash-mainnet")]
+const WCASH_ENDPOINT: &str = "http://mainnet.zecwec.com:48234";
+#[cfg(feature = "wcash-mainnet")]
+const WCASH_NETWORK: WalletNetwork = WalletNetwork::Mainnet;
+#[cfg(feature = "wcash-mainnet")]
+const WCASH_NETWORK_LABEL: &str = "Wcash Mainnet";
 #[cfg(feature = "wcash-regtest")]
 const WCASH_PROFILE_ID: &str = "local-regtest";
 #[cfg(feature = "wcash-regtest")]
@@ -1784,14 +1799,20 @@ mod tests {
 
     #[cfg(feature = "wcash-testnet")]
     const PROFILE_IRONWOOD_RECIPIENT: &str = "wutest18rmpm4xcm2d54xg5mg00lac9pg4txaladyp6pacqhm355n5scpn5gja6hy43uqassvr63g6xuephu8r0qju92778lg4v5nkxfu7j3la6";
+    #[cfg(feature = "wcash-mainnet")]
+    const PROFILE_IRONWOOD_RECIPIENT: &str = "wu13ge50upsjsvuedds20u4vyqmph4ztqwlq7fl2peltehqc06jnefvl4p5x2twc3v08dyqz0qc8fpz4zn2ug5rxv8czq0s7temxvlpc8t8";
     #[cfg(feature = "wcash-regtest")]
     const PROFILE_IRONWOOD_RECIPIENT: &str = "wuregtest12gdmq9xlu6er8vxzvfk27kmvrpn3h7jvw5euywhkf0wusdn85qgwm0evx5cj63yc8pe8cyy3rajjl2chwlgm94ecs7jtkdlaz5a67rd6";
     #[cfg(feature = "wcash-testnet")]
     const PROFILE_TRANSPARENT_RECEIVER: &str = "WTMMWgVvepdG58zdNjePbtyoh4aSwb4kP3E";
+    #[cfg(feature = "wcash-mainnet")]
+    const PROFILE_TRANSPARENT_RECEIVER: &str = "W1d7cBoqY1Vxk282CBmyZNWr3cggYeTek7d";
     #[cfg(feature = "wcash-regtest")]
     const PROFILE_TRANSPARENT_RECEIVER: &str = "WRSJjaJAZ75QkqbJoa244F21QmkPHEqhYu8";
     #[cfg(feature = "wcash-testnet")]
     const WRONG_NETWORK: WalletNetwork = WalletNetwork::Regtest;
+    #[cfg(feature = "wcash-mainnet")]
+    const WRONG_NETWORK: WalletNetwork = WalletNetwork::Testnet;
     #[cfg(feature = "wcash-regtest")]
     const WRONG_NETWORK: WalletNetwork = WalletNetwork::Testnet;
 

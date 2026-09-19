@@ -4,11 +4,13 @@
 //! additive crate entrypoint selects only fixed-network Wcash operations and
 //! generic platform authentication for Wcash builds.
 
-#[cfg(all(feature = "wcash-testnet", feature = "wcash-regtest"))]
-compile_error!(
-    "select exactly one Wcash native profile; Regtest builds must disable default features"
-);
-#[cfg(not(any(feature = "wcash-testnet", feature = "wcash-regtest")))]
+#[cfg(any(
+    all(feature = "wcash-mainnet", feature = "wcash-testnet"),
+    all(feature = "wcash-mainnet", feature = "wcash-regtest"),
+    all(feature = "wcash-testnet", feature = "wcash-regtest")
+))]
+compile_error!("select exactly one Wcash native profile");
+#[cfg(not(any(feature = "wcash-mainnet", feature = "wcash-testnet", feature = "wcash-regtest")))]
 compile_error!("select exactly one Wcash native profile");
 
 mod wcash;

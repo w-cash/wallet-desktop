@@ -68,7 +68,7 @@ function defaultEndpointProbe(endpoint, timeoutMs = 2_000) {
 
 function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe = defaultEndpointProbe }) {
   if (!native || !keytar || !profile) throw new TypeError("Wcash adapter dependencies are required");
-  const chainName = profile.localnet ? "regtest" : "test";
+  const chainName = profile.chainName;
   let lastBalance = null;
   let syncState = { phase: "idle", result: null, error: null, promise: null };
   let pendingProposal = null;

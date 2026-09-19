@@ -16,6 +16,7 @@ crate-type = ["cdylib"]
 default = ["wcash-testnet"]
 # Public and unsigned package builds use only the immutable reviewed Git pin.
 wcash-testnet = ["dep:zingolib"]
+wcash-mainnet = ["dep:zingolib"]
 # The local QA build is deliberately explicit and enables the default-off
 # Regtest facade on the same immutable core revision as Testnet.
 wcash-regtest = ["dep:zingolib", "zingolib/regtest"]
@@ -24,8 +25,8 @@ wcash-regtest = ["dep:zingolib", "zingolib/regtest"]
 # The Wcash facade is pinned to one immutable, reviewed wallet-core revision.
 # The inherited Zingo implementation remains byte-for-byte in src/lib.rs for
 # reference but is neither linked nor exported by the Wcash native artifact.
-zingolib = { git = "https://github.com/w-cash/wallet-core.git", rev = "d10113e19c712a403c1b68947c2186e97f61f854", optional = true }
-wcash-wallet = { git = "https://github.com/w-cash/wolf.git", rev = "168b59310056964a6347ed993ace8f8d1385cde1" }
+zingolib = { git = "https://github.com/w-cash/wallet-core.git", rev = "5bfd56f3ca4f332f9520908821a0b7e166b2372f", optional = true }
+wcash-wallet = { git = "https://github.com/w-cash/wolf.git", rev = "45393319d24c3c3181f98d503c97a315661b59af" }
 
 bip0039 = { version = "0.14", features = ["rand"] }
 serde_json = "1"
@@ -53,9 +54,9 @@ tempfile = "3"
 # immutable Wcash/Ironwood source selections from wallet-core at the pinned SHA.
 [patch.crates-io]
 time = { git = "https://github.com/time-rs/time", tag = "v0.3.47" }
-pczt = { git = "https://github.com/w-cash/wolf.git", rev = "9a9c0668784117f116d5b69bdb3a090765092343" }
-zcash_primitives = { git = "https://github.com/w-cash/wolf.git", rev = "9a9c0668784117f116d5b69bdb3a090765092343" }
-zcash_protocol = { git = "https://github.com/w-cash/wolf.git", rev = "9a9c0668784117f116d5b69bdb3a090765092343" }
+pczt = { git = "https://github.com/w-cash/wolf.git", rev = "45393319d24c3c3181f98d503c97a315661b59af" }
+zcash_primitives = { git = "https://github.com/w-cash/wolf.git", rev = "45393319d24c3c3181f98d503c97a315661b59af" }
+zcash_protocol = { git = "https://github.com/w-cash/wolf.git", rev = "45393319d24c3c3181f98d503c97a315661b59af" }
 lightwallet-protocol = { git = "https://github.com/zingolabs/lightwallet-protocol-rust", rev = "9bdfdc77eb283f2a3d26c27100cc2ac90148cd93" }
 
 [profile.release]

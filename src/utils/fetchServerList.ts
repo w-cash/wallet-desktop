@@ -19,6 +19,7 @@ import { ipcRenderer } from "../electronBridge";
 // One entry of the hosh registry. Every field is optional: the payload is
 // third-party, so nothing is assumed present.
 type HoshServer = {
+  uri?: string;
   hostname?: string;
   port?: number;
   online?: boolean;
@@ -91,7 +92,7 @@ const fetchServerList = async (chainName: ServerChainNameEnum): Promise<ServerCl
   // Every entry the registry lists is by definition current, so `obsolete` is
   // false across the board.
   return clearnetOnline.map((s: HoshServer) => ({
-    uri: `https://${String(s.hostname)}:${Number(s.port) || 443}`,
+    uri: s.uri === "http://mainnet.zecwec.com:48234" ? s.uri : `https://${String(s.hostname)}:${Number(s.port) || 443}`,
     chain_name: chainName,
     latency: typeof s.ping === "number" ? Math.round(s.ping) : null,
     default: false,

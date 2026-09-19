@@ -18,6 +18,7 @@ const packageMetadata = require("../package.json");
 const wcashProfile = selectWcashRuntimeProfile({
   isPackaged: app.isPackaged,
   localnetRequested: process.env.WCASH_LOCALNET_DEV === "1",
+  mainnetRequested: process.env.WCASH_MAINNET_DEV === "1",
   packagedProfile: packageMetadata.wcashPackagedProfile || TESTNET_PACKAGED_PROFILE,
 });
 
@@ -35,7 +36,7 @@ app.setPath(
 if (process.platform === "win32") app.setAppUserModelId(wcashProfile.appId);
 
 const STORAGE_KEY = "wallets";
-const isDev = !app.isPackaged;
+const isDev = !app.isPackaged && process.env.WCASH_STATIC_SMOKE !== "1";
 
 // Keep a production startup breadcrumb before BrowserWindow exists. A failure
 // in native setup or macOS protocol registration otherwise happens too early
@@ -771,7 +772,7 @@ ipcMain.handle("clipboard:writeText", (_e, text) => {
 });
 
 ipcMain.handle("servers:fetchList", async (_e, chain) => {
-  const profileChain = wcashProfile.localnet ? "regtest" : "test";
+  const profileChain = wcashProfile.chainName;
   if (chain !== profileChain) return { ok: true, servers: [] };
   const endpoint = new URL(wcashProfile.endpoint);
   return {
@@ -801,7 +802,7 @@ ipcMain.handle("loadSettings", async () => {
   return {
     ...(all ?? {}),
     serveruri: wcashProfile.endpoint,
-    serverchain_name: wcashProfile.localnet ? "regtest" : "test",
+    serverchain_name: wcashProfile.chainName,
     serverselection: "custom",
     requireDeviceAuth,
   };
@@ -812,7 +813,7 @@ ipcMain.handle("saveSettings", async (_e, kv) => {
   } else if (kv.key === "serveruri") {
     settings.setSync("all.serveruri", wcashProfile.endpoint);
   } else if (kv.key === "serverchain_name") {
-    settings.setSync("all.serverchain_name", wcashProfile.localnet ? "regtest" : "test");
+    settings.setSync("all.serverchain_name", wcashProfile.chainName);
   } else if (kv.key === "serverselection") {
     settings.setSync("all.serverselection", "custom");
   } else {
