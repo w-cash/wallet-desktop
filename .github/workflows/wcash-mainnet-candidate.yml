@@ -3,6 +3,7 @@ name: Wcash Mainnet desktop candidates
 on:
   push:
     branches: [dev]
+    tags: ['wcash-desktop-*']
   workflow_dispatch:
 
 permissions:
@@ -87,3 +88,73 @@ jobs:
             dist/mainnet-candidate/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
+
+  github-prerelease:
+    name: Publish the verified GitHub prerelease
+    if: startsWith(github.ref, 'refs/tags/wcash-desktop-')
+    needs: unsigned-candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Verify the immutable release tag
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          build="$(node -p "require('./config/electron-builder.mainnet-candidate.js').buildVersion")"
+          expected="wcash-desktop-${version}-${build}"
+          test "$GITHUB_REF_NAME" = "$expected"
+          test "$(git rev-list -n 1 "$GITHUB_REF_NAME")" = "$GITHUB_SHA"
+
+      - name: Download the native build artifacts
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          pattern: wcash-mainnet-desktop-*-unsigned
+          path: ${{ runner.temp }}/wcash-desktop-components
+
+      - name: Assemble and verify the release payload
+        id: payload
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/wcash-desktop-release"
+          mkdir -p "$stage"
+          find "$RUNNER_TEMP/wcash-desktop-components" -type f \
+            \( -name '*.zip' -o -name '*.AppImage' -o -name '*.deb' \) \
+            -exec cp '{}' "$stage/" \;
+          mapfile -t packages < <(find "$stage" -maxdepth 1 -type f | sort)
+          test "${#packages[@]}" -eq 5
+          test "$(find "$stage" -maxdepth 1 -type f -name '*mac-arm64.zip' | wc -l)" -eq 1
+          test "$(find "$stage" -maxdepth 1 -type f -name '*linux-x86_64.AppImage' | wc -l)" -eq 1
+          test "$(find "$stage" -maxdepth 1 -type f -name '*linux-amd64.deb' | wc -l)" -eq 1
+          test "$(find "$stage" -maxdepth 1 -type f -name '*win-x64.zip' | wc -l)" -eq 1
+          test "$(find "$stage" -maxdepth 1 -type f -name '*win-arm64.zip' | wc -l)" -eq 1
+          (cd "$stage" && sha256sum ./* > SHA256SUMS.txt && sha256sum --check SHA256SUMS.txt)
+          printf '%s\n' \
+            "repository=${GITHUB_REPOSITORY}" \
+            "tag=${GITHUB_REF_NAME}" \
+            "source=${GITHUB_SHA}" \
+            "workflow=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            > "$stage/SOURCE.txt"
+          echo "path=$stage" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PATH: ${{ steps.payload.outputs.path }}
+        run: |
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          Wcash Wallet desktop mainnet candidate built from \`${GITHUB_SHA}\`.
+
+          This is a prerelease for review. The macOS and Windows packages are unsigned, and the macOS package is not notarized. Operating-system security prompts are expected. Verify the matching SHA-256 value in \`SHA256SUMS.txt\` before testing.
+
+          Included targets: macOS Apple silicon, Linux x64 (AppImage and Debian), Windows x64, and Windows ARM64.
+          EOF
+          gh release create "$GITHUB_REF_NAME" "$RELEASE_PATH"/* \
+            --verify-tag \
+            --prerelease \
+            --title "Wcash Wallet desktop ${GITHUB_REF_NAME#wcash-desktop-} candidate" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
