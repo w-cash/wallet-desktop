@@ -97,7 +97,9 @@ describe("AddNewWallet server picker", () => {
   it("keeps the static list for a chain the registry says nothing about", async () => {
     const select = await openPicker();
 
-    expect(await within(select).findByRole("option", { name: "https://zec.rocks:443 - Mainnet" })).toBeInTheDocument();
+    expect(
+      await within(select).findByRole("option", { name: "https://mainnet.zecwec.com:443 - Mainnet" }),
+    ).toBeInTheDocument();
   });
 
   it("labels an entry with its URI and chain", async () => {

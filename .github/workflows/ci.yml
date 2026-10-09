@@ -43,5 +43,12 @@ jobs:
       - name: Validate public Wcash documentation
         run: yarn test:public-docs
 
+      - name: Validate Wcash runtime boundaries
+        run: |
+          yarn test:wcash-adapter
+          yarn test:wcash-endpoint-settings
+          yarn test:wcash-main-security
+          yarn verify:wcash-candidate-policy
+
       - name: Run tests
         run: yarn test:run

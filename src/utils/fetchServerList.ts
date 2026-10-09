@@ -92,7 +92,7 @@ const fetchServerList = async (chainName: ServerChainNameEnum): Promise<ServerCl
   // Every entry the registry lists is by definition current, so `obsolete` is
   // false across the board.
   return clearnetOnline.map((s: HoshServer) => ({
-    uri: s.uri === "http://mainnet.zecwec.com:48234" ? s.uri : `https://${String(s.hostname)}:${Number(s.port) || 443}`,
+    uri: `https://${String(s.hostname)}:${Number(s.port) || 443}`,
     chain_name: chainName,
     latency: typeof s.ping === "number" ? Math.round(s.ping) : null,
     default: false,

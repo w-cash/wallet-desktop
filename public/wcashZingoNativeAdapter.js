@@ -66,6 +66,32 @@ function defaultEndpointProbe(endpoint, timeoutMs = 2_000) {
   });
 }
 
+function endpointMatchesProfile(profile, uri, chainHint) {
+  if (chainHint !== profile.chainName || typeof uri !== "string") return false;
+  if (uri === "") return true;
+  try {
+    const endpoint = new URL(uri);
+    if (
+      endpoint.username ||
+      endpoint.password ||
+      endpoint.search ||
+      endpoint.hash ||
+      !["", "/"].includes(endpoint.pathname)
+    ) {
+      return false;
+    }
+    if (profile.localnet) {
+      return (
+        endpoint.protocol === "http:" &&
+        (endpoint.hostname === "127.0.0.1" || endpoint.hostname === "::1" || endpoint.hostname === "[::1]")
+      );
+    }
+    return endpoint.protocol === "https:" && endpoint.hostname.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe = defaultEndpointProbe }) {
   if (!native || !keytar || !profile) throw new TypeError("Wcash adapter dependencies are required");
   const chainName = profile.chainName;
@@ -73,6 +99,7 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
   let syncState = { phase: "idle", result: null, error: null, promise: null };
   let pendingProposal = null;
   let proposalOperations = Promise.resolve();
+  let activeEndpoint = profile.endpoint;
 
   function requireNative(method) {
     if (typeof native[method] !== "function") throw new Error(`Wcash native method is unavailable: ${method}`);
@@ -145,13 +172,17 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
   }
 
   function profileMatches(uri, chainHint) {
-    return chainHint === chainName && (uri === "" || uri === profile.endpoint);
+    return endpointMatchesProfile(profile, uri, chainHint);
   }
 
   function requireProfile(uri, chainHint) {
     if (!profileMatches(uri, chainHint)) {
       throw new Error(`This build supports only ${profile.network} at ${profile.endpoint}`);
     }
+  }
+
+  function selectedEndpoint(uri) {
+    return uri === "" ? profile.endpoint : uri;
   }
 
   function parseCredential(value) {
@@ -195,6 +226,7 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
 
   async function initNew(uri, chainHint, _performance, _confirmations, walletName) {
     requireProfile(uri, chainHint);
+    const endpoint = selectedEndpoint(uri);
     if ((await status()).wallet !== null) throw new Error(`${profile.network} wallet already exists`);
     if ((await readCredential()) !== null) throw new Error(`${profile.network} wallet credential already exists`);
     const phrase = await requireNative("wcash_generate_mnemonic")();
@@ -209,7 +241,8 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
     };
     await storeCredential(pending);
     try {
-      const created = await nativeJson("wcash_create", normalized);
+      const created = await nativeJson("wcash_create", normalized, endpoint);
+      activeEndpoint = endpoint;
       const birthday = safeInteger(created.wallet && created.wallet.birthday_height, "wallet birthday");
       await storeCredential({ ...pending, birthday });
       return JSON.stringify({ seed_phrase: normalized, birthday });
@@ -221,6 +254,7 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
 
   async function initFromSeed(seed, birthday, uri, chainHint, _performance, _confirmations, walletName) {
     requireProfile(uri, chainHint);
+    const endpoint = selectedEndpoint(uri);
     if ((await status()).wallet !== null) throw new Error(`${profile.network} wallet already exists`);
     if (!Number.isSafeInteger(birthday) || birthday < 1) throw new RangeError("Wallet birthday is invalid");
     const normalized = await requireNative("wcash_validate_mnemonic")(seed);
@@ -234,7 +268,8 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
     };
     await storeCredential(credential);
     try {
-      const restored = await nativeJson("wcash_restore", normalized, birthday);
+      const restored = await nativeJson("wcash_restore", normalized, birthday, endpoint);
+      activeEndpoint = endpoint;
       const actualBirthday = safeInteger(restored.wallet && restored.wallet.birthday_height, "wallet birthday");
       await storeCredential({ ...credential, birthday: actualBirthday });
       return JSON.stringify({ seed_phrase: normalized, birthday: actualBirthday });
@@ -246,13 +281,15 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
 
   async function initFromB64(uri, chainHint, _performance, _confirmations, walletName) {
     requireProfile(uri, chainHint);
+    const endpoint = selectedEndpoint(uri);
     const current = await status();
     if (current.wallet === null) throw new Error(`${profile.network} wallet does not exist`);
     const credential = await readCredential();
     if (walletName && credential && credential.walletName && credential.walletName !== walletName) {
       throw new Error("The selected wallet name does not match the Wcash wallet database");
     }
-    const opened = await nativeJson("wcash_open");
+    const opened = await nativeJson("wcash_open", endpoint);
+    activeEndpoint = endpoint;
     const birthday = safeInteger(opened.wallet && opened.wallet.birthday_height, "wallet birthday");
     return JSON.stringify({ birthday });
   }
@@ -744,7 +781,8 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
       case "get_latest_block_server": {
         requireProfile(args[0], chainName);
         if (lastBalance) return String(safeInteger(lastBalance.chain_tip_height, "chain tip height"));
-        if (!(await endpointProbe(profile.endpoint))) throw new Error(`${profile.network} endpoint is unavailable`);
+        const endpoint = selectedEndpoint(args[0]);
+        if (!(await endpointProbe(endpoint))) throw new Error(`${profile.network} endpoint is unavailable`);
         return "1";
       }
       case "info_server": {
@@ -752,7 +790,7 @@ function createWcashZingoNativeAdapter({ native, keytar, profile, endpointProbe 
         return JSON.stringify({
           version: "1",
           git_commit: profile.coreRevision,
-          server_uri: profile.endpoint,
+          server_uri: activeEndpoint,
           vendor: "Wcash",
           currency_name: profile.ticker,
           taddr_support: true,
@@ -855,5 +893,6 @@ module.exports = {
   SEED_SCHEME,
   createWcashZingoNativeAdapter,
   defaultEndpointProbe,
+  endpointMatchesProfile,
   toCanonicalAmount,
 };

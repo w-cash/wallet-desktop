@@ -2,7 +2,7 @@ import { ServerChainNameEnum, ServerClass } from "../components/appstate";
 
 const serverUrisList = (): ServerClass[] => [
   {
-    uri: "http://mainnet.zecwec.com:48234",
+    uri: "https://mainnet.zecwec.com:443",
     chain_name: ServerChainNameEnum.mainChainName,
     default: true,
     latency: null,

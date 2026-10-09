@@ -79,6 +79,7 @@
     "neon-win-x64": "rimraf src/native.node && cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --release --target x86_64-pc-windows-msvc --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
     "neon-win-arm64": "rimraf src/native.node && cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --release --target aarch64-pc-windows-msvc --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",
     "test:wcash-adapter": "node scripts/test-wcash-zingo-native-adapter.js",
+    "test:wcash-endpoint-settings": "node scripts/test-wcash-endpoint-settings.js",
     "test:wcash-main-security": "node scripts/test-sensitive-native-policy.js",
     "rebuild:keytar:local-regtest-qa:mac-arm64": "electron-rebuild --version 40.10.0 --arch arm64 --force --only keytar",
     "neon:wcash-regtest": "rimraf src/native.node && cargo-cp-artifact -a cdylib zingolib-native src/native.node -- cargo build --release --no-default-features --features wcash-regtest --manifest-path native/Cargo.toml --message-format=json-render-diagnostics",

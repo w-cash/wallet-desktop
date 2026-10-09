@@ -25,7 +25,7 @@ wcash-regtest = ["dep:zingolib", "zingolib/regtest"]
 # The Wcash facade is pinned to one immutable, reviewed wallet-core revision.
 # The inherited Zingo implementation remains byte-for-byte in src/lib.rs for
 # reference but is neither linked nor exported by the Wcash native artifact.
-zingolib = { git = "https://github.com/w-cash/wallet-core.git", rev = "5bfd56f3ca4f332f9520908821a0b7e166b2372f", optional = true }
+zingolib = { git = "https://github.com/w-cash/wallet-core.git", rev = "f86cd05d1deb72b571b173ece3777df91c1d44e6", optional = true }
 wcash-wallet = { git = "https://github.com/w-cash/wolf.git", rev = "45393319d24c3c3181f98d503c97a315661b59af" }
 
 bip0039 = { version = "0.14", features = ["rand"] }
