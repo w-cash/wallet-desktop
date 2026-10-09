@@ -1,9 +1,13 @@
 # Windows release signing status
 
-Wcash Wallet has no production Windows signing owner or credential configured in
-this repository. The manual x64 and arm64 workflows build ZIP files whose names
-include `LOCAL-REGTEST-QA` and `UNSIGNED`; they never read secrets and never
-publish a release.
+Wcash Wallet has no production Windows signing owner or credential configured
+in this repository. The public `wcash-desktop-2.0.25-181` prerelease contains
+unsigned x64 and arm64 Mainnet ZIP archives. They are developer candidates,
+unsupported for material funds, and are not signed installers.
+
+The separate manual Local Regtest x64 and arm64 workflows also build ZIP files
+whose names include `LOCAL-REGTEST-QA` and `UNSIGNED`; they never read secrets
+and never publish a release.
 
 The package boundary sets `signAndEditExecutable: false` and rejects Azure,
 certificate-subject, certificate-thumbprint, AppX, and MSIX settings. A future
