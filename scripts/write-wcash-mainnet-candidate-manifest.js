@@ -5,13 +5,19 @@ const fs = require("fs");
 const path = require("path");
 
 const directory = path.resolve(__dirname, "../dist/mainnet-candidate");
-const sourceSha = process.env.GITHUB_SHA || require("child_process").execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+const childProcess = require("child_process");
+const headSha = childProcess.execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+const sourceSha = process.env.GITHUB_SHA || headSha;
+const sourceStatus = childProcess.execFileSync("git", ["status", "--porcelain=v1"], { encoding: "utf8" }).trim();
 const files = fs.readdirSync(directory)
   .filter((name) => /\.(zip|AppImage|deb)$/.test(name) && fs.statSync(path.join(directory, name)).isFile())
   .sort();
 
-if (files.length === 0 || !/^[a-f0-9]{40}$/.test(sourceSha)) {
-  throw new Error("A Mainnet candidate artifact and full source revision are required");
+if (files.length === 0 || !/^[a-f0-9]{40}$/.test(sourceSha) || sourceSha !== headSha) {
+  throw new Error("A Mainnet candidate artifact at the exact checked-out source revision is required");
+}
+if (sourceStatus.length > 0) {
+  throw new Error("Refusing to attest a Mainnet candidate built from a dirty source tree");
 }
 
 const artifacts = files.map((name) => {
@@ -22,10 +28,11 @@ const manifest = {
   product: "Wcash Wallet",
   network: "Wcash Mainnet",
   sourceSha,
-  endpoint: "http://mainnet.zecwec.com:48234",
+  sourceDirty: false,
+  endpoint: "https://mainnet.zecwec.com:443",
   genesis: "5bae12c8662a577b04ce1591af1a137c128f0cb51018a5f1622d861d1bb6fc48",
   branchId: "d9c6a7ee",
-  tls: false,
+  tls: true,
   signing: "unsigned candidate",
   artifacts,
 };

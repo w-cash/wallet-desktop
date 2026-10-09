@@ -65,7 +65,7 @@ test("races the static list when the registry says nothing", async () => {
 
 test("falls back to the server we ship for the chain when none answer", async () => {
   expect(await pickRotationTarget(ServerChainNameEnum.testChainName, ["https://zcash.mysideoftheweb.com:19067"])).toBe(
-    "https://testnet.zec.rocks:443",
+    "https://wallet-testnet.wcashexplorer.com:443",
   );
 });
 
@@ -74,11 +74,11 @@ test("stays on the wallet's chain", async () => {
 
   const target = await pickRotationTarget(ServerChainNameEnum.testChainName, ["https://testnet.zec.rocks:443"]);
 
-  expect(target).toBe("https://zcash.mysideoftheweb.com:19067");
+  expect(target).toBe("https://wallet-testnet.wcashexplorer.com:443");
 });
 
 test("gives up rather than rotating to nothing", async () => {
-  expect(await pickRotationTarget(ServerChainNameEnum.regtestChainName, ["http://127.0.0.1:9067"])).toBeNull();
+  expect(await pickRotationTarget(ServerChainNameEnum.regtestChainName, ["http://127.0.0.1:48234"])).toBeNull();
 });
 
 // Each rotation adds to the rejected list, so rotating twice keeps moving

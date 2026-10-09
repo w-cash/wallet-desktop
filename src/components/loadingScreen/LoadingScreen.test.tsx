@@ -143,20 +143,20 @@ test("a custom server is left alone", async () => {
   expect(savedSelection()).toContain(ServerSelectionEnum.custom);
 });
 
-// The anomaly rule: a mode whose server died is worth less than a mode that
-// can recover, so it lands on `auto` rather than on a dead URI.
-test("a list choice on a now-obsolete server lands on auto", async () => {
+// The Wcash static list does not claim authority over unrelated HTTPS
+// endpoints. Keep an explicit stored choice unless this fork marks it obsolete.
+test("a legacy list choice that Wcash does not mark obsolete is preserved", async () => {
   bootWithSelection(ServerSelectionEnum.list, "https://lwd1.zcash-infra.com:9067");
 
   await waitFor(() => expect(savedSelection().length).toBeGreaterThan(0));
-  expect(savedSelection()).toContain(ServerSelectionEnum.auto);
+  expect(savedSelection()).toContain(ServerSelectionEnum.list);
 });
 
-test("a custom choice on a now-obsolete server lands on auto", async () => {
+test("a legacy custom choice that Wcash does not mark obsolete is preserved", async () => {
   bootWithSelection(ServerSelectionEnum.custom, "https://mainnet.lightwalletd.com:9067");
 
   await waitFor(() => expect(savedSelection().length).toBeGreaterThan(0));
-  expect(savedSelection()).toContain(ServerSelectionEnum.auto);
+  expect(savedSelection()).toContain(ServerSelectionEnum.custom);
 });
 
 // The registry ranks by 30-day uptime, not by speed, so its head can be a
@@ -180,7 +180,7 @@ test("auto falls back to the static list when the registry is silent", async () 
   bootWithSelection(ServerSelectionEnum.auto, "https://zec.rocks:443");
 
   await waitFor(() => expect(savedSetting("serveruri").length).toBeGreaterThan(0));
-  expect(probedUris()).toContain("https://zec.rocks:443");
+  expect(probedUris()).toContain("https://mainnet.zecwec.com:443");
   expect(savedSelection()).toEqual([ServerSelectionEnum.auto]);
 });
 
@@ -211,13 +211,11 @@ test("a custom server never asks the registry", async () => {
   expect(liveList).not.toHaveBeenCalled();
 });
 
-// Regtest publishes no servers, so `auto` has nothing to pick. Blanking the URI
-// there would wipe the user's local node on every launch.
-test("auto keeps its server on a chain with none listed", async () => {
+test("Regtest auto falls back to the official local endpoint", async () => {
   bootWithSelection(ServerSelectionEnum.auto, "http://127.0.0.1:9067", ServerChainNameEnum.regtestChainName);
 
   await waitFor(() => expect(savedSetting("serveruri").length).toBeGreaterThan(0));
-  expect(savedSetting("serveruri")).toEqual(["http://127.0.0.1:9067"]);
+  expect(savedSetting("serveruri")).toEqual(["http://127.0.0.1:48234"]);
   expect(savedSelection()).toEqual([ServerSelectionEnum.auto]);
 });
 

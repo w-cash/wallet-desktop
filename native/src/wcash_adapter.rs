@@ -10,7 +10,11 @@
     all(feature = "wcash-testnet", feature = "wcash-regtest")
 ))]
 compile_error!("select exactly one Wcash native profile");
-#[cfg(not(any(feature = "wcash-mainnet", feature = "wcash-testnet", feature = "wcash-regtest")))]
+#[cfg(not(any(
+    feature = "wcash-mainnet",
+    feature = "wcash-testnet",
+    feature = "wcash-regtest"
+)))]
 compile_error!("select exactly one Wcash native profile");
 
 mod wcash;

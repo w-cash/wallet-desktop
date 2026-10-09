@@ -23,6 +23,13 @@ use wcash_wallet::{
 use zeroize::Zeroizing;
 #[cfg(test)]
 use zingolib::wcash::SignedTransaction;
+#[cfg(feature = "wcash-mainnet")]
+use zingolib::wcash::{
+    BroadcastResult, CalculatedTransaction, StagedTransactionProposal, StoredSignedTransaction,
+    WalletBalanceSummary, WalletSyncCancellation, WcashMainnet as WcashProfile,
+    WcashMainnetPayment as WcashPayment, WcashMainnetRuntime as WcashRuntime,
+    WcashMainnetRuntimeError as WcashRuntimeError,
+};
 #[cfg(feature = "wcash-regtest")]
 use zingolib::wcash::{
     BroadcastResult, CalculatedTransaction, StagedTransactionProposal, StoredSignedTransaction,
@@ -36,13 +43,6 @@ use zingolib::wcash::{
     WalletBalanceSummary, WalletSyncCancellation, WcashTestnet as WcashProfile,
     WcashTestnetPayment as WcashPayment, WcashTestnetRuntime as WcashRuntime,
     WcashTestnetRuntimeError as WcashRuntimeError,
-};
-#[cfg(feature = "wcash-mainnet")]
-use zingolib::wcash::{
-    BroadcastResult, CalculatedTransaction, StagedTransactionProposal, StoredSignedTransaction,
-    WalletBalanceSummary, WalletSyncCancellation, WcashMainnet as WcashProfile,
-    WcashMainnetPayment as WcashPayment, WcashMainnetRuntime as WcashRuntime,
-    WcashMainnetRuntimeError as WcashRuntimeError,
 };
 
 use super::{with_panic_guard, ZingolibError, RT, WALLET_BASE_DIR};
@@ -58,7 +58,7 @@ const WCASH_NETWORK_LABEL: &str = "Wcash Testnet";
 #[cfg(feature = "wcash-mainnet")]
 const WCASH_PROFILE_ID: &str = "mainnet-v1";
 #[cfg(feature = "wcash-mainnet")]
-const WCASH_ENDPOINT: &str = "http://mainnet.zecwec.com:48234";
+const WCASH_ENDPOINT: &str = "https://mainnet.zecwec.com:443";
 #[cfg(feature = "wcash-mainnet")]
 const WCASH_NETWORK: WalletNetwork = WalletNetwork::Mainnet;
 #[cfg(feature = "wcash-mainnet")]
@@ -1045,9 +1045,7 @@ fn status(cx: FunctionContext) -> JsResult<JsPromise> {
         with_panic_guard(|| {
             let path = wallet_path()?;
             let wallet = if path.exists() {
-                Some(WcashRuntime::inspect(&path).map_err(|error| {
-                    ZingolibError::Read(format!("{} wallet: {error}", WCASH_NETWORK_LABEL))
-                })?)
+                optional_wallet_from_inspection(WcashRuntime::inspect(&path))?
             } else {
                 None
             };
@@ -1065,15 +1063,29 @@ fn status(cx: FunctionContext) -> JsResult<JsPromise> {
     })
 }
 
+fn optional_wallet_from_inspection(
+    inspected: Result<zingolib::wcash::WalletInfo, WcashRuntimeError>,
+) -> Result<Option<zingolib::wcash::WalletInfo>, ZingolibError> {
+    match inspected {
+        Ok(wallet) => Ok(Some(wallet)),
+        Err(WcashRuntimeError::Wallet(WalletServiceError::WalletDatabaseEmpty)) => Ok(None),
+        Err(error) => Err(ZingolibError::Read(format!(
+            "{} wallet: {error}",
+            WCASH_NETWORK_LABEL
+        ))),
+    }
+}
+
 fn create(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let seed_phrase = Zeroizing::new(cx.argument::<JsString>(0)?.value(&mut cx));
+    let endpoint = cx.argument::<JsString>(1)?.value(&mut cx);
     json_promise(cx, move || {
         with_panic_guard(|| {
             let mnemonic = parse_mnemonic(seed_phrase.as_str())?;
             let master_seed = mnemonic_master_seed(&mnemonic);
             let path = wallet_path()?;
             let (runtime, wallet) = RT
-                .block_on(WcashRuntime::create(WCASH_ENDPOINT, &path, &master_seed))
+                .block_on(WcashRuntime::create(&endpoint, &path, &master_seed))
                 .map_err(|error| {
                     ZingolibError::Init(format!("{} create: {error}", WCASH_NETWORK_LABEL))
                 })?;
@@ -1090,6 +1102,7 @@ fn create(mut cx: FunctionContext) -> JsResult<JsPromise> {
 fn restore(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let seed_phrase = Zeroizing::new(cx.argument::<JsString>(0)?.value(&mut cx));
     let birthday = cx.argument::<JsNumber>(1)?.value(&mut cx);
+    let endpoint = cx.argument::<JsString>(2)?.value(&mut cx);
     if !birthday.is_finite()
         || birthday.fract() != 0.0
         || birthday < 1.0
@@ -1108,7 +1121,7 @@ fn restore(mut cx: FunctionContext) -> JsResult<JsPromise> {
             let path = wallet_path()?;
             let (runtime, wallet) = RT
                 .block_on(WcashRuntime::restore(
-                    WCASH_ENDPOINT,
+                    &endpoint,
                     &path,
                     &master_seed,
                     birthday,
@@ -1126,15 +1139,16 @@ fn restore(mut cx: FunctionContext) -> JsResult<JsPromise> {
     })
 }
 
-fn open(cx: FunctionContext) -> JsResult<JsPromise> {
-    json_promise(cx, || {
+fn open(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    let endpoint = cx.argument::<JsString>(0)?.value(&mut cx);
+    json_promise(cx, move || {
         with_panic_guard(|| {
             let path = wallet_path()?;
-            let (runtime, wallet) = RT
-                .block_on(WcashRuntime::open(WCASH_ENDPOINT, &path))
-                .map_err(|error| {
-                    ZingolibError::Init(format!("{} open: {error}", WCASH_NETWORK_LABEL))
-                })?;
+            let (runtime, wallet) =
+                RT.block_on(WcashRuntime::open(&endpoint, &path))
+                    .map_err(|error| {
+                        ZingolibError::Init(format!("{} open: {error}", WCASH_NETWORK_LABEL))
+                    })?;
             store_runtime(runtime)?;
             Ok(serde_json::json!({ "wallet": wallet }).to_string())
         })
@@ -1881,6 +1895,25 @@ mod tests {
                 .join(WcashProfile.storage_namespace())
                 .join(WCASH_WALLET_DATABASE)
         );
+    }
+
+    #[test]
+    fn empty_wcash_database_is_retryable_but_foreign_database_is_rejected() {
+        assert!(
+            optional_wallet_from_inspection(Err(WcashRuntimeError::Wallet(
+                WalletServiceError::WalletDatabaseEmpty,
+            )))
+            .unwrap()
+            .is_none()
+        );
+
+        let error = optional_wallet_from_inspection(Err(WcashRuntimeError::Wallet(
+            WalletServiceError::ForeignWalletDatabase,
+        )))
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("different application or Wcash network"));
     }
 
     #[test]

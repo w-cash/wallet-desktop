@@ -1,8 +1,12 @@
 "use strict";
 
 const assert = require("assert/strict");
-const { createWcashZingoNativeAdapter, toCanonicalAmount } = require("../public/wcashZingoNativeAdapter");
-const { LOCAL_REGTEST_RUNTIME_PROFILE } = require("../public/wcashRuntimeProfile");
+const {
+  createWcashZingoNativeAdapter,
+  endpointMatchesProfile,
+  toCanonicalAmount,
+} = require("../public/wcashZingoNativeAdapter");
+const { LOCAL_REGTEST_RUNTIME_PROFILE, MAINNET_RUNTIME_PROFILE } = require("../public/wcashRuntimeProfile");
 
 const phrase = `${"abandon ".repeat(23)}art`;
 
@@ -17,6 +21,12 @@ function deferred() {
 }
 
 async function main() {
+  assert.equal(endpointMatchesProfile(MAINNET_RUNTIME_PROFILE, "https://mainnet.zecwec.com:443", "main"), true);
+  assert.equal(endpointMatchesProfile(MAINNET_RUNTIME_PROFILE, "https://wallet.example:443", "main"), true);
+  assert.equal(endpointMatchesProfile(MAINNET_RUNTIME_PROFILE, "http://mainnet.zecwec.com:48234", "main"), false);
+  assert.equal(endpointMatchesProfile(MAINNET_RUNTIME_PROFILE, "https://user:secret@wallet.example", "main"), false);
+  assert.equal(endpointMatchesProfile(LOCAL_REGTEST_RUNTIME_PROFILE, "http://127.0.0.1:48234", "regtest"), true);
+  assert.equal(endpointMatchesProfile(LOCAL_REGTEST_RUNTIME_PROFILE, "http://wallet.example:48234", "regtest"), false);
   assert.deepEqual(toCanonicalAmount(1), { zatoshis: 1, decimal: "0.00000001" });
   assert.deepEqual(toCanonicalAmount(100_000_000), { zatoshis: 100_000_000, decimal: "1" });
   assert.throws(() => toCanonicalAmount(1.5), /outside the accepted range/);
@@ -56,6 +66,7 @@ async function main() {
   let simulateProposalBalanceLock = false;
   const deleteOrder = [];
   let sync = deferred();
+  const nativeEndpoints = [];
 
   const native = {
     wcash_status: async () =>
@@ -75,15 +86,20 @@ async function main() {
       assert.equal(value, phrase);
       return viewingKey;
     },
-    wcash_create: async () => {
+    wcash_create: async (_seed, endpoint) => {
+      nativeEndpoints.push(["create", endpoint]);
       database = wallet;
       return JSON.stringify({ wallet, seed_scheme: "bip39-english-24-empty-passphrase-v1" });
     },
-    wcash_restore: async () => {
+    wcash_restore: async (_seed, _birthday, endpoint) => {
+      nativeEndpoints.push(["restore", endpoint]);
       database = wallet;
       return JSON.stringify({ wallet, seed_scheme: "bip39-english-24-empty-passphrase-v1" });
     },
-    wcash_open: async () => JSON.stringify({ wallet }),
+    wcash_open: async (endpoint) => {
+      nativeEndpoints.push(["open", endpoint]);
+      return JSON.stringify({ wallet });
+    },
     wcash_sync: () => sync.promise,
     wcash_stop_sync: () => true,
     wcash_balance: async () => JSON.stringify(balance),
@@ -294,11 +310,13 @@ async function main() {
   const created = JSON.parse(await adapter.invoke("init_new", profile.endpoint, "regtest", "high", 1, "wallet.dat"));
   assert.equal(created.seed_phrase, phrase);
   assert.equal(created.birthday, 1);
+  assert.deepEqual(nativeEndpoints[0], ["create", profile.endpoint]);
   assert.equal(await adapter.invoke("wallet_exists", profile.endpoint, "regtest", "high", 1, "wallet.dat"), true);
   assert.deepEqual(
     JSON.parse(await adapter.invoke("init_from_b64", profile.endpoint, "regtest", "high", 1, "wallet.dat")),
     { birthday: 1 },
   );
+  assert.deepEqual(nativeEndpoints[1], ["open", profile.endpoint]);
   assert.deepEqual(JSON.parse(await adapter.invoke("get_ufvk")), { ufvk: viewingKey });
 
   assert.equal(await adapter.invoke("run_sync"), "Sync task launched.");

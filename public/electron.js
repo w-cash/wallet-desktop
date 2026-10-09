@@ -3,6 +3,7 @@ const os = require("os");
 const path = require("path");
 const fs = require("fs");
 const { createWcashZingoNativeAdapter } = require("./wcashZingoNativeAdapter");
+const { migrateWcashWalletEndpoints, resolveWcashEndpointSettings } = require("./wcashEndpointSettings");
 const {
   createRequireAuthSettingHandler,
   createSensitiveAuthorizationGrantStore,
@@ -418,12 +419,15 @@ class MenuBuilder {
 }
 
 async function getWallets() {
-  return new Promise((resolve, reject) => {
+  const stored = await new Promise((resolve, reject) => {
     storage.get(STORAGE_KEY, (err, data) => {
       if (err) return reject(err);
       resolve(Array.isArray(data) ? data : []);
     });
   });
+  const result = migrateWcashWalletEndpoints(stored, wcashProfile);
+  if (result.migrated) await saveWallets(result.wallets);
+  return result.wallets;
 }
 
 async function getWallet(id) {
@@ -798,12 +802,18 @@ ipcMain.handle("zns:resolve", async () => {
 
 ipcMain.handle("loadSettings", async () => {
   const all = settings.getSync("all");
+  const endpointSettings = resolveWcashEndpointSettings(all, wcashProfile);
+  if (endpointSettings.migrated) {
+    settings.setSync("all.serveruri", endpointSettings.serveruri);
+    settings.setSync("all.serverchain_name", endpointSettings.serverchain_name);
+    settings.setSync("all.serverselection", endpointSettings.serverselection);
+  }
   const requireDeviceAuth = await getRequireAuth();
   return {
     ...(all ?? {}),
-    serveruri: wcashProfile.endpoint,
-    serverchain_name: wcashProfile.chainName,
-    serverselection: "custom",
+    serveruri: endpointSettings.serveruri,
+    serverchain_name: endpointSettings.serverchain_name,
+    serverselection: endpointSettings.serverselection,
     requireDeviceAuth,
   };
 });
@@ -811,11 +821,11 @@ ipcMain.handle("saveSettings", async (_e, kv) => {
   if (kv.key === "requireDeviceAuth") {
     await updateRequireAuthSetting(kv.value);
   } else if (kv.key === "serveruri") {
-    settings.setSync("all.serveruri", wcashProfile.endpoint);
+    settings.setSync("all.serveruri", kv.value);
   } else if (kv.key === "serverchain_name") {
     settings.setSync("all.serverchain_name", wcashProfile.chainName);
   } else if (kv.key === "serverselection") {
-    settings.setSync("all.serverselection", "custom");
+    settings.setSync("all.serverselection", kv.value);
   } else {
     settings.setSync(`all.${kv.key}`, kv.value);
   }

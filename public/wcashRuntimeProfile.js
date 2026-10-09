@@ -3,7 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const CORE_REVISION = "5bfd56f3ca4f332f9520908821a0b7e166b2372f";
+const CORE_REVISION = "f86cd05d1deb72b571b173ece3777df91c1d44e6";
 const TESTNET_PACKAGED_PROFILE = "testnet";
 const MAINNET_PACKAGED_PROFILE = "mainnet";
 const LOCAL_REGTEST_QA_PACKAGED_PROFILE = "local-regtest-qa";
@@ -15,7 +15,7 @@ const MAINNET_RUNTIME_PROFILE = Object.freeze({
   network: "Wcash Mainnet",
   chainName: "main",
   ticker: "WEC",
-  endpoint: "http://mainnet.zecwec.com:48234",
+  endpoint: "https://mainnet.zecwec.com:443",
   storageNamespace: "wcashmainnet-v1",
   branchId: "d9c6a7ee",
   ironwoodPrefix: "wu1",

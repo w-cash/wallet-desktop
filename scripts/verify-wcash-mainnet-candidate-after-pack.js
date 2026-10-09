@@ -26,7 +26,7 @@ module.exports = async (context) => {
     throw new Error("The packaged wallet does not select Wcash Mainnet");
   }
   const profile = asar.extractFile(path.join(resources, "app.asar"), "build/wcashRuntimeProfile.js").toString();
-  if (!profile.includes("http://mainnet.zecwec.com:48234") || !profile.includes("d9c6a7ee")) {
+  if (!profile.includes("https://mainnet.zecwec.com:443") || !profile.includes("d9c6a7ee")) {
     throw new Error("The packaged Mainnet endpoint or branch ID differs from the reviewed profile");
   }
   const binding = path.join(resources, "app.asar.unpacked", "build", "native.node");
