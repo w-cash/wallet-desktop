@@ -40,5 +40,8 @@ jobs:
       - name: Install dependencies
         run: yarn install
 
+      - name: Validate public Wcash documentation
+        run: yarn test:public-docs
+
       - name: Run tests
         run: yarn test:run
