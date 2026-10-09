@@ -1,53 +1,52 @@
-# Security Policy
+# Wcash Wallet desktop security policy
 
-## Supported Versions
+## Release and support status
 
-Only the latest released version of Zingo PC receives security fixes. Older versions are not backported.
+Wcash Wallet desktop has no supported stable release. The published
+`wcash-desktop-2.0.25-181` packages are unsigned developer Mainnet candidates,
+are unsupported for material funds, and connect to the wallet service over
+plaintext HTTP. They have not completed the transport, signing, platform, or
+wallet qualification gates required for a supported release.
 
-| Platform | Supported |
-| -------- | --------- |
-| Latest   | ✓         |
-| Older    | ✗         |
+Security fixes may be developed on the active branch, but no candidate version
+has a promised security-support lifetime or response service-level agreement.
 
-## Reporting a Vulnerability
+## Report a vulnerability privately
 
-If you believe you have found a security vulnerability in Zingo PC, please **do not open a public GitHub issue**. Instead, report it privately:
+Do not disclose an unpatched vulnerability in a public issue. Use this
+repository's GitHub Private Vulnerability Reporting page:
 
-**Email:** zingodisclosure@proton.me
+<https://github.com/w-cash/wallet-desktop/security/advisories/new>
 
-Please include as much of the following as possible:
+Repository owners must enable and verify Private Vulnerability Reporting in the
+GitHub security settings so this route accepts reports. Until that is verified,
+the project does not publish a private Wcash security contact. Do not send Wcash
+reports to an inherited upstream address.
 
-- A clear description of the vulnerability and its potential impact
-- Steps to reproduce or a proof-of-concept
-- Affected version(s) and operating system(s)
-- Any suggested mitigations
-
-## What to Expect
-
-- **Acknowledgement** within 72 hours of your report.
-- **Status update** within 7 days with an initial assessment.
-- **Coordinated disclosure** — we will work with you to agree on a disclosure timeline before any public announcement.
-- Credit in the release notes if you wish to be acknowledged.
+Include the affected source revision or candidate tag, operating system and
+architecture, impact, reproduction steps, and a minimal proof of concept when
+it is safe to provide one. Remove seed phrases, spending keys, personal wallet
+data, and live credentials from reports.
 
 ## Scope
 
-Issues considered in scope:
+Relevant reports include:
 
-- Private key or seed phrase exposure
-- Unauthorized fund transfer or transaction signing
-- Authentication or authorization bypasses
-- Cryptographic weaknesses in wallet or shielded transaction handling
-- Remote code execution via Electron IPC or renderer process escalation
-- Node.js / Electron context isolation bypasses leading to privilege escalation
-- Data exfiltration affecting wallet users
+- seed phrase, spending key, or wallet-data exposure;
+- unauthorized transaction construction, signing, or broadcast;
+- network, endpoint-identity, or cross-network validation failures;
+- Electron main-process, renderer, IPC, or navigation boundary bypasses;
+- operating-system authentication or credential-store bypasses; and
+- package, dependency, update, or release-integrity failures.
 
-Out of scope:
+Availability problems, support requests, and candidate-installation questions
+belong in the public support route described in [SUPPORT.md](SUPPORT.md), unless
+they reveal a security vulnerability.
 
-- Denial of service against the lightwalletd server
-- Issues in third-party dependencies not directly introduced by this project
-- Social engineering or phishing attacks
-- Reports already publicly known
+## Upstream code
 
-## Disclosure Policy
-
-We follow a **90-day coordinated disclosure** timeline. If a fix cannot be delivered within that window we will communicate the reasons and agree on an extension with the reporter.
+This repository contains code adapted from Zingo PC, documented in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). ZingoLabs' disclosure contacts,
+response promises, and supported-version statements do not apply to Wcash
+Wallet desktop. If a report concerns unchanged upstream code, report it here
+first so the Wcash impact can be assessed and coordinated responsibly.
