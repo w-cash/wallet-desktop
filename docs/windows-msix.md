@@ -9,5 +9,7 @@ release. Add MSIX only after Wcash controls a Partner Center listing and its
 exact application ID, identity name, publisher, display name, assets, URI
 registration, and target-host test plan have been reviewed together.
 
-The current manual workflow produces unsigned ZIP candidates for Local Regtest
-only. It does not submit to Partner Center or create a GitHub release.
+The manual Local Regtest workflow produces unsigned ZIP candidates and does not
+submit to Partner Center or create a GitHub release. The separately published
+Mainnet prerelease also contains unsigned ZIP archives, not MSIX/AppX packages
+or a supported Windows installer.

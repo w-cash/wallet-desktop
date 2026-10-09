@@ -1,5 +1,10 @@
 # Wcash Wallet desktop QA CI
 
+This document describes the separate Local Regtest QA workflow. It does not
+describe or qualify the published unsigned Mainnet developer prerelease; see
+[`WCASH_DESKTOP_NEXT_PLATFORMS.md`](WCASH_DESKTOP_NEXT_PLATFORMS.md) for both
+candidate tracks.
+
 `.github/workflows/electron.yml` is the reusable build boundary for desktop
 Local Regtest QA candidates. It may be started manually with
 `workflow_dispatch` or called from another workflow with `workflow_call`.

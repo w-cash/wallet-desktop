@@ -8,3 +8,6 @@ License. The complete upstream copyright and license text is preserved in
 `LICENSE` and must accompany distributions of this software.
 
 Bundled dependencies remain subject to their respective licenses.
+
+This attribution does not make ZingoLabs the operator, security contact, or
+support provider for Wcash Wallet, its packages, or its wallet service.
