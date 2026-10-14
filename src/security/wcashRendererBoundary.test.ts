@@ -14,11 +14,15 @@ describe("Wcash renderer privilege boundary", () => {
 
   it("does not use inherited IPC, filesystem, storage, or logging paths", () => {
     const wallet = read("src/wcash/WcashWallet.tsx");
+    const routes = read("src/wcash/WcashRoutes.tsx");
 
     expect(wallet).toContain("window.wcash");
     expect(wallet).not.toContain("window.electronAPI");
     expect(wallet).not.toMatch(/\b(?:localStorage|sessionStorage|indexedDB)\b/);
     expect(wallet).not.toMatch(/\bconsole\.(?:log|debug|info|warn|error|trace)\b/);
+    expect(routes).not.toMatch(/electronBridge|window\.electronAPI|window\.wcash/);
+    expect(routes).not.toMatch(/\b(?:localStorage|sessionStorage|indexedDB)\b/);
+    expect(routes).not.toMatch(/\bconsole\.(?:log|debug|info|warn|error|trace)\b/);
   });
 
   it("uses only semantic transaction methods and never exposes generic signing or raw broadcast", () => {

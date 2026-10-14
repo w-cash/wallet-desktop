@@ -135,13 +135,19 @@ async function run() {
   await window.loadFile(path.join(__dirname, "..", "build", "index.html"));
   await waitForSelector(window, ".warden-centered .warden-button");
   await window.webContents.executeJavaScript(`document.querySelector(".warden-centered .warden-button").click()`);
+  await waitForSelector(window, ".wcash-zingo-nav-link");
+  await window.webContents.executeJavaScript(`
+    [...document.querySelectorAll(".wcash-zingo-nav-link")]
+      .find((link) => link.textContent.trim() === "Receive")
+      .click()
+  `);
   await waitForSelector(window, "#receive-title");
 
   const result = await window.webContents.executeJavaScript(`(async () => {
-    const shell = document.querySelector(".warden-shell");
-    const header = document.querySelector(".warden-header");
-    const receive = document.querySelector("#receive-title");
+    const shell = document.querySelector(".wcash-zingo-route-scroll");
+    const header = document.querySelector(".wcash-zingo-topbar");
     const style = getComputedStyle(shell);
+    const headerBefore = header.getBoundingClientRect();
     const before = {
       scrollTop: shell.scrollTop,
       clientHeight: shell.clientHeight,
@@ -150,15 +156,14 @@ async function run() {
     shell.scrollTop = shell.scrollHeight;
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const headerRect = header.getBoundingClientRect();
-    const receiveRect = receive.getBoundingClientRect();
     return {
       viewport: { width: innerWidth, height: innerHeight },
       overflowY: style.overflowY,
       before,
       afterScrollTop: shell.scrollTop,
       maximumScrollTop: shell.scrollHeight - shell.clientHeight,
-      header: { top: headerRect.top, bottom: headerRect.bottom },
-      receive: { top: receiveRect.top, bottom: receiveRect.bottom },
+      headerBefore: { top: headerBefore.top, bottom: headerBefore.bottom },
+      headerAfter: { top: headerRect.top, bottom: headerRect.bottom },
     };
   })()`);
 
@@ -167,9 +172,10 @@ async function run() {
     result.before.scrollHeight <= result.before.clientHeight ||
     result.afterScrollTop <= 0 ||
     Math.abs(result.afterScrollTop - result.maximumScrollTop) > 1 ||
-    result.header.top !== 0 ||
-    result.receive.top < result.header.bottom ||
-    result.receive.bottom > result.viewport.height
+    result.headerBefore.top !== result.headerAfter.top ||
+    result.headerBefore.bottom !== result.headerAfter.bottom ||
+    result.headerAfter.top < 0 ||
+    result.headerAfter.bottom > result.viewport.height
   ) {
     throw new Error(`small-window wallet did not scroll correctly: ${JSON.stringify(result)}`);
   }

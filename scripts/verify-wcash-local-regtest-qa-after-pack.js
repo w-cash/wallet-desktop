@@ -6,6 +6,7 @@ const path = require("path");
 const asar = require("@electron/asar");
 const plist = require("plist");
 const {
+  LOCAL_REGTEST_QA_APPLICATION_IDENTITY,
   LOCAL_REGTEST_QA_PACKAGED_PROFILE,
   LOCAL_REGTEST_RUNTIME_PROFILE,
   TESTNET_RUNTIME_PROFILE,
@@ -47,10 +48,13 @@ function verifyPackagedApplication(context) {
     "keytar.node",
   );
 
-  assert(context.packager.appInfo.id === LOCAL_REGTEST_RUNTIME_PROFILE.appId, "bundle identifier is not Local Regtest");
   assert(
-    context.packager.appInfo.productName === LOCAL_REGTEST_RUNTIME_PROFILE.productName,
-    "product name is not Local Regtest",
+    context.packager.appInfo.id === LOCAL_REGTEST_QA_APPLICATION_IDENTITY.appId,
+    "bundle identifier is not dedicated to packaged Regtest QA",
+  );
+  assert(
+    context.packager.appInfo.productName === LOCAL_REGTEST_QA_APPLICATION_IDENTITY.productName,
+    "product name is not dedicated to packaged Regtest QA",
   );
   assert(config.forceCodeSigning === false, "code signing was forced");
   assert(platformConfig.identity === null, "the signing identity is not explicitly null");
@@ -82,8 +86,8 @@ function verifyPackagedApplication(context) {
   const packagedMetadata = JSON.parse(asar.extractFile(archive, "package.json").toString());
   assert(packagedMetadata.name === "wcash-warden-local-regtest-qa", "package name is not dedicated to Regtest QA");
   assert(
-    packagedMetadata.productName === LOCAL_REGTEST_RUNTIME_PROFILE.productName,
-    "packaged product name changed the existing Local Regtest identity",
+    packagedMetadata.productName === LOCAL_REGTEST_QA_APPLICATION_IDENTITY.productName,
+    "packaged product name does not use the dedicated QA identity",
   );
   assert(
     packagedMetadata.wcashPackagedProfile === LOCAL_REGTEST_QA_PACKAGED_PROFILE,
@@ -104,12 +108,24 @@ function verifyPackagedApplication(context) {
   const packagedMain = asar.extractFile(archive, "build/electron.js").toString();
   const packagedPreload = asar.extractFile(archive, "build/preload.js").toString();
   assert(packagedMain.includes("WCASH_PACKAGE_METADATA.wcashPackagedProfile"), "main ignores the packaged QA marker");
-  assert(packagedMain.includes("WCASH_RUNTIME.localnet && !app.isPackaged"), "packaged data path is ambiently mutable");
+  assert(
+    packagedMain.includes("applicationIdentity: WCASH_APPLICATION_IDENTITY") &&
+      packagedMain.includes("WCASH_RUNTIME.localnet && !app.isPackaged"),
+    "packaged data path is ambiently mutable",
+  );
+  assert(
+    packagedMain.includes("WCASH_APPLICATION_IDENTITY.keytarService") &&
+      packagedMain.includes("WCASH_APPLICATION_IDENTITY.keytarAccount"),
+    "packaged credential identity is not selected independently",
+  );
   assert(packagedPreload.includes('endpoint: "http://127.0.0.1:48234"'), "preload endpoint is not loopback-only");
 
   const info = plist.parse(fs.readFileSync(path.join(contents, "Info.plist"), "utf8"));
-  assert(info.CFBundleIdentifier === LOCAL_REGTEST_RUNTIME_PROFILE.appId, "Info.plist bundle identifier is wrong");
-  assert(info.CFBundleName === LOCAL_REGTEST_RUNTIME_PROFILE.productName, "Info.plist bundle name is wrong");
+  assert(
+    info.CFBundleIdentifier === LOCAL_REGTEST_QA_APPLICATION_IDENTITY.appId,
+    "Info.plist bundle identifier is wrong",
+  );
+  assert(info.CFBundleName === LOCAL_REGTEST_QA_APPLICATION_IDENTITY.productName, "Info.plist bundle name is wrong");
   assert(info.CFBundleURLTypes === undefined, "Info.plist registers an inherited URI protocol");
 
   console.log("Verified unsigned macOS arm64 Local Regtest QA package at " + context.appOutDir);

@@ -510,6 +510,7 @@ describe("Wcash Testnet desktop wallet", () => {
 
     await user.click(await screen.findByRole("button", { name: "Open wallet" }));
     await screen.findByText("Verified at block 100.");
+    await user.click(screen.getByRole("link", { name: "Send" }));
     await user.type(screen.getByLabelText("Wcash Testnet recipient"), ironwoodRecipient);
     await user.type(screen.getByLabelText("Amount (TWC)"), "1.25");
     await user.type(screen.getByLabelText(/^Private memo \(optional\)/), "hello 💚");
@@ -548,7 +549,9 @@ describe("Wcash Testnet desktop wallet", () => {
     render(<WcashWallet />);
 
     await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    await user.click(screen.getByRole("link", { name: "Send" }));
     expect(await screen.findByRole("button", { name: "Review payment" })).toBeDisabled();
+    await user.click(screen.getByRole("link", { name: "Receive" }));
     expect(screen.getByRole("button", { name: "Review shielding" })).toBeDisabled();
     expect(bridge.validateRecipient).not.toHaveBeenCalled();
     expect(bridge.send).not.toHaveBeenCalled();
@@ -570,8 +573,10 @@ describe("Wcash Testnet desktop wallet", () => {
     render(<WcashWallet />);
 
     await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    await user.click(screen.getByRole("link", { name: "Send" }));
     expect(await screen.findByText(/Signed pending status is unavailable/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Review payment" })).toBeDisabled();
+    await user.click(screen.getByRole("link", { name: "Receive" }));
     expect(screen.getByRole("button", { name: "Review shielding" })).toBeDisabled();
   });
 
@@ -610,6 +615,7 @@ describe("Wcash Testnet desktop wallet", () => {
     render(<WcashWallet />);
 
     await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    await user.click(screen.getByRole("link", { name: "Send" }));
     expect(await screen.findByText(/Signed pending status is unavailable/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Review payment" })).toBeDisabled();
     expect(pendingTransactions).toHaveBeenNthCalledWith(1, undefined);
@@ -647,6 +653,7 @@ describe("Wcash Testnet desktop wallet", () => {
     render(<WcashWallet />);
 
     await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    await user.click(screen.getByRole("link", { name: "Send" }));
     expect(await screen.findByText(expiredTxid)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Review payment" })).toBeEnabled();
   });
@@ -677,6 +684,7 @@ describe("Wcash Testnet desktop wallet", () => {
     render(<WcashWallet />);
 
     await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    await user.click(screen.getByRole("link", { name: "Send" }));
     await user.type(screen.getByLabelText("Wcash Testnet recipient"), ironwoodRecipient);
     await user.type(screen.getByLabelText("Amount (TWC)"), "1");
     await user.click(screen.getByRole("button", { name: "Review payment" }));
@@ -704,6 +712,7 @@ describe("Wcash Testnet desktop wallet", () => {
     render(<WcashWallet />);
 
     await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    await user.click(screen.getByRole("link", { name: "Send" }));
     await user.type(screen.getByLabelText("Wcash Testnet recipient"), ironwoodRecipient);
     await user.type(screen.getByLabelText("Amount (TWC)"), "1");
     await user.click(screen.getByRole("button", { name: "Review payment" }));
@@ -737,6 +746,7 @@ describe("Wcash Testnet desktop wallet", () => {
     render(<WcashWallet />);
 
     await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    await user.click(screen.getByRole("link", { name: "Receive" }));
     await user.click(await screen.findByRole("button", { name: "Review shielding" }));
     expect(await screen.findByRole("heading", { name: /Shield up to 6\.25000000 TWC/ })).toBeInTheDocument();
     expect(screen.getByText(/own private Ironwood receiver/i)).toBeInTheDocument();
@@ -794,6 +804,7 @@ describe("Wcash Testnet desktop wallet", () => {
     render(<WcashWallet />);
 
     await user.click(await screen.findByRole("button", { name: "Open wallet" }));
+    await user.click(screen.getByRole("link", { name: "Send" }));
     expect(await screen.findByText(activeTxid)).toBeInTheDocument();
     expect(screen.getByText(expiredTxid)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Review payment" })).toBeDisabled();

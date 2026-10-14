@@ -921,3 +921,521 @@ textarea {
     animation: none;
   }
 }
+
+/*
+ * Wcash reuses Zingo PC's proven desktop information architecture: a stable
+ * wallet sidebar and one scrollable route at a time. The wallet authority is
+ * still the narrow window.wcash bridge; these classes are presentation only.
+ */
+.wcash-zingo-app {
+  --warden-bg: var(--color-background);
+  --warden-panel: var(--color-background-dark);
+  --warden-panel-raised: #0b213d;
+  --warden-line: #243b55;
+  --warden-line-strong: #49627e;
+  --warden-text: var(--color-text);
+  --warden-muted: #98a8bb;
+  --warden-green: var(--color-primary);
+  display: grid;
+  width: 100%;
+  height: 100vh;
+  min-height: 0;
+  grid-template-columns: 220px minmax(0, 1fr);
+  overflow: hidden;
+  color: var(--warden-text);
+  background: var(--color-background);
+}
+
+.wcash-zingo-sidebar {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--color-background-dark);
+  border-right: 1px solid #172c43;
+}
+
+.wcash-zingo-brand {
+  display: flex;
+  min-height: 128px;
+  align-items: center;
+  gap: 13px;
+  padding: 24px 18px;
+  border-bottom: 8px solid var(--color-background);
+  -webkit-app-region: drag;
+}
+
+.wcash-zingo-logo {
+  display: grid;
+  width: 54px;
+  height: 54px;
+  flex: 0 0 54px;
+  place-items: center;
+  border-radius: 9px;
+  color: #fff;
+  background: var(--color-primary);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 14%);
+  font-family: Georgia, serif;
+  font-size: 35px;
+  font-weight: 800;
+}
+
+.wcash-zingo-brand div {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.wcash-zingo-brand strong {
+  font-size: 15px;
+  line-height: 1.15;
+}
+
+.wcash-zingo-brand span:not(.wcash-zingo-logo) {
+  color: var(--color-zingo);
+  font-size: 11px;
+}
+
+.wcash-zingo-nav {
+  display: grid;
+  padding: 12px 0 20px;
+  gap: 2px;
+}
+
+.wcash-zingo-nav-link {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 15px;
+  padding: 0 20px;
+  border-left: 4px solid transparent;
+  color: var(--color-text);
+  font-size: 16px;
+}
+
+.wcash-zingo-nav-link i {
+  width: 20px;
+  color: var(--color-zingo);
+  text-align: center;
+}
+
+.wcash-zingo-nav-link.is-active {
+  border-left-color: var(--color-primary);
+  color: var(--color-primary);
+  background: #07182a;
+}
+
+.wcash-zingo-nav-link.is-active i {
+  color: var(--color-primary);
+}
+
+.wcash-zingo-nav-link:focus-visible,
+.wcash-zingo-actions a:focus-visible,
+.wcash-zingo-text-link:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: -3px;
+}
+
+.wcash-zingo-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: auto;
+  padding: 16px 20px;
+  border-top: 1px solid #172c43;
+  background: #030a12;
+}
+
+.wcash-zingo-status > span {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
+  border-radius: 50%;
+  background: var(--warden-amber);
+}
+
+.wcash-zingo-status[data-exact-tip="true"] > span {
+  background: var(--color-primary);
+}
+
+.wcash-zingo-status div {
+  display: grid;
+  gap: 2px;
+}
+
+.wcash-zingo-status strong {
+  font-size: 12px;
+}
+
+.wcash-zingo-status small {
+  color: var(--warden-muted);
+  font-size: 10px;
+}
+
+.wcash-zingo-content {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.wcash-zingo-topbar {
+  display: flex;
+  min-height: 82px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 26px;
+  border-bottom: 1px solid #243b55;
+  background: #071a30;
+  -webkit-app-region: drag;
+}
+
+.wcash-zingo-topbar > div:first-child {
+  min-width: 0;
+}
+
+.wcash-zingo-topbar span {
+  color: var(--warden-muted);
+  font-size: 10px;
+}
+
+.wcash-zingo-topbar h1 {
+  margin: 3px 0 0;
+  font-size: 27px;
+  line-height: 1;
+}
+
+.wcash-zingo-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  -webkit-app-region: no-drag;
+}
+
+.wcash-zingo-top-actions .wcash-zingo-network {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.wcash-zingo-route-scroll {
+  min-width: 0;
+  min-height: 0;
+  padding: 20px 24px 48px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+}
+
+.wcash-zingo-runtime-note {
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  border: 1px solid #51482f;
+  color: #d8c89f;
+  background: #18170f;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.wcash-zingo-sync-summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 18px;
+  padding: 10px 13px;
+  border: 1px solid #51482f;
+  color: #e5d3a8;
+  background: #18170f;
+  font-size: 11px;
+}
+
+.wcash-zingo-sync-summary[data-exact-tip="true"] {
+  border-color: #286332;
+  color: #bce8c2;
+  background: #0a2013;
+}
+
+.wcash-zingo-page {
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.wcash-zingo-page .warden-wallet-title {
+  align-items: center;
+  margin: 2px 0 18px;
+}
+
+.wcash-zingo-page .warden-wallet-title h2 {
+  margin: 3px 0 0;
+  font-size: 30px;
+}
+
+.wcash-zingo-pool-label {
+  color: var(--warden-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.wcash-zingo-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.wcash-zingo-actions a {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 15px;
+  border: 1px solid var(--warden-line);
+  background: var(--warden-panel);
+}
+
+.wcash-zingo-actions a:hover {
+  border-color: var(--color-primary);
+  opacity: 1;
+}
+
+.wcash-zingo-actions i {
+  width: 32px;
+  color: var(--color-primary);
+  font-size: 20px;
+  text-align: center;
+}
+
+.wcash-zingo-actions span {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.wcash-zingo-actions strong {
+  font-size: 14px;
+}
+
+.wcash-zingo-actions small {
+  overflow: hidden;
+  color: var(--warden-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wcash-zingo-receiver-preview {
+  display: grid;
+  gap: 7px;
+  margin-top: 16px;
+  padding: 15px 17px;
+  border-left: 3px solid var(--color-primary);
+  background: var(--warden-panel);
+}
+
+.wcash-zingo-receiver-preview span {
+  color: var(--warden-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.wcash-zingo-receiver-preview code {
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wcash-zingo-text-link {
+  display: inline-block;
+  margin-top: 14px;
+  color: var(--color-primary);
+  font-size: 12px;
+}
+
+.wcash-zingo-receive-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.wcash-zingo-qr-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 22px;
+  align-items: center;
+  padding: 20px;
+  border: 1px solid var(--warden-line);
+  border-left: 4px solid var(--color-primary);
+  background: var(--warden-panel);
+}
+
+.wcash-zingo-qr-card--secondary {
+  border-left-color: var(--color-zingo);
+}
+
+.wcash-zingo-qr {
+  padding: 8px;
+  border-radius: 4px;
+  background: white;
+  line-height: 0;
+}
+
+.wcash-zingo-qr-card h3 {
+  margin: 5px 0 12px;
+  font-size: 18px;
+}
+
+.wcash-zingo-qr-card code {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--color-text);
+  font-size: 11px;
+  line-height: 1.55;
+  user-select: text;
+}
+
+.wcash-zingo-qr-card p {
+  margin: 10px 0 0;
+  color: var(--warden-muted);
+  line-height: 1.5;
+}
+
+.wcash-zingo-onboarding {
+  width: min(780px, 100%);
+  margin-top: 3vh;
+}
+
+.wcash-zingo-onboarding-title {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding-bottom: 26px;
+}
+
+.wcash-zingo-onboarding-title h1 {
+  margin: 4px 0 8px;
+  font-size: 34px;
+}
+
+.wcash-zingo-onboarding-title p:last-child {
+  margin: 0;
+  color: var(--warden-muted);
+  font-size: 13px;
+}
+
+.wcash-zingo-onboarding .warden-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--warden-line);
+}
+
+.wcash-zingo-onboarding .warden-actions article {
+  padding: 24px;
+  border: 0;
+  background: var(--warden-bg);
+}
+
+.wcash-zingo-onboarding .warden-actions article > i {
+  margin-bottom: 12px;
+  color: var(--color-primary);
+  font-size: 22px;
+}
+
+@media (max-width: 760px) {
+  .wcash-zingo-app {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .wcash-zingo-sidebar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    border-right: 0;
+    border-bottom: 1px solid #172c43;
+  }
+
+  .wcash-zingo-brand {
+    min-height: 66px;
+    padding: 8px 14px;
+    border-bottom: 0;
+  }
+
+  .wcash-zingo-logo {
+    width: 40px;
+    height: 40px;
+    flex-basis: 40px;
+    font-size: 25px;
+  }
+
+  .wcash-zingo-brand div,
+  .wcash-zingo-status {
+    display: none;
+  }
+
+  .wcash-zingo-nav {
+    display: flex;
+    min-width: 0;
+    align-items: stretch;
+    justify-content: center;
+    padding: 0;
+    gap: 0;
+  }
+
+  .wcash-zingo-nav-link {
+    min-width: 0;
+    min-height: 66px;
+    flex: 1 1 0;
+    justify-content: center;
+    gap: 7px;
+    padding: 0 8px;
+    border-bottom: 3px solid transparent;
+    border-left: 0;
+    font-size: 12px;
+  }
+
+  .wcash-zingo-nav-link.is-active {
+    border-bottom-color: var(--color-primary);
+  }
+
+  .wcash-zingo-topbar {
+    min-height: 62px;
+    padding: 9px 16px;
+  }
+
+  .wcash-zingo-topbar > div:first-child span,
+  .wcash-zingo-network {
+    display: none;
+  }
+
+  .wcash-zingo-topbar h1 {
+    margin: 0;
+    font-size: 22px;
+  }
+
+  .wcash-zingo-route-scroll {
+    padding: 14px 16px 36px;
+  }
+
+  .wcash-zingo-actions,
+  .wcash-zingo-onboarding .warden-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .wcash-zingo-receive-grid .wcash-zingo-qr-card {
+    grid-template-columns: 1fr;
+  }
+
+  .wcash-zingo-qr {
+    width: max-content;
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 560px) {
+  .wcash-zingo-nav-link span {
+    display: none;
+  }
+}

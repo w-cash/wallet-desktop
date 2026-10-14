@@ -43,6 +43,26 @@ const LOCAL_REGTEST_RUNTIME_PROFILE = Object.freeze({
   localnet: true,
 });
 
+// The distributable Regtest QA app must not reuse the developer launch's
+// application-data or Keychain identity. They intentionally use the same
+// compiled Regtest consensus profile, but a developer's interrupted setup must
+// never change what a freshly installed QA package shows at startup.
+const LOCAL_REGTEST_QA_APPLICATION_IDENTITY = Object.freeze({
+  appId: "com.wcashwallet.warden.local-regtest-qa",
+  productName: "Wcash Warden Local Regtest QA",
+  keytarService: "com.wcashwallet.warden.local-regtest-qa.wallet-seed.v1",
+  keytarAccount: "wcash-local-regtest-qa-primary",
+});
+
+function requireKnownApplicationIdentity(profile, applicationIdentity) {
+  const selected = requireKnownRuntimeProfile(profile);
+  if (applicationIdentity === selected) return applicationIdentity;
+  if (selected === LOCAL_REGTEST_RUNTIME_PROFILE && applicationIdentity === LOCAL_REGTEST_QA_APPLICATION_IDENTITY) {
+    return applicationIdentity;
+  }
+  throw new TypeError("Wcash application identity must match the compiled runtime profile");
+}
+
 function requireKnownRuntimeProfile(profile) {
   if (profile !== TESTNET_RUNTIME_PROFILE && profile !== LOCAL_REGTEST_RUNTIME_PROFILE) {
     throw new TypeError("Wcash runtime profile must be one of the compiled application profiles");
@@ -86,13 +106,14 @@ function pathsOverlap(left, right) {
   return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
 }
 
-function resolveWcashUserDataPath({ profile, appDataPath, localnetDataDir }) {
+function resolveWcashUserDataPath({ profile, appDataPath, localnetDataDir, applicationIdentity = profile }) {
   const selected = requireKnownRuntimeProfile(profile);
+  const identity = requireKnownApplicationIdentity(selected, applicationIdentity);
   if (typeof appDataPath !== "string" || !path.isAbsolute(appDataPath)) {
     throw new TypeError("Wcash application data path must be absolute");
   }
   if (!selected.localnet || localnetDataDir === undefined || localnetDataDir === "") {
-    return path.join(appDataPath, selected.productName);
+    return path.join(appDataPath, identity.productName);
   }
   if (typeof localnetDataDir !== "string" || localnetDataDir.includes("\0") || !path.isAbsolute(localnetDataDir)) {
     throw new TypeError("WCASH_LOCALNET_DATA_DIR must be an absolute path");
@@ -124,6 +145,7 @@ function publicRuntimeConfig(profile) {
 }
 
 module.exports = {
+  LOCAL_REGTEST_QA_APPLICATION_IDENTITY,
   LOCAL_REGTEST_QA_PACKAGED_PROFILE,
   LOCAL_REGTEST_RUNTIME_PROFILE,
   TESTNET_PACKAGED_PROFILE,

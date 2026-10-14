@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { nativeDependencyPinsMatch } = require("./wcash-native-pins");
 const {
+  LOCAL_REGTEST_QA_APPLICATION_IDENTITY,
   LOCAL_REGTEST_QA_PACKAGED_PROFILE,
   LOCAL_REGTEST_RUNTIME_PROFILE,
   TESTNET_RUNTIME_PROFILE,
@@ -58,6 +59,15 @@ requireCondition(
     LOCAL_REGTEST_RUNTIME_PROFILE.keytarAccount !== TESTNET_RUNTIME_PROFILE.keytarAccount,
   "the QA application, wallet, or credential identity overlaps Testnet",
 );
+requireCondition(
+  LOCAL_REGTEST_QA_APPLICATION_IDENTITY.appId === "com.wcashwallet.warden.local-regtest-qa" &&
+    LOCAL_REGTEST_QA_APPLICATION_IDENTITY.productName === "Wcash Warden Local Regtest QA" &&
+    LOCAL_REGTEST_QA_APPLICATION_IDENTITY.appId !== LOCAL_REGTEST_RUNTIME_PROFILE.appId &&
+    LOCAL_REGTEST_QA_APPLICATION_IDENTITY.productName !== LOCAL_REGTEST_RUNTIME_PROFILE.productName &&
+    LOCAL_REGTEST_QA_APPLICATION_IDENTITY.keytarService !== LOCAL_REGTEST_RUNTIME_PROFILE.keytarService &&
+    LOCAL_REGTEST_QA_APPLICATION_IDENTITY.keytarAccount !== LOCAL_REGTEST_RUNTIME_PROFILE.keytarAccount,
+  "the packaged QA application identity overlaps the developer Regtest wallet",
+);
 
 requireCondition(testnetRuntime.appId === TESTNET_RUNTIME_PROFILE.appId, "the canonical runtime config is not Testnet");
 requireCondition(testnetRuntime.network === TESTNET_RUNTIME_PROFILE.network, "the canonical network is not Testnet");
@@ -72,8 +82,11 @@ requireCondition(
 );
 
 requireCondition(qaConfig.extends === undefined, "the QA config must not inherit release metadata");
-requireCondition(qaConfig.appId === LOCAL_REGTEST_RUNTIME_PROFILE.appId, "the QA bundle identifier is wrong");
-requireCondition(qaConfig.productName === local.productName, "the QA product name is wrong");
+requireCondition(qaConfig.appId === LOCAL_REGTEST_QA_APPLICATION_IDENTITY.appId, "the QA bundle identifier is wrong");
+requireCondition(
+  qaConfig.productName === LOCAL_REGTEST_QA_APPLICATION_IDENTITY.productName,
+  "the QA product name is wrong",
+);
 requireCondition(qaConfig.forceCodeSigning === false, "code signing must remain disabled");
 requireCondition(qaConfig.npmRebuild === false, "native rebuilding must stay in the explicit build step");
 requireCondition(qaConfig.afterSign === undefined, "the QA package must not run a signing hook");
@@ -90,7 +103,7 @@ requireCondition(
 );
 requireCondition(
   qaConfig.extraMetadata?.name === "wcash-warden-local-regtest-qa" &&
-    qaConfig.extraMetadata?.productName === local.productName &&
+    qaConfig.extraMetadata?.productName === LOCAL_REGTEST_QA_APPLICATION_IDENTITY.productName &&
     qaConfig.extraMetadata?.wcashPackagedProfile === LOCAL_REGTEST_QA_PACKAGED_PROFILE,
   "the immutable packaged profile marker or package identity is missing",
 );
@@ -142,7 +155,8 @@ const main = read("public/electron.js");
 const native = read("native/src/wcash.rs");
 requireCondition(main.includes("WCASH_PACKAGE_METADATA.wcashPackagedProfile"), "main does not read the shipped marker");
 requireCondition(
-  main.includes("WCASH_RUNTIME.localnet && !app.isPackaged"),
+  main.includes("applicationIdentity: WCASH_APPLICATION_IDENTITY") &&
+    main.includes("WCASH_RUNTIME.localnet && !app.isPackaged"),
   "packaged QA data can use an ambient path",
 );
 requireCondition(native.includes('const WCASH_ENDPOINT: &str = "http://127.0.0.1:48234";'), "native endpoint changed");

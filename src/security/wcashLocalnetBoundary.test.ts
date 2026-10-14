@@ -5,6 +5,7 @@ import path from "path";
 export {};
 
 const {
+  LOCAL_REGTEST_QA_APPLICATION_IDENTITY,
   LOCAL_REGTEST_QA_PACKAGED_PROFILE,
   LOCAL_REGTEST_RUNTIME_PROFILE,
   TESTNET_PACKAGED_PROFILE,
@@ -77,6 +78,31 @@ describe("Wcash local Regtest build boundary", () => {
     expect(LOCAL_REGTEST_RUNTIME_PROFILE.keytarAccount).not.toBe(TESTNET_RUNTIME_PROFILE.keytarAccount);
     expect(LOCAL_REGTEST_RUNTIME_PROFILE.appId).toBe("com.wcashwallet.warden.local-regtest");
     expect(LOCAL_REGTEST_RUNTIME_PROFILE.productName).toBe("Wcash Warden Local Regtest");
+    expect(LOCAL_REGTEST_QA_APPLICATION_IDENTITY).toEqual({
+      appId: "com.wcashwallet.warden.local-regtest-qa",
+      productName: "Wcash Warden Local Regtest QA",
+      keytarService: "com.wcashwallet.warden.local-regtest-qa.wallet-seed.v1",
+      keytarAccount: "wcash-local-regtest-qa-primary",
+    });
+    expect(LOCAL_REGTEST_QA_APPLICATION_IDENTITY.appId).not.toBe(LOCAL_REGTEST_RUNTIME_PROFILE.appId);
+    expect(LOCAL_REGTEST_QA_APPLICATION_IDENTITY.productName).not.toBe(LOCAL_REGTEST_RUNTIME_PROFILE.productName);
+    expect(LOCAL_REGTEST_QA_APPLICATION_IDENTITY.keytarService).not.toBe(LOCAL_REGTEST_RUNTIME_PROFILE.keytarService);
+    expect(LOCAL_REGTEST_QA_APPLICATION_IDENTITY.keytarAccount).not.toBe(LOCAL_REGTEST_RUNTIME_PROFILE.keytarAccount);
+
+    expect(
+      resolveWcashUserDataPath({
+        profile: LOCAL_REGTEST_RUNTIME_PROFILE,
+        applicationIdentity: LOCAL_REGTEST_QA_APPLICATION_IDENTITY,
+        appDataPath: fixtureAppData,
+      }),
+    ).toBe(path.join(fixtureAppData, "Wcash Warden Local Regtest QA"));
+    expect(() =>
+      resolveWcashUserDataPath({
+        profile: TESTNET_RUNTIME_PROFILE,
+        applicationIdentity: LOCAL_REGTEST_QA_APPLICATION_IDENTITY,
+        appDataPath: fixtureAppData,
+      }),
+    ).toThrow("application identity");
 
     expect(
       resolveWcashUserDataPath({

@@ -1,4 +1,6 @@
 import React, { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { HashRouter, NavLink } from "react-router-dom";
+import { QRCodeSVG } from "qrcode.react";
 import {
   WcashBalance,
   WcashConfirmedTransaction,
@@ -27,6 +29,7 @@ import {
   requireWcashProductConfig,
   require24WordRecoveryPhrase,
 } from "./api";
+import WcashRoutes, { WCASH_ROUTES } from "./WcashRoutes";
 import "./WcashWallet.css";
 
 type Screen =
@@ -106,7 +109,7 @@ const ErrorNotice = ({ message, onDismiss }: { message: string; onDismiss?: () =
   </div>
 );
 
-const WcashWallet = () => {
+const WcashWalletController = () => {
   const runtimeConfig = window.wcash?.config;
   const networkLabel = runtimeConfig?.network ?? "Wcash";
   const ticker = runtimeConfig?.ticker ?? "TWC";
@@ -767,6 +770,448 @@ const WcashWallet = () => {
 
   const phraseWords = pendingPhrase?.split(" ") ?? [];
 
+  const balanceSummary = totals ? (
+    <div className="warden-balances" aria-label="Exact-tip balances">
+      <article className="warden-balance-primary">
+        <span>Private balance</span>
+        <strong>{formatTwc(totals.privateTotal)} TWC</strong>
+        <small>{formatTwc(totals.privateSpendable)} available</small>
+      </article>
+      <article>
+        <span>Private pending</span>
+        <strong>{formatTwc(totals.privatePending)} TWC</strong>
+      </article>
+      <article>
+        <span>Mining coinbase</span>
+        <strong>{formatTwc(totals.coinbaseTotal)} TWC</strong>
+        <small>
+          {formatTwc(totals.coinbaseSpendable)} mature · {formatTwc(totals.coinbasePending)} pending
+        </small>
+      </article>
+    </div>
+  ) : (
+    <div className="warden-balance-placeholder" aria-label="Balance unavailable">
+      Amounts are not displayed from stale or partially scanned wallet state.
+    </div>
+  );
+
+  const historyPanel = (compact = false) => (
+    <section className="warden-transactions warden-history" aria-labelledby="history-title">
+      <div className="warden-section-heading">
+        <div>
+          <p className="warden-kicker">Confirmed on chain</p>
+          <h2 id="history-title">Transaction history</h2>
+        </div>
+        <span>
+          {historyLoadState === "loaded" && historyExactTipHeight !== null
+            ? `${confirmedTransactions.length} · block ${historyExactTipHeight.toLocaleString()}`
+            : "Exact tip required"}
+        </span>
+      </div>
+      {historyLoadState === "loading" ? (
+        <BusyLine>Reading confirmed transactions…</BusyLine>
+      ) : historyLoadState === "error" ? (
+        <p role="alert">Confirmed history is unavailable until an exact-tip verified read succeeds.</p>
+      ) : historyLoadState === "loaded" && confirmedTransactions.length === 0 ? (
+        <p>No confirmed transactions yet.</p>
+      ) : historyLoadState === "loaded" ? (
+        <ul className="warden-history-list" aria-label="Confirmed transaction history">
+          {(compact ? confirmedTransactions.slice(0, 5) : confirmedTransactions).map((transaction) => (
+            <li key={transaction.txid} data-direction={transaction.direction}>
+              <div className="warden-history-summary">
+                <span>{HISTORY_KIND_LABELS[transaction.kind]}</span>
+                <strong>{formatSignedTwc(transaction.amountDeltaZat)} TWC</strong>
+              </div>
+              <div className="warden-history-meta">
+                <span>
+                  Block {transaction.minedHeight.toLocaleString()} · {transaction.confirmations.toLocaleString()}{" "}
+                  {transaction.confirmations === 1 ? "confirmation" : "confirmations"}
+                </span>
+                {transaction.timestamp === null ? null : (
+                  <time dateTime={new Date(transaction.timestamp * 1_000).toISOString()}>
+                    {formatHistoryTime(transaction.timestamp)}
+                  </time>
+                )}
+                {transaction.feeZat === null ? null : <span>Fee {formatTwc(transaction.feeZat)} TWC</span>}
+              </div>
+              <code title={transaction.txid}>{transaction.txid}</code>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>Synchronize to the exact chain tip to read confirmed history.</p>
+      )}
+      {compact && confirmedTransactions.length > 5 ? (
+        <NavLink className="wcash-zingo-text-link" to={WCASH_ROUTES.history}>
+          View all transactions
+        </NavLink>
+      ) : null}
+    </section>
+  );
+
+  const transactionStatus = transactionNote ? (
+    <div className="warden-transaction-note" role="status">
+      <strong>Transaction status</strong>
+      <p>{transactionNote}</p>
+    </div>
+  ) : null;
+
+  const dashboardPage = (
+    <section className="warden-wallet wcash-zingo-page" aria-labelledby="wallet-title">
+      <div className="warden-wallet-title">
+        <div>
+          <p className="warden-kicker">{networkLabel} wallet</p>
+          <h2 id="wallet-title">Overview</h2>
+        </div>
+      </div>
+      {balanceSummary}
+      <div className="wcash-zingo-actions" aria-label="Wallet actions">
+        <NavLink to={WCASH_ROUTES.send}>
+          <i className="fas fa-paper-plane" aria-hidden="true" />
+          <span>
+            <strong>Send</strong>
+            <small>Private Ironwood payment</small>
+          </span>
+        </NavLink>
+        <NavLink to={WCASH_ROUTES.receive}>
+          <i className="fas fa-download" aria-hidden="true" />
+          <span>
+            <strong>Receive</strong>
+            <small>Address and QR code</small>
+          </span>
+        </NavLink>
+        <NavLink to={WCASH_ROUTES.history}>
+          <i className="fas fa-list" aria-hidden="true" />
+          <span>
+            <strong>History</strong>
+            <small>Confirmed activity</small>
+          </span>
+        </NavLink>
+      </div>
+      {receivers ? (
+        <section className="wcash-zingo-receiver-preview" aria-label="Primary receiver">
+          <span>Primary private receiver</span>
+          <code>{receivers.ironwoodAddress}</code>
+        </section>
+      ) : null}
+      {transactionStatus}
+      {historyPanel(true)}
+    </section>
+  );
+
+  const sendPage = (
+    <section className="warden-wallet wcash-zingo-page" aria-labelledby="send-page-title">
+      <div className="warden-wallet-title">
+        <div>
+          <p className="warden-kicker">Private transfer</p>
+          <h2 id="send-page-title">Send TWC</h2>
+        </div>
+        <span className="wcash-zingo-pool-label">Ironwood only</span>
+      </div>
+      {transactionStatus}
+      <section className="warden-transactions" aria-label="Send TWC payment form">
+        <form className="warden-send-form" onSubmit={(event) => void reviewSend(event)}>
+          <label htmlFor="send-address">{networkLabel} recipient</label>
+          <input
+            id="send-address"
+            type="text"
+            value={sendAddress}
+            onChange={(event) => setSendAddress(event.target.value)}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            disabled={transactionsBusy}
+            placeholder={recipientPlaceholder}
+          />
+          <div className="warden-send-row">
+            <label>
+              Amount (TWC)
+              <input
+                type="text"
+                inputMode="decimal"
+                value={sendAmount}
+                onChange={(event) => setSendAmount(event.target.value)}
+                autoComplete="off"
+                disabled={transactionsBusy}
+                placeholder="0.00000001"
+              />
+            </label>
+            <label>
+              Private memo (optional)
+              <textarea
+                value={sendMemo}
+                onChange={(event) => setSendMemo(event.target.value)}
+                autoComplete="off"
+                rows={3}
+                disabled={transactionsBusy}
+              />
+              <small data-over-limit={memoUtf8Bytes(sendMemo) > 512 ? "true" : "false"}>
+                {memoUtf8Bytes(sendMemo)} / 512 UTF-8 bytes
+              </small>
+            </label>
+          </div>
+          <p className="warden-help">
+            The exact ZIP-317 fee is calculated during signing. Review does not sign or reserve funds.
+          </p>
+          {hasTransactionSafetyHold ? (
+            <p className="warden-help">
+              Transaction status requires recovery review. Do not create a replacement transaction. If every pending row
+              has settled but this session remains locked, restart Wcash Warden to re-attest the wallet database.
+            </p>
+          ) : hasBlockingPendingTransaction ? (
+            <p className="warden-help">
+              Resolve the signed pending transaction below before creating another transaction.
+            </p>
+          ) : pendingLoadState !== "loaded" || !pendingSnapshotReady ? (
+            <p className="warden-help">
+              Transaction signing stays locked until signed pending status is verified at the same exact tip.
+            </p>
+          ) : null}
+          <button className="warden-button" type="submit" disabled={!canReviewSend}>
+            {busy ? "Checking…" : "Review payment"}
+          </button>
+        </form>
+
+        {sendReview ? (
+          <div className="warden-review" role="dialog" aria-modal="true" aria-labelledby="payment-review-title">
+            <p className="warden-kicker">{networkLabel} · final app review</p>
+            <h3 id="payment-review-title">Check every payment detail</h3>
+            <dl>
+              <div>
+                <dt>Recipient</dt>
+                <dd>
+                  <code>{sendReview.request.payments[0].address}</code>
+                </dd>
+              </div>
+              <div>
+                <dt>Amount</dt>
+                <dd>
+                  {sendReview.request.payments[0].amount} TWC · {sendReview.amountZat.toString()} zatoshis
+                </dd>
+              </div>
+              <div>
+                <dt>Memo · {sendReview.memoBytes} UTF-8 bytes</dt>
+                <dd className="warden-review-memo">{sendReview.request.payments[0].memo || "No memo"}</dd>
+              </div>
+            </dl>
+            <p>
+              Continue only if the full address and amount are correct. The operating system will show a second,
+              independent confirmation before device authentication and signing.
+            </p>
+            <div className="warden-review-actions">
+              <button
+                className="warden-button warden-button--secondary"
+                type="button"
+                disabled={transactionsBusy}
+                onClick={() => setSendReview(null)}
+              >
+                Go back
+              </button>
+              <button
+                className="warden-button"
+                type="button"
+                disabled={transactionsBusy}
+                onClick={() => void confirmReviewedSend()}
+              >
+                {busy ? "Authorizing…" : "Continue to system confirmation"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      <section className="warden-transactions" aria-labelledby="pending-title">
+        <div className="warden-section-heading">
+          <div>
+            <p className="warden-kicker">Recovery</p>
+            <h2 id="pending-title">Signed, not yet mined</h2>
+          </div>
+          <span>{pendingTransactions.length}</span>
+        </div>
+        {pendingLoadState === "loading" ? (
+          <BusyLine>Reading signed pending transactions…</BusyLine>
+        ) : pendingLoadState === "error" ? (
+          <p role="alert">
+            Signed pending status is unavailable. New signing and exact-transaction retry remain locked.
+          </p>
+        ) : pendingLoadState === "loaded" && pendingTransactions.length === 0 ? (
+          <p>No durable pending transactions.</p>
+        ) : pendingLoadState === "loaded" ? (
+          <ul className="warden-pending-list">
+            {pendingTransactions.map((transaction) => (
+              <li key={transaction.txid}>
+                <div>
+                  <code>{transaction.txid}</code>
+                  <span>
+                    {transaction.expiryHeight === 0
+                      ? "No expiry height"
+                      : `Expires at block ${transaction.expiryHeight.toLocaleString()}`}{" "}
+                    ·{" "}
+                    {transaction.lifecycle === "expired"
+                      ? "expired; no rebroadcast"
+                      : transaction.lifecycle === "tip_unknown"
+                        ? "exact tip unknown; signing locked"
+                        : "active; blocks replacement signing"}
+                  </span>
+                </div>
+                <button
+                  className="warden-button warden-button--secondary"
+                  type="button"
+                  disabled={transactionsBusy || !pendingSnapshotReady || !transaction.rebroadcastAllowed}
+                  onClick={() => void retryPendingTransaction(transaction)}
+                >
+                  Retry exact transaction
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p>Signed pending status has not been verified.</p>
+        )}
+        <p className="warden-help">
+          Retry reuses the exact stored signed bytes. Wcash Warden never creates a replacement automatically and does
+          not promise cancellation.
+        </p>
+      </section>
+    </section>
+  );
+
+  const receivePage = (
+    <section className="warden-wallet wcash-zingo-page" aria-labelledby="receive-title">
+      <div className="warden-wallet-title">
+        <div>
+          <p className="warden-kicker">Wallet addresses</p>
+          <h2 id="receive-title">Receive</h2>
+        </div>
+      </div>
+      {receivers ? (
+        <div className="wcash-zingo-receive-grid">
+          <article className="wcash-zingo-qr-card">
+            <div className="wcash-zingo-qr">
+              <QRCodeSVG
+                value={receivers.ironwoodAddress}
+                size={176}
+                marginSize={2}
+                role="img"
+                aria-label="Private Ironwood receiving address QR code"
+              />
+            </div>
+            <div>
+              <span className="warden-address-label">Primary · private Ironwood</span>
+              <h3>Use for normal payments</h3>
+              <code>{receivers.ironwoodAddress}</code>
+              <p>Private Wcash payments arrive directly in the Ironwood pool.</p>
+            </div>
+          </article>
+          <article className="wcash-zingo-qr-card wcash-zingo-qr-card--secondary">
+            <div className="wcash-zingo-qr">
+              <QRCodeSVG
+                value={receivers.transparentCoinbaseAddress}
+                size={150}
+                marginSize={2}
+                role="img"
+                aria-label="Transparent coinbase receiving address QR code"
+              />
+            </div>
+            <div>
+              <span className="warden-address-label">Secondary · transparent coinbase</span>
+              <h3>Mining payouts only</h3>
+              <code>{receivers.transparentCoinbaseAddress}</code>
+              <p>Public on-chain. Mature rewards should be shielded into Ironwood before normal use.</p>
+            </div>
+          </article>
+        </div>
+      ) : (
+        <BusyLine>Reading Wcash receiving addresses…</BusyLine>
+      )}
+
+      <section className="warden-transactions" aria-labelledby="shield-title">
+        <div className="warden-section-heading">
+          <div>
+            <p className="warden-kicker">Mining rewards</p>
+            <h2 id="shield-title">Shield coinbase</h2>
+          </div>
+          <span>{totals ? `${formatTwc(totals.coinbaseSpendable)} TWC mature` : "Exact tip required"}</span>
+        </div>
+        <p>
+          Move mature transparent mining rewards into this wallet&apos;s private Ironwood receiver before normal
+          spending. Up to 100 mature inputs are selected; the network fee is deducted from the shielded value.
+        </p>
+        {(totals?.coinbasePending ?? 0n) > 0n ? (
+          <p className="warden-help">
+            {formatTwc(totals?.coinbasePending ?? 0n)} TWC is immature or pending and cannot be shielded yet.
+          </p>
+        ) : null}
+        <button
+          className="warden-button warden-button--secondary"
+          type="button"
+          disabled={!canReviewShield}
+          onClick={() => setShieldReview(true)}
+        >
+          Review shielding
+        </button>
+        {shieldReview ? (
+          <div className="warden-review" role="dialog" aria-modal="true" aria-labelledby="shield-review-title">
+            <p className="warden-kicker">{networkLabel} · mining privacy</p>
+            <h3 id="shield-review-title">Shield up to {formatTwc(totals?.coinbaseSpendable ?? 0n)} TWC</h3>
+            <p>
+              Destination: this wallet&apos;s own private Ironwood receiver. The exact selected amount and ZIP-317 fee
+              are calculated during signing. This creates and broadcasts a real {networkLabel} transaction.
+            </p>
+            <div className="warden-review-actions">
+              <button
+                className="warden-button warden-button--secondary"
+                type="button"
+                disabled={transactionsBusy}
+                onClick={() => setShieldReview(false)}
+              >
+                Go back
+              </button>
+              <button
+                className="warden-button"
+                type="button"
+                disabled={transactionsBusy}
+                onClick={() => void confirmShieldCoinbase()}
+              >
+                {busy ? "Authorizing…" : "Continue to system confirmation"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </section>
+    </section>
+  );
+
+  const historyPage = (
+    <section className="warden-wallet wcash-zingo-page" aria-label="Wallet history">
+      {balanceSummary}
+      {historyPanel(false)}
+    </section>
+  );
+
+  if (screen === "wallet") {
+    return (
+      <WcashRoutes
+        productName={runtimeConfig?.productName ?? "Wcash Warden"}
+        network={networkLabel}
+        ticker={ticker}
+        endpoint={runtimeConfig?.endpoint ?? ""}
+        localRegtest={localRegtest}
+        syncing={syncing}
+        exactTipHeight={balance?.chainTipHeight ?? null}
+        syncNote={syncNote}
+        onSync={() => void syncWallet()}
+        onStopSync={() => void cancelSync()}
+        notice={error ? <ErrorNotice message={error} onDismiss={() => setError(null)} /> : undefined}
+        dashboard={dashboardPage}
+        send={sendPage}
+        receive={receivePage}
+        history={historyPage}
+      />
+    );
+  }
+
   return (
     <main className="warden-shell">
       <WcashHeader network={networkLabel} ticker={ticker} />
@@ -801,18 +1246,20 @@ const WcashWallet = () => {
         ) : null}
 
         {screen === "onboarding" ? (
-          <section className="warden-onboarding">
-            <div className="warden-intro">
-              <p className="warden-kicker">Desktop wallet</p>
-              <h1>Private Wcash, without legacy pool baggage.</h1>
-              <p>
-                Receive normally into Ironwood. A separate transparent address is available only for pool and solo
-                mining coinbase rewards.
-              </p>
+          <section className="warden-panel wcash-zingo-onboarding" aria-labelledby="onboarding-title">
+            <div className="wcash-zingo-onboarding-title">
+              <span className="wcash-zingo-logo" aria-hidden="true">
+                W
+              </span>
+              <div>
+                <p className="warden-kicker">Wallet setup</p>
+                <h1 id="onboarding-title">Welcome to Wcash Warden</h1>
+                <p>Create a new wallet or recover one from its 24-word phrase.</p>
+              </div>
             </div>
             <div className="warden-actions">
               <article>
-                <span className="warden-step">01</span>
+                <i className="fas fa-plus-circle" aria-hidden="true" />
                 <h2>Create a wallet</h2>
                 <p>Generate a 24-word recovery phrase and confirm your offline backup.</p>
                 <button className="warden-button" type="button" disabled={busy} onClick={() => void createWallet()}>
@@ -820,7 +1267,7 @@ const WcashWallet = () => {
                 </button>
               </article>
               <article>
-                <span className="warden-step">02</span>
+                <i className="fas fa-undo" aria-hidden="true" />
                 <h2>Restore a wallet</h2>
                 <p>Recover an existing {networkLabel} wallet from its phrase and birthday.</p>
                 <button
@@ -986,373 +1433,15 @@ const WcashWallet = () => {
             </button>
           </section>
         ) : null}
-
-        {screen === "wallet" ? (
-          <section className="warden-wallet" aria-labelledby="wallet-title">
-            <div className="warden-wallet-title">
-              <div>
-                <p className="warden-kicker">{networkLabel} wallet</p>
-                <h1 id="wallet-title">Overview</h1>
-              </div>
-              {syncing ? (
-                <button className="warden-button warden-button--danger" type="button" onClick={() => void cancelSync()}>
-                  Stop sync
-                </button>
-              ) : (
-                <button className="warden-button" type="button" onClick={() => void syncWallet()}>
-                  Synchronize
-                </button>
-              )}
-            </div>
-
-            <div className="warden-sync" data-exact-tip={balance ? "true" : "false"}>
-              <span aria-hidden="true" />
-              <div>
-                <strong>
-                  {syncing ? "Synchronization in progress" : balance ? "Exact-tip balance" : "Balance locked"}
-                </strong>
-                <p>{syncNote}</p>
-              </div>
-            </div>
-
-            {totals ? (
-              <div className="warden-balances" aria-label="Exact-tip balances">
-                <article className="warden-balance-primary">
-                  <span>Private balance</span>
-                  <strong>{formatTwc(totals.privateTotal)} TWC</strong>
-                  <small>{formatTwc(totals.privateSpendable)} available</small>
-                </article>
-                <article>
-                  <span>Private pending</span>
-                  <strong>{formatTwc(totals.privatePending)} TWC</strong>
-                </article>
-                <article>
-                  <span>Mining coinbase</span>
-                  <strong>{formatTwc(totals.coinbaseTotal)} TWC</strong>
-                  <small>
-                    {formatTwc(totals.coinbaseSpendable)} mature · {formatTwc(totals.coinbasePending)} pending
-                  </small>
-                </article>
-              </div>
-            ) : (
-              <div className="warden-balance-placeholder" aria-label="Balance unavailable">
-                Amounts are not displayed from stale or partially scanned wallet state.
-              </div>
-            )}
-
-            <section className="warden-transactions warden-history" aria-labelledby="history-title">
-              <div className="warden-section-heading">
-                <div>
-                  <p className="warden-kicker">Confirmed on chain</p>
-                  <h2 id="history-title">Transaction history</h2>
-                </div>
-                <span>
-                  {historyLoadState === "loaded" && historyExactTipHeight !== null
-                    ? `${confirmedTransactions.length} · block ${historyExactTipHeight.toLocaleString()}`
-                    : "Exact tip required"}
-                </span>
-              </div>
-              {historyLoadState === "loading" ? (
-                <BusyLine>Reading confirmed transactions…</BusyLine>
-              ) : historyLoadState === "error" ? (
-                <p role="alert">Confirmed history is unavailable until an exact-tip verified read succeeds.</p>
-              ) : historyLoadState === "loaded" && confirmedTransactions.length === 0 ? (
-                <p>No confirmed transactions yet.</p>
-              ) : historyLoadState === "loaded" ? (
-                <ul className="warden-history-list" aria-label="Confirmed transaction history">
-                  {confirmedTransactions.map((transaction) => (
-                    <li key={transaction.txid} data-direction={transaction.direction}>
-                      <div className="warden-history-summary">
-                        <span>{HISTORY_KIND_LABELS[transaction.kind]}</span>
-                        <strong>{formatSignedTwc(transaction.amountDeltaZat)} TWC</strong>
-                      </div>
-                      <div className="warden-history-meta">
-                        <span>
-                          Block {transaction.minedHeight.toLocaleString()} ·{" "}
-                          {transaction.confirmations.toLocaleString()}{" "}
-                          {transaction.confirmations === 1 ? "confirmation" : "confirmations"}
-                        </span>
-                        {transaction.timestamp === null ? null : (
-                          <time dateTime={new Date(transaction.timestamp * 1_000).toISOString()}>
-                            {formatHistoryTime(transaction.timestamp)}
-                          </time>
-                        )}
-                        {transaction.feeZat === null ? null : <span>Fee {formatTwc(transaction.feeZat)} TWC</span>}
-                      </div>
-                      <code title={transaction.txid}>{transaction.txid}</code>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p>Synchronize to the exact chain tip to read confirmed history.</p>
-              )}
-            </section>
-
-            {transactionNote ? (
-              <div className="warden-transaction-note" role="status">
-                <strong>Transaction status</strong>
-                <p>{transactionNote}</p>
-              </div>
-            ) : null}
-
-            <section className="warden-transactions" aria-labelledby="send-title">
-              <div className="warden-section-heading">
-                <div>
-                  <p className="warden-kicker">Private transfer</p>
-                  <h2 id="send-title">Send TWC</h2>
-                </div>
-                <span>Ironwood only</span>
-              </div>
-              <form className="warden-send-form" onSubmit={(event) => void reviewSend(event)}>
-                <label htmlFor="send-address">{networkLabel} recipient</label>
-                <input
-                  id="send-address"
-                  type="text"
-                  value={sendAddress}
-                  onChange={(event) => setSendAddress(event.target.value)}
-                  autoComplete="off"
-                  autoCorrect="off"
-                  autoCapitalize="none"
-                  spellCheck={false}
-                  disabled={transactionsBusy}
-                  placeholder={recipientPlaceholder}
-                />
-                <div className="warden-send-row">
-                  <label>
-                    Amount (TWC)
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      value={sendAmount}
-                      onChange={(event) => setSendAmount(event.target.value)}
-                      autoComplete="off"
-                      disabled={transactionsBusy}
-                      placeholder="0.00000001"
-                    />
-                  </label>
-                  <label>
-                    Private memo (optional)
-                    <textarea
-                      value={sendMemo}
-                      onChange={(event) => setSendMemo(event.target.value)}
-                      autoComplete="off"
-                      rows={3}
-                      disabled={transactionsBusy}
-                    />
-                    <small data-over-limit={memoUtf8Bytes(sendMemo) > 512 ? "true" : "false"}>
-                      {memoUtf8Bytes(sendMemo)} / 512 UTF-8 bytes
-                    </small>
-                  </label>
-                </div>
-                <p className="warden-help">
-                  The exact ZIP-317 fee is calculated during signing. Review does not sign or reserve funds.
-                </p>
-                {hasTransactionSafetyHold ? (
-                  <p className="warden-help">
-                    Transaction status requires recovery review. Do not create a replacement transaction. If every
-                    pending row has settled but this session remains locked, restart Wcash Warden to re-attest the
-                    wallet database.
-                  </p>
-                ) : hasBlockingPendingTransaction ? (
-                  <p className="warden-help">
-                    Resolve the signed pending transaction below before creating another transaction.
-                  </p>
-                ) : pendingLoadState !== "loaded" || !pendingSnapshotReady ? (
-                  <p className="warden-help">
-                    Transaction signing stays locked until signed pending status is verified at the same exact tip.
-                  </p>
-                ) : null}
-                <button className="warden-button" type="submit" disabled={!canReviewSend}>
-                  {busy ? "Checking…" : "Review payment"}
-                </button>
-              </form>
-
-              {sendReview ? (
-                <div className="warden-review" role="dialog" aria-modal="true" aria-labelledby="payment-review-title">
-                  <p className="warden-kicker">{networkLabel} · final app review</p>
-                  <h3 id="payment-review-title">Check every payment detail</h3>
-                  <dl>
-                    <div>
-                      <dt>Recipient</dt>
-                      <dd>
-                        <code>{sendReview.request.payments[0].address}</code>
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>Amount</dt>
-                      <dd>
-                        {sendReview.request.payments[0].amount} TWC · {sendReview.amountZat.toString()} zatoshis
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>Memo · {sendReview.memoBytes} UTF-8 bytes</dt>
-                      <dd className="warden-review-memo">{sendReview.request.payments[0].memo || "No memo"}</dd>
-                    </div>
-                  </dl>
-                  <p>
-                    Continue only if the full address and amount are correct. The operating system will show a second,
-                    independent confirmation before device authentication and signing.
-                  </p>
-                  <div className="warden-review-actions">
-                    <button
-                      className="warden-button warden-button--secondary"
-                      type="button"
-                      disabled={transactionsBusy}
-                      onClick={() => setSendReview(null)}
-                    >
-                      Go back
-                    </button>
-                    <button
-                      className="warden-button"
-                      type="button"
-                      disabled={transactionsBusy}
-                      onClick={() => void confirmReviewedSend()}
-                    >
-                      {busy ? "Authorizing…" : "Continue to system confirmation"}
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-            </section>
-
-            <section className="warden-transactions" aria-labelledby="shield-title">
-              <div className="warden-section-heading">
-                <div>
-                  <p className="warden-kicker">Mining rewards</p>
-                  <h2 id="shield-title">Shield coinbase</h2>
-                </div>
-                <span>{totals ? `${formatTwc(totals.coinbaseSpendable)} TWC mature` : "Exact tip required"}</span>
-              </div>
-              <p>
-                Move mature transparent mining rewards into this wallet&apos;s private Ironwood receiver before normal
-                spending. Up to 100 mature inputs are selected; the network fee is deducted from the shielded value.
-              </p>
-              {(totals?.coinbasePending ?? 0n) > 0n ? (
-                <p className="warden-help">
-                  {formatTwc(totals?.coinbasePending ?? 0n)} TWC is immature or pending and cannot be shielded yet.
-                </p>
-              ) : null}
-              <button
-                className="warden-button warden-button--secondary"
-                type="button"
-                disabled={!canReviewShield}
-                onClick={() => setShieldReview(true)}
-              >
-                Review shielding
-              </button>
-              {shieldReview ? (
-                <div className="warden-review" role="dialog" aria-modal="true" aria-labelledby="shield-review-title">
-                  <p className="warden-kicker">{networkLabel} · mining privacy</p>
-                  <h3 id="shield-review-title">Shield up to {formatTwc(totals?.coinbaseSpendable ?? 0n)} TWC</h3>
-                  <p>
-                    Destination: this wallet&apos;s own private Ironwood receiver. The exact selected amount and ZIP-317
-                    fee are calculated during signing. This creates and broadcasts a real {networkLabel} transaction.
-                  </p>
-                  <div className="warden-review-actions">
-                    <button
-                      className="warden-button warden-button--secondary"
-                      type="button"
-                      disabled={transactionsBusy}
-                      onClick={() => setShieldReview(false)}
-                    >
-                      Go back
-                    </button>
-                    <button
-                      className="warden-button"
-                      type="button"
-                      disabled={transactionsBusy}
-                      onClick={() => void confirmShieldCoinbase()}
-                    >
-                      {busy ? "Authorizing…" : "Continue to system confirmation"}
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-            </section>
-
-            <section className="warden-transactions" aria-labelledby="pending-title">
-              <div className="warden-section-heading">
-                <div>
-                  <p className="warden-kicker">Recovery</p>
-                  <h2 id="pending-title">Signed, not yet mined</h2>
-                </div>
-                <span>{pendingTransactions.length}</span>
-              </div>
-              {pendingLoadState === "loading" ? (
-                <BusyLine>Reading signed pending transactions…</BusyLine>
-              ) : pendingLoadState === "error" ? (
-                <p role="alert">
-                  Signed pending status is unavailable. New signing and exact-transaction retry remain locked.
-                </p>
-              ) : pendingLoadState === "loaded" && pendingTransactions.length === 0 ? (
-                <p>No durable pending transactions.</p>
-              ) : pendingLoadState === "loaded" ? (
-                <ul className="warden-pending-list">
-                  {pendingTransactions.map((transaction) => (
-                    <li key={transaction.txid}>
-                      <div>
-                        <code>{transaction.txid}</code>
-                        <span>
-                          {transaction.expiryHeight === 0
-                            ? "No expiry height"
-                            : `Expires at block ${transaction.expiryHeight.toLocaleString()}`}{" "}
-                          ·{" "}
-                          {transaction.lifecycle === "expired"
-                            ? "expired; no rebroadcast"
-                            : transaction.lifecycle === "tip_unknown"
-                              ? "exact tip unknown; signing locked"
-                              : "active; blocks replacement signing"}
-                        </span>
-                      </div>
-                      <button
-                        className="warden-button warden-button--secondary"
-                        type="button"
-                        disabled={transactionsBusy || !pendingSnapshotReady || !transaction.rebroadcastAllowed}
-                        onClick={() => void retryPendingTransaction(transaction)}
-                      >
-                        Retry exact transaction
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p>Signed pending status has not been verified.</p>
-              )}
-              <p className="warden-help">
-                Retry reuses the exact stored signed bytes. Wcash Warden never creates a replacement automatically and
-                does not promise cancellation.
-              </p>
-            </section>
-
-            <section className="warden-addresses" aria-labelledby="receive-title">
-              <h2 id="receive-title">Receive</h2>
-              {receivers ? (
-                <>
-                  <article className="warden-address warden-address--primary">
-                    <div>
-                      <span className="warden-address-label">Primary · private Ironwood</span>
-                      <strong>Use for normal payments</strong>
-                    </div>
-                    <code>{receivers.ironwoodAddress}</code>
-                  </article>
-                  <article className="warden-address">
-                    <div>
-                      <span className="warden-address-label">Secondary · transparent coinbase</span>
-                      <strong>Mining payouts only</strong>
-                    </div>
-                    <code>{receivers.transparentCoinbaseAddress}</code>
-                    <p>Public on-chain. Mature mining rewards should be shielded into Ironwood before normal use.</p>
-                  </article>
-                </>
-              ) : (
-                <BusyLine>Reading Wcash receiving addresses…</BusyLine>
-              )}
-            </section>
-          </section>
-        ) : null}
       </section>
     </main>
   );
 };
+
+const WcashWallet = () => (
+  <HashRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <WcashWalletController />
+  </HashRouter>
+);
 
 export default WcashWallet;

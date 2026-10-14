@@ -9,6 +9,7 @@ const { verifyWcashDeviceOwner } = require("./wcashDeviceAuth");
 const { LIFECYCLE_STATES, createWcashWalletLifecycle } = require("./wcashWalletLifecycle");
 const { createWcashTransactionController } = require("./wcashTransactionBoundary");
 const {
+  LOCAL_REGTEST_QA_APPLICATION_IDENTITY,
   LOCAL_REGTEST_QA_PACKAGED_PROFILE,
   TESTNET_PACKAGED_PROFILE,
   TESTNET_RUNTIME_PROFILE,
@@ -26,6 +27,10 @@ const WCASH_RUNTIME = selectWcashRuntimeProfile({
   localnetRequested: WCASH_LOCALNET_REQUESTED,
   packagedProfile: WCASH_PACKAGED_PROFILE,
 });
+const WCASH_APPLICATION_IDENTITY =
+  app.isPackaged && WCASH_PACKAGED_PROFILE === LOCAL_REGTEST_QA_PACKAGED_PROFILE
+    ? LOCAL_REGTEST_QA_APPLICATION_IDENTITY
+    : WCASH_RUNTIME;
 if (
   WCASH_PACKAGED_RUNTIME.appId !== TESTNET_RUNTIME_PROFILE.appId ||
   WCASH_PACKAGED_RUNTIME.productName !== TESTNET_RUNTIME_PROFILE.productName ||
@@ -43,7 +48,7 @@ if (
   app.isPackaged &&
   WCASH_PACKAGED_PROFILE === LOCAL_REGTEST_QA_PACKAGED_PROFILE &&
   (WCASH_PACKAGE_METADATA.name !== "wcash-warden-local-regtest-qa" ||
-    WCASH_PACKAGE_METADATA.productName !== WCASH_RUNTIME.productName)
+    WCASH_PACKAGE_METADATA.productName !== WCASH_APPLICATION_IDENTITY.productName)
 ) {
   throw new Error("The packaged Local Regtest QA identity is incomplete");
 }
@@ -52,8 +57,8 @@ const WCASH_RUNTIME_READY = WCASH_RUNTIME.runtimeReady;
 // The Wcash core has its own narrow bridge below. This legacy flag must remain
 // false even after WCASH_RUNTIME_READY becomes true.
 const LEGACY_ZCASH_RUNTIME_ENABLED = false;
-const WCASH_APP_ID = WCASH_RUNTIME.appId;
-const WCASH_PRODUCT_NAME = WCASH_RUNTIME.productName;
+const WCASH_APP_ID = WCASH_APPLICATION_IDENTITY.appId;
+const WCASH_PRODUCT_NAME = WCASH_APPLICATION_IDENTITY.productName;
 
 // Keep this pre-core product completely separate from Zingo/Zcash data. This
 // must run before settings or electron-json-storage are initialized.
@@ -62,6 +67,7 @@ app.setPath(
   "userData",
   resolveWcashUserDataPath({
     profile: WCASH_RUNTIME,
+    applicationIdentity: WCASH_APPLICATION_IDENTITY,
     appDataPath: app.getPath("appData"),
     // The packaged QA app always uses its dedicated application-data namespace.
     // Only an unpackaged developer launch may supply an explicit isolated path.
@@ -607,8 +613,8 @@ ipcMain.handle("auth:verify", async () => ({ success: false, reason: "legacy-run
 // Only an explicit "false" stored by the user disables the feature.
 const KEYTAR_SERVICE = WCASH_PRODUCT_NAME;
 const KEYTAR_ACCOUNT = "requireDeviceAuth";
-const WCASH_SEED_KEYTAR_SERVICE = WCASH_RUNTIME.keytarService;
-const WCASH_SEED_KEYTAR_ACCOUNT = WCASH_RUNTIME.keytarAccount;
+const WCASH_SEED_KEYTAR_SERVICE = WCASH_APPLICATION_IDENTITY.keytarService;
+const WCASH_SEED_KEYTAR_ACCOUNT = WCASH_APPLICATION_IDENTITY.keytarAccount;
 
 // In-process cache of the value so we only hit Keychain ONCE per session.
 // Repeated accesses (loadSettings is called several times across pages) used
